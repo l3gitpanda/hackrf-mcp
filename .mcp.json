@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hackrf": {
+      "command": "uv",
+      "args": ["run", "hackrf-mcp"],
+      "cwd": "${CLAUDE_PROJECT_DIR}"
+    }
+  }
+}

@@ -47,6 +47,11 @@ asyncio.run(main())
   list for the corresponding `hackrf_*` binary and calls `run(...)`. `main()`
   calls `mcp.run()` (stdio transport) and is the `hackrf-mcp` console script
   entry point (see `pyproject.toml`).
+- `src/hackrf_mcp/iq.py` — offline numpy/scipy/matplotlib helpers for IQ
+  capture files written by `hackrf_transfer -r` (reading int8 IQ, mixing,
+  filtering, demodulation, resampling, WAV output, spectrogram computation
+  and PNG rendering). Pure functions, no device/subprocess access. Used by
+  the `hackrf_iq_to_wav` and `hackrf_iq_spectrogram` tools in `server.py`.
 
 ### Single-device constraint
 
@@ -56,6 +61,11 @@ hackrf_* tools and explains "device busy"/"resource busy" errors.
 `hackrf_sweep` and `hackrf_transfer` additionally note in their docstrings
 that they hold the device for up to `timeout_seconds`. If you add a new tool
 that opens the device, mention this constraint in its docstring too.
+
+`hackrf_iq_to_wav` and `hackrf_iq_spectrogram` are the exception: they only
+read capture files from disk via `iq.py` and never touch the device, so they
+can run anytime (including while another `hackrf_*` tool holds the device).
+This is called out explicitly in the `FastMCP(... instructions=...)` string.
 
 ### Tool design conventions (follow these for new tools)
 
@@ -74,6 +84,10 @@ that opens the device, mention this constraint in its docstring too.
   default.
 - `hackrf_sweep` writes CLI output to a temp file (the tool requires `-r
   <file>`), reads it back, truncates to ~50k chars, and deletes the temp file.
+- `hackrf_iq_to_wav` / `hackrf_iq_spectrogram` cap how many IQ samples they
+  read via `MAX_IQ_SAMPLES` (50M, ~100MB as complex64 / ~200MB on disk as raw
+  int8) and a `max_duration_seconds` param, so a huge capture file can't blow
+  up memory or runtime.
 - Tool docstrings double as the MCP tool description shown to the model.
   Tools with real-world side effects (RF transmission, bias-tee power,
   amplifier gain, firmware/register writes) include a `SAFETY:` paragraph

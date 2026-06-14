@@ -8,9 +8,12 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
 
+from hackrf_mcp import iq
 from hackrf_mcp.cli import run, set_bin_dir
 
 mcp = FastMCP(
@@ -27,7 +30,11 @@ mcp = FastMCP(
         "still running or was not cleanly terminated) is likely still "
         "holding the device. hackrf_sweep and hackrf_transfer can run for "
         "up to their timeout_seconds, so avoid issuing another HackRF tool "
-        "call until one of those returns."
+        "call until one of those returns.\n\n"
+        "hackrf_iq_to_wav and hackrf_iq_spectrogram are offline analysis "
+        "tools that operate on capture files already written by "
+        "hackrf_transfer. They do not access the device and can be run "
+        "anytime, including while the device is busy."
     ),
 )
 
@@ -366,6 +373,142 @@ def hackrf_biast(
     if device_serial:
         args += ["-d", device_serial]
     return run("hackrf_biast", args, timeout=15)
+
+
+# Default cap on samples processed by the offline analysis tools below, to
+# keep memory use and runtime bounded for large captures. 50M complex
+# samples is ~100MB as complex64 (200MB raw int8 file at 8-bit I/Q).
+MAX_IQ_SAMPLES = 50_000_000
+
+
+@mcp.tool(annotations=CONFIG)
+def hackrf_iq_to_wav(
+    iq_file_path: str,
+    sample_rate_hz: int,
+    mode: Literal["nfm", "wfm", "am", "usb", "lsb"],
+    output_wav_path: str,
+    center_freq_hz: int = 0,
+    target_freq_hz: int | None = None,
+    bandwidth_hz: float | None = None,
+    audio_rate_hz: int = 48_000,
+    max_duration_seconds: float | None = 60.0,
+) -> str:
+    """Demodulate a raw IQ capture (from hackrf_transfer, 8-bit signed
+    interleaved I/Q) to a WAV audio file.
+
+    This is an offline file-processing tool and does not access the HackRF
+    device.
+
+    Args:
+        iq_file_path: Path to the raw IQ capture file (e.g. from
+            `hackrf_transfer` with `direction="rx"`).
+        sample_rate_hz: Sample rate the capture was recorded at, in Hz.
+        mode: Demodulation mode: "nfm" (narrowband FM, e.g. analog two-way
+            radio), "wfm" (wideband FM, e.g. broadcast FM radio), "am"
+            (amplitude modulation), "usb"/"lsb" (single-sideband voice).
+        output_wav_path: Path to write the demodulated WAV file to.
+        center_freq_hz: Center frequency the capture was recorded at, in Hz.
+            Used together with target_freq_hz to compute the tuning offset.
+        target_freq_hz: Frequency of the signal of interest, in Hz, if it is
+            not at center_freq_hz. The signal is mixed down to baseband
+            before demodulation. Defaults to center_freq_hz (no shift).
+        bandwidth_hz: Channel bandwidth to filter to before demodulation, in
+            Hz. Defaults to a typical value for `mode` (e.g. 12.5kHz for
+            nfm, 180kHz for wfm).
+        audio_rate_hz: Output WAV sample rate, in Hz.
+        max_duration_seconds: Only process up to this many seconds of the
+            input capture (from the start), to bound memory/runtime for
+            large files. Set to None to process the whole file (use with
+            caution on large captures).
+    """
+    max_samples = None
+    if max_duration_seconds is not None:
+        max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
+    elif MAX_IQ_SAMPLES:
+        max_samples = MAX_IQ_SAMPLES
+
+    samples = iq.read_iq_int8(iq_file_path, max_samples=max_samples)
+    if samples.size == 0:
+        return f"'{iq_file_path}' contains no IQ samples."
+
+    offset_hz = (target_freq_hz - center_freq_hz) if target_freq_hz is not None else 0
+    baseband = iq.mix(samples, sample_rate_hz, offset_hz)
+
+    audio = iq.demodulate(baseband, sample_rate_hz, mode, bandwidth_hz=bandwidth_hz)
+    audio = iq.resample_to_rate(audio, sample_rate_hz, audio_rate_hz)
+    iq.write_wav(output_wav_path, audio, audio_rate_hz)
+
+    duration_s = samples.size / sample_rate_hz
+    return (
+        f"Wrote {output_wav_path} ({audio.size / audio_rate_hz:.2f}s @ "
+        f"{audio_rate_hz}Hz) demodulated as {mode} from {duration_s:.2f}s of "
+        f"input at {sample_rate_hz}Hz."
+    )
+
+
+@mcp.tool(annotations=CONFIG)
+def hackrf_iq_spectrogram(
+    iq_file_path: str,
+    sample_rate_hz: int,
+    output_image_path: str,
+    center_freq_hz: int = 0,
+    fft_size: int = 1024,
+    max_duration_seconds: float | None = 10.0,
+) -> list:
+    """Render a spectrogram (waterfall) PNG from a raw IQ capture (from
+    hackrf_transfer, 8-bit signed interleaved I/Q).
+
+    Useful for visually identifying bursts, framing/timing patterns (e.g.
+    keyfobs, trunked radio control channels), and occupied bandwidth.
+
+    This is an offline file-processing tool and does not access the HackRF
+    device.
+
+    Args:
+        iq_file_path: Path to the raw IQ capture file (e.g. from
+            `hackrf_transfer` with `direction="rx"`).
+        sample_rate_hz: Sample rate the capture was recorded at, in Hz.
+        output_image_path: Path to write the spectrogram PNG to.
+        center_freq_hz: Center frequency the capture was recorded at, in Hz.
+            Used to label the frequency axis in absolute terms.
+        fft_size: FFT size (frequency resolution) for the spectrogram.
+        max_duration_seconds: Only process up to this many seconds of the
+            input capture (from the start), to bound memory/runtime for
+            large files. Set to None to process the whole file (use with
+            caution on large captures).
+    """
+    max_samples = None
+    if max_duration_seconds is not None:
+        max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
+    elif MAX_IQ_SAMPLES:
+        max_samples = MAX_IQ_SAMPLES
+
+    samples = iq.read_iq_int8(iq_file_path, max_samples=max_samples)
+    if samples.size == 0:
+        return [f"'{iq_file_path}' contains no IQ samples."]
+
+    freqs_hz, times_s, power_db = iq.compute_spectrogram(samples, sample_rate_hz, fft_size=fft_size)
+    iq.render_spectrogram_png(
+        output_image_path,
+        freqs_hz,
+        times_s,
+        power_db,
+        center_freq_hz,
+        title=Path(iq_file_path).name,
+    )
+
+    peak_idx = np.unravel_index(np.argmax(power_db), power_db.shape)
+    peak_freq_hz = freqs_hz[peak_idx[0]] + center_freq_hz
+    peak_time_s = times_s[peak_idx[1]]
+    duration_s = samples.size / sample_rate_hz
+
+    summary = (
+        f"Wrote {output_image_path} ({duration_s:.2f}s of input at "
+        f"{sample_rate_hz}Hz, fft_size={fft_size}). Peak power "
+        f"{power_db[peak_idx]:.1f}dB at {peak_freq_hz / 1e6:.4f}MHz, "
+        f"t={peak_time_s:.3f}s."
+    )
+    return [summary, Image(path=output_image_path)]
 
 
 # @mcp.tool(annotations=DANGEROUS)

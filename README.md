@@ -12,6 +12,8 @@ command-line utilities, letting Claude inspect and control a connected
   or in a folder you point the server at with `--bin-dir`/`HACKRF_TOOLS_DIR`
   (see below).
 - Python 3.10+.
+- `numpy`, `scipy`, and `matplotlib` (installed via `uv sync`) for the
+  `hackrf_iq_to_wav` and `hackrf_iq_spectrogram` analysis tools.
 
 ## Install
 
@@ -86,6 +88,10 @@ Add it to `claude_desktop_config.json`:
 | `hackrf_clock` | Read/configure CLKIN/CLKOUT and Pro P1/P2 connectors. |
 | `hackrf_operacake` | List/configure Opera Cake antenna switch boards. |
 | `hackrf_biast` | Enable/disable/configure bias-tee antenna power. |
+| `hackrf_iq_to_wav` | Demodulate a raw IQ capture (NFM/WFM/AM/USB/LSB) to a WAV file. |
+| `hackrf_iq_spectrogram` | Render a spectrogram PNG from a raw IQ capture. |
+
+`hackrf_iq_to_wav` and `hackrf_iq_spectrogram` are offline analysis tools (numpy/scipy/matplotlib) that operate on capture files written by `hackrf_transfer` — they don't touch the device, so they can be run anytime, including while the HackRF is busy.
 
 The lower-level/destructive tools (`hackrf_debug`, `hackrf_cpldjtag`,
 `hackrf_spiflash` — register access, CPLD JTAG programming, and SPI flash

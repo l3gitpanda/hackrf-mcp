@@ -478,7 +478,7 @@ def hackrf_iq_spectrogram(
     center_freq_hz: int = 0,
     fft_size: int = 1024,
     max_duration_seconds: float | None = 10.0,
-) -> list:
+):
     """Render a spectrogram (waterfall) PNG from a raw IQ capture (from
     hackrf_transfer, 8-bit signed interleaved I/Q).
 

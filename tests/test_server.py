@@ -69,6 +69,27 @@ def test_hackrf_sweep_builds_args_and_reads_output_file(monkeypatch):
     assert not os.path.exists(out_path)
 
 
+def test_hackrf_sweep_with_output_image(monkeypatch, tmp_path):
+    from fastmcp.utilities.types import Image
+
+    def _fake_run(binary, args, timeout=None):
+        out_path = args[args.index("-r") + 1]
+        with open(out_path, "w") as f:
+            f.write("2024-01-01, 00:00:00, 0, 2000000, 1000000, 1, -50.0, -10.0\n")
+        return "sweep log"
+
+    monkeypatch.setattr(server, "run", _fake_run)
+
+    img_path = tmp_path / "sweep.png"
+    result = server.hackrf_sweep(timeout_seconds=5, output_image_path=str(img_path))
+
+    assert len(result) == 2
+    assert "Wrote" in result[0]
+    assert "MHz" in result[0]
+    assert isinstance(result[1], Image)
+    assert img_path.exists()
+
+
 def test_hackrf_sweep_truncates_large_output(monkeypatch):
     def _fake_run(binary, args, timeout=None):
         out_path = args[args.index("-r") + 1]

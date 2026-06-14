@@ -201,6 +201,167 @@ def compute_spectrogram(
     return freqs, times, power_db
 
 
+def compute_spectrum(
+    iq: np.ndarray,
+    sample_rate_hz: float,
+    fft_size: int = 4096,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (freqs_hz, power_db): the average power spectrum across the
+    whole capture, with freqs centered on 0 Hz."""
+    noverlap = fft_size // 2 if iq.size > fft_size else 0
+    nperseg = min(fft_size, iq.size)
+    freqs, _, sxx = scipy_signal.spectrogram(
+        iq,
+        fs=sample_rate_hz,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        return_onesided=False,
+        scaling="spectrum",
+        mode="magnitude",
+        window="hann",
+    )
+    freqs = np.fft.fftshift(freqs)
+    sxx = np.fft.fftshift(sxx, axes=0)
+    power_db = 20 * np.log10(sxx.mean(axis=1) + 1e-12)
+    return freqs, power_db
+
+
+def occupied_bandwidth(
+    freqs_hz: np.ndarray,
+    power_db: np.ndarray,
+    threshold_db: float = 6.0,
+) -> tuple[float, float, float]:
+    """Estimate the occupied frequency span as the range of frequencies
+    within `threshold_db` of the peak power. Returns (low_hz, high_hz,
+    bandwidth_hz), relative to whatever frame `freqs_hz` is in."""
+    peak = power_db.max()
+    mask = power_db >= (peak - threshold_db)
+    occ_freqs = freqs_hz[mask]
+    low, high = occ_freqs.min(), occ_freqs.max()
+    return float(low), float(high), float(high - low)
+
+
+def parse_sweep_csv(data: str) -> tuple[np.ndarray, np.ndarray]:
+    """Parse hackrf_sweep -r CSV output into (freqs_hz, power_db), sorted by
+    frequency. Each row has the form:
+    date,time,hz_low,hz_high,hz_bin_width,num_samples,dB,dB,..."""
+    freqs: list[float] = []
+    powers: list[float] = []
+    for line in data.splitlines():
+        parts = line.strip().split(",")
+        if len(parts) < 7:
+            continue
+        try:
+            hz_low = float(parts[2])
+            hz_bin_width = float(parts[4])
+            db_values = [float(x) for x in parts[6:]]
+        except ValueError:
+            continue
+        for i, db in enumerate(db_values):
+            freqs.append(hz_low + (i + 0.5) * hz_bin_width)
+            powers.append(db)
+
+    freqs_arr = np.array(freqs, dtype=np.float64)
+    powers_arr = np.array(powers, dtype=np.float64)
+    order = np.argsort(freqs_arr)
+    return freqs_arr[order], powers_arr[order]
+
+
+def render_sweep_png(
+    path: str | Path,
+    freqs_hz: np.ndarray,
+    power_db: np.ndarray,
+    title: str | None = None,
+) -> None:
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(freqs_hz / 1e6, power_db, linewidth=0.7)
+    ax.set_xlabel("Frequency (MHz)")
+    ax.set_ylabel("Power (dB)")
+    ax.grid(True, alpha=0.3)
+    if title:
+        ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
+
+
+def detect_bursts(
+    iq: np.ndarray,
+    sample_rate_hz: float,
+    threshold_db: float = 10.0,
+    smoothing_s: float = 0.0005,
+    min_duration_s: float = 0.0005,
+    merge_gap_s: float = 0.001,
+    max_bursts: int = 200,
+) -> list[dict[str, float]]:
+    """Detect bursts of elevated power in an IQ capture using a smoothed
+    power envelope, relative to the capture's median (noise floor) power.
+
+    Returns a list of dicts with start_s, end_s, duration_s, peak_db, and
+    peak_freq_offset_hz (the dominant frequency within the burst, relative to
+    baseband / center_freq_hz)."""
+    if iq.size == 0:
+        return []
+
+    window = max(1, int(sample_rate_hz * smoothing_s))
+    power = np.abs(iq) ** 2
+    if window > 1:
+        kernel = np.ones(window) / window
+        power = np.convolve(power, kernel, mode="same")
+    power_db = 10 * np.log10(power + 1e-12)
+
+    noise_floor_db = float(np.median(power_db))
+    mask = power_db >= (noise_floor_db + threshold_db)
+
+    spans: list[tuple[int, int]] = []
+    start_idx = 0
+    in_burst = False
+    for i, m in enumerate(mask):
+        if m and not in_burst:
+            start_idx = i
+            in_burst = True
+        elif not m and in_burst:
+            spans.append((start_idx, i))
+            in_burst = False
+    if in_burst:
+        spans.append((start_idx, len(mask)))
+
+    merge_samples = int(sample_rate_hz * merge_gap_s)
+    merged: list[list[int]] = []
+    for span in spans:
+        if merged and span[0] - merged[-1][1] <= merge_samples:
+            merged[-1][1] = span[1]
+        else:
+            merged.append(list(span))
+
+    min_samples = sample_rate_hz * min_duration_s
+    results: list[dict[str, float]] = []
+    for start, end in merged:
+        if (end - start) < min_samples:
+            continue
+
+        seg = iq[start:end]
+        peak_freq_offset_hz = 0.0
+        if seg.size >= 8:
+            spec = np.fft.fftshift(np.fft.fft(seg))
+            freqs = np.fft.fftshift(np.fft.fftfreq(seg.size, 1 / sample_rate_hz))
+            peak_freq_offset_hz = float(freqs[np.argmax(np.abs(spec))])
+
+        results.append(
+            {
+                "start_s": start / sample_rate_hz,
+                "end_s": end / sample_rate_hz,
+                "duration_s": (end - start) / sample_rate_hz,
+                "peak_db": float(power_db[start:end].max()),
+                "peak_freq_offset_hz": peak_freq_offset_hz,
+            }
+        )
+        if len(results) >= max_bursts:
+            break
+
+    return results
+
+
 def render_spectrogram_png(
     path: str | Path,
     freqs_hz: np.ndarray,

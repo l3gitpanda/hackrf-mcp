@@ -88,10 +88,18 @@ Add it to `claude_desktop_config.json`:
 | `hackrf_clock` | Read/configure CLKIN/CLKOUT and Pro P1/P2 connectors. |
 | `hackrf_operacake` | List/configure Opera Cake antenna switch boards. |
 | `hackrf_biast` | Enable/disable/configure bias-tee antenna power. |
-| `hackrf_iq_to_wav` | Demodulate a raw IQ capture (NFM/WFM/AM/USB/LSB) to a WAV file. |
+| `hackrf_iq_to_wav` | Demodulate a raw IQ capture (NFM/WFM/AM/USB/LSB) to a WAV file (optionally returned inline as playable audio). |
 | `hackrf_iq_spectrogram` | Render a spectrogram PNG from a raw IQ capture. |
+| `hackrf_iq_info` | Summarize an IQ capture: duration, power levels, occupied bandwidth. |
+| `hackrf_iq_detect_bursts` | Detect bursts of elevated power (keyfobs, packet preambles, etc.) in an IQ capture. |
 
-`hackrf_iq_to_wav` and `hackrf_iq_spectrogram` are offline analysis tools (numpy/scipy/matplotlib) that operate on capture files written by `hackrf_transfer` — they don't touch the device, so they can be run anytime, including while the HackRF is busy.
+`hackrf_iq_to_wav`, `hackrf_iq_spectrogram`, `hackrf_iq_info`, and
+`hackrf_iq_detect_bursts` are offline analysis tools (numpy/scipy/matplotlib)
+that operate on capture files written by `hackrf_transfer` — they don't touch
+the device, so they can be run anytime, including while the HackRF is busy.
+
+`hackrf_sweep` also accepts an optional `output_image_path` to render the
+power-vs-frequency sweep data as a PNG plot, returned alongside the CSV text.
 
 The lower-level/destructive tools (`hackrf_debug`, `hackrf_cpldjtag`,
 `hackrf_spiflash` — register access, CPLD JTAG programming, and SPI flash

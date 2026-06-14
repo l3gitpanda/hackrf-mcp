@@ -10,7 +10,7 @@ from typing import Literal
 
 import numpy as np
 from fastmcp import FastMCP
-from fastmcp.utilities.types import Image
+from fastmcp.utilities.types import Audio, Image
 from mcp.types import ToolAnnotations
 
 from hackrf_mcp import iq
@@ -70,7 +70,8 @@ def hackrf_sweep(
     amp_enable: bool = False,
     device_serial: str | None = None,
     timeout_seconds: float = 30,
-) -> str:
+    output_image_path: str | None = None,
+):
     """Sweep a frequency range with the HackRF and report measured power
     levels (dB) for each frequency bin.
 
@@ -98,6 +99,10 @@ def hackrf_sweep(
             connected.
         timeout_seconds: Maximum time to let the sweep run before it is
             terminated.
+        output_image_path: If given, also render a power-vs-frequency plot
+            (PNG) of the sweep data to this path and return it as an image.
+            Useful for visualizing wide sweeps where the raw CSV is hard to
+            read.
     """
     args = ["-f", f"{freq_min_mhz}:{freq_max_mhz}"]
     if bin_width_hz is not None:
@@ -129,7 +134,26 @@ def hackrf_sweep(
     if len(data) > max_chars:
         data = data[:max_chars] + "\n... (output truncated)"
 
-    return f"{log}\n--- sweep data ---\n{data}".strip()
+    result = f"{log}\n--- sweep data ---\n{data}".strip()
+
+    if output_image_path:
+        freqs_hz, power_db = iq.parse_sweep_csv(data)
+        if freqs_hz.size == 0:
+            return f"{result}\n\nNo sweep data to plot."
+        iq.render_sweep_png(
+            output_image_path,
+            freqs_hz,
+            power_db,
+            title=f"Sweep {freq_min_mhz}-{freq_max_mhz}MHz",
+        )
+        peak_idx = np.argmax(power_db)
+        result += (
+            f"\n\nWrote {output_image_path}. Peak power {power_db[peak_idx]:.1f}dB "
+            f"at {freqs_hz[peak_idx] / 1e6:.4f}MHz."
+        )
+        return [result, Image(path=output_image_path)]
+
+    return result
 
 
 @mcp.tool(annotations=CONFIG)
@@ -393,7 +417,8 @@ def hackrf_iq_to_wav(
     audio_rate_hz: int = 48_000,
     max_duration_seconds: float | None = 60.0,
     denoise: bool = False,
-) -> str:
+    return_audio: bool = False,
+):
     """Demodulate a raw IQ capture (from hackrf_transfer, 8-bit signed
     interleaved I/Q) to a WAV audio file.
 
@@ -434,6 +459,8 @@ def hackrf_iq_to_wav(
         denoise: If True, apply STFT spectral-subtraction noise reduction
             (using the first second of audio as the noise profile). Useful
             for marginal-SNR signals; may introduce artifacts on clean audio.
+        return_audio: If True, also return the WAV file as inline playable
+            audio content (in addition to writing it to output_wav_path).
     """
     max_samples = None
     if max_duration_seconds is not None:
@@ -463,11 +490,15 @@ def hackrf_iq_to_wav(
             "signal frequency."
         )
 
-    return (
+    result = (
         f"Wrote {output_wav_path} ({audio.size / audio_rate_hz:.2f}s @ "
         f"{audio_rate_hz}Hz) demodulated as {mode} from {duration_s:.2f}s of "
         f"input at {sample_rate_hz}Hz.{warning}"
     )
+
+    if return_audio:
+        return [result, Audio(path=output_wav_path)]
+    return result
 
 
 @mcp.tool(annotations=CONFIG)
@@ -533,6 +564,147 @@ def hackrf_iq_spectrogram(
         f"t={peak_time_s:.3f}s."
     )
     return [summary, Image(path=output_image_path)]
+
+
+@mcp.tool(annotations=READ_ONLY)
+def hackrf_iq_info(
+    iq_file_path: str,
+    sample_rate_hz: int,
+    center_freq_hz: int = 0,
+    fft_size: int = 4096,
+    occupied_bw_threshold_db: float = 6.0,
+    max_duration_seconds: float | None = 10.0,
+) -> str:
+    """Summarize a raw IQ capture (from hackrf_transfer, 8-bit signed
+    interleaved I/Q): duration, sample count, signal levels, and an estimate
+    of which frequencies are occupied.
+
+    This is an offline file-processing tool and does not access the HackRF
+    device. Useful for a quick look at a capture before rendering a full
+    spectrogram or demodulating it.
+
+    Args:
+        iq_file_path: Path to the raw IQ capture file (e.g. from
+            `hackrf_transfer` with `direction="rx"`).
+        sample_rate_hz: Sample rate the capture was recorded at, in Hz.
+        center_freq_hz: Center frequency the capture was recorded at, in Hz.
+            Used to report occupied frequencies in absolute terms.
+        fft_size: FFT size used to compute the average power spectrum.
+        occupied_bw_threshold_db: A frequency is considered "occupied" if its
+            average power is within this many dB of the peak.
+        max_duration_seconds: Only process up to this many seconds of the
+            input capture (from the start), to bound memory/runtime for
+            large files. Set to None to process the whole file (use with
+            caution on large captures).
+    """
+    max_samples = None
+    if max_duration_seconds is not None:
+        max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
+    elif MAX_IQ_SAMPLES:
+        max_samples = MAX_IQ_SAMPLES
+
+    samples = iq.read_iq_int8(iq_file_path, max_samples=max_samples)
+    if samples.size == 0:
+        return f"'{iq_file_path}' contains no IQ samples."
+
+    duration_s = samples.size / sample_rate_hz
+    mean_power_db = float(10 * np.log10(np.mean(np.abs(samples) ** 2) + 1e-12))
+
+    freqs_hz, power_db = iq.compute_spectrum(samples, sample_rate_hz, fft_size=fft_size)
+    peak_idx = np.argmax(power_db)
+    peak_freq_hz = freqs_hz[peak_idx] + center_freq_hz
+    peak_power_db = power_db[peak_idx]
+
+    low_hz, high_hz, bw_hz = iq.occupied_bandwidth(freqs_hz, power_db, threshold_db=occupied_bw_threshold_db)
+
+    return (
+        f"'{iq_file_path}': {duration_s:.3f}s ({samples.size} samples) at "
+        f"{sample_rate_hz}Hz, center {center_freq_hz / 1e6:.4f}MHz.\n"
+        f"Mean power: {mean_power_db:.1f}dB. Peak power: {peak_power_db:.1f}dB "
+        f"at {peak_freq_hz / 1e6:.4f}MHz.\n"
+        f"Occupied bandwidth (within {occupied_bw_threshold_db:.1f}dB of peak): "
+        f"{bw_hz / 1e3:.1f}kHz, from {(low_hz + center_freq_hz) / 1e6:.4f}MHz to "
+        f"{(high_hz + center_freq_hz) / 1e6:.4f}MHz."
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def hackrf_iq_detect_bursts(
+    iq_file_path: str,
+    sample_rate_hz: int,
+    center_freq_hz: int = 0,
+    threshold_db: float = 10.0,
+    min_duration_ms: float = 0.5,
+    merge_gap_ms: float = 1.0,
+    max_bursts: int = 50,
+    max_duration_seconds: float | None = 10.0,
+) -> str:
+    """Detect bursts of elevated signal power in a raw IQ capture (from
+    hackrf_transfer, 8-bit signed interleaved I/Q), e.g. keyfob transmissions,
+    packet preambles, or trunked radio control channel activity.
+
+    This is an offline file-processing tool and does not access the HackRF
+    device.
+
+    For each detected burst, reports its start/end time, duration, peak
+    power, and dominant frequency (relative to the capture's noise floor).
+
+    Args:
+        iq_file_path: Path to the raw IQ capture file (e.g. from
+            `hackrf_transfer` with `direction="rx"`).
+        sample_rate_hz: Sample rate the capture was recorded at, in Hz.
+        center_freq_hz: Center frequency the capture was recorded at, in Hz.
+            Used to report burst frequencies in absolute terms.
+        threshold_db: How many dB above the capture's median power a sample
+            must be to be considered part of a burst.
+        min_duration_ms: Minimum burst duration, in milliseconds, to be
+            reported. Shorter excursions are treated as noise.
+        merge_gap_ms: Bursts separated by less than this many milliseconds
+            are merged into a single burst.
+        max_bursts: Maximum number of bursts to report.
+        max_duration_seconds: Only process up to this many seconds of the
+            input capture (from the start), to bound memory/runtime for
+            large files. Set to None to process the whole file (use with
+            caution on large captures).
+    """
+    max_samples = None
+    if max_duration_seconds is not None:
+        max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
+    elif MAX_IQ_SAMPLES:
+        max_samples = MAX_IQ_SAMPLES
+
+    samples = iq.read_iq_int8(iq_file_path, max_samples=max_samples)
+    if samples.size == 0:
+        return f"'{iq_file_path}' contains no IQ samples."
+
+    duration_s = samples.size / sample_rate_hz
+    bursts = iq.detect_bursts(
+        samples,
+        sample_rate_hz,
+        threshold_db=threshold_db,
+        min_duration_s=min_duration_ms / 1000,
+        merge_gap_s=merge_gap_ms / 1000,
+        max_bursts=max_bursts,
+    )
+
+    if not bursts:
+        return (
+            f"No bursts found in {duration_s:.3f}s of input at "
+            f"{sample_rate_hz}Hz (threshold {threshold_db:.1f}dB above median)."
+        )
+
+    lines = [
+        f"Found {len(bursts)} burst(s) in {duration_s:.3f}s of input at "
+        f"{sample_rate_hz}Hz (threshold {threshold_db:.1f}dB above median):"
+    ]
+    for b in bursts:
+        freq_hz = center_freq_hz + b["peak_freq_offset_hz"]
+        lines.append(
+            f"  t={b['start_s']:.4f}-{b['end_s']:.4f}s "
+            f"(dur {b['duration_s'] * 1000:.2f}ms), peak {b['peak_db']:.1f}dB, "
+            f"freq {freq_hz / 1e6:.4f}MHz"
+        )
+    return "\n".join(lines)
 
 
 # @mcp.tool(annotations=DANGEROUS)

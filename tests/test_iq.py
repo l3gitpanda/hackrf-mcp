@@ -117,6 +117,100 @@ def test_compute_spectrogram_finds_tone_frequency():
     assert times_s.size > 0
 
 
+def test_compute_spectrum_finds_tone_frequency():
+    sample_rate_hz = 240_000
+    tone_offset_hz = 30_000
+    n = sample_rate_hz
+    t = np.arange(n) / sample_rate_hz
+    samples = (0.5 * np.exp(2j * np.pi * tone_offset_hz * t)).astype(np.complex64)
+
+    freqs_hz, power_db = iq.compute_spectrum(samples, sample_rate_hz, fft_size=1024)
+
+    peak_freq = freqs_hz[np.argmax(power_db)]
+    assert abs(peak_freq - tone_offset_hz) < (sample_rate_hz / 1024) * 2
+
+
+def test_occupied_bandwidth_finds_tone_span():
+    sample_rate_hz = 240_000
+    tone_offset_hz = 30_000
+    n = sample_rate_hz
+    t = np.arange(n) / sample_rate_hz
+    samples = (0.5 * np.exp(2j * np.pi * tone_offset_hz * t)).astype(np.complex64)
+
+    freqs_hz, power_db = iq.compute_spectrum(samples, sample_rate_hz, fft_size=1024)
+    low_hz, high_hz, bw_hz = iq.occupied_bandwidth(freqs_hz, power_db, threshold_db=6.0)
+
+    assert low_hz <= tone_offset_hz <= high_hz
+    assert bw_hz >= 0
+
+
+def test_parse_sweep_csv():
+    data = (
+        "2024-01-01, 00:00:00, 0, 2000000, 1000000, 1, -50.0, -40.0\n"
+        "2024-01-01, 00:00:00, 2000000, 4000000, 1000000, 1, -30.0, -20.0\n"
+    )
+
+    freqs_hz, power_db = iq.parse_sweep_csv(data)
+
+    assert freqs_hz.size == 4
+    assert np.all(np.diff(freqs_hz) > 0)
+    np.testing.assert_allclose(power_db, [-50.0, -40.0, -30.0, -20.0])
+
+
+def test_parse_sweep_csv_ignores_malformed_lines():
+    data = "not,a,valid,row\n2024-01-01, 00:00:00, 0, 1000000, 1000000, 1, -10.0\n"
+
+    freqs_hz, power_db = iq.parse_sweep_csv(data)
+
+    assert freqs_hz.size == 1
+    np.testing.assert_allclose(power_db, [-10.0])
+
+
+def test_render_sweep_png(tmp_path):
+    freqs_hz = np.array([1e6, 2e6, 3e6])
+    power_db = np.array([-50.0, -10.0, -50.0])
+    path = tmp_path / "sweep.png"
+
+    iq.render_sweep_png(path, freqs_hz, power_db, title="test")
+
+    assert path.exists()
+    assert path.stat().st_size > 0
+
+
+def test_detect_bursts_finds_pulse():
+    sample_rate_hz = 100_000
+    n = sample_rate_hz  # 1 second
+    samples = (0.01 * (np.random.randn(n) + 1j * np.random.randn(n))).astype(np.complex64)
+
+    # Inject a strong burst from 0.5s to 0.6s
+    burst_start = int(0.5 * sample_rate_hz)
+    burst_end = int(0.6 * sample_rate_hz)
+    samples[burst_start:burst_end] += 1.0
+
+    bursts = iq.detect_bursts(samples, sample_rate_hz, threshold_db=10.0)
+
+    assert len(bursts) == 1
+    burst = bursts[0]
+    assert abs(burst["start_s"] - 0.5) < 0.01
+    assert abs(burst["end_s"] - 0.6) < 0.01
+    assert burst["duration_s"] > 0
+
+
+def test_detect_bursts_empty_input():
+    bursts = iq.detect_bursts(np.array([], dtype=np.complex64), 100_000)
+    assert bursts == []
+
+
+def test_detect_bursts_no_bursts_in_flat_signal():
+    sample_rate_hz = 100_000
+    n = sample_rate_hz
+    samples = (0.1 * np.ones(n)).astype(np.complex64)
+
+    bursts = iq.detect_bursts(samples, sample_rate_hz, threshold_db=10.0)
+
+    assert bursts == []
+
+
 def test_hackrf_iq_to_wav_tool(tmp_path):
     sample_rate_hz = 240_000
     samples = _nfm_capture(sample_rate_hz, duration_s=0.5, tone_offset_hz=20_000)
@@ -188,3 +282,99 @@ def test_hackrf_iq_spectrogram_empty_file(tmp_path):
     )
 
     assert "no IQ samples" in result[0]
+
+
+def test_hackrf_iq_to_wav_return_audio(tmp_path):
+    from fastmcp.utilities.types import Audio
+
+    sample_rate_hz = 240_000
+    samples = _nfm_capture(sample_rate_hz, duration_s=0.5, tone_offset_hz=20_000)
+    iq_path = tmp_path / "capture.cs8"
+    wav_path = tmp_path / "out.wav"
+    _write_iq_file(iq_path, samples)
+
+    result = server.hackrf_iq_to_wav(
+        iq_file_path=str(iq_path),
+        sample_rate_hz=sample_rate_hz,
+        mode="nfm",
+        output_wav_path=str(wav_path),
+        center_freq_hz=100_000_000,
+        target_freq_hz=100_020_000,
+        return_audio=True,
+    )
+
+    assert len(result) == 2
+    assert "Wrote" in result[0]
+    assert isinstance(result[1], Audio)
+
+
+def test_hackrf_iq_info(tmp_path):
+    sample_rate_hz = 240_000
+    n = sample_rate_hz
+    t = np.arange(n) / sample_rate_hz
+    samples = (0.5 * np.exp(2j * np.pi * 30_000 * t)).astype(np.complex64)
+    iq_path = tmp_path / "capture.cs8"
+    _write_iq_file(iq_path, samples)
+
+    result = server.hackrf_iq_info(
+        iq_file_path=str(iq_path),
+        sample_rate_hz=sample_rate_hz,
+        center_freq_hz=100_000_000,
+    )
+
+    assert "100.0" in result
+    assert "Occupied bandwidth" in result
+
+
+def test_hackrf_iq_info_empty_file(tmp_path):
+    iq_path = tmp_path / "empty.cs8"
+    iq_path.write_bytes(b"")
+
+    result = server.hackrf_iq_info(iq_file_path=str(iq_path), sample_rate_hz=240_000)
+
+    assert "no IQ samples" in result
+
+
+def test_hackrf_iq_detect_bursts(tmp_path):
+    sample_rate_hz = 100_000
+    n = sample_rate_hz
+    samples = (0.01 * (np.random.randn(n) + 1j * np.random.randn(n))).astype(np.complex64)
+    samples[int(0.5 * sample_rate_hz) : int(0.6 * sample_rate_hz)] += 1.0
+
+    iq_path = tmp_path / "capture.cs8"
+    _write_iq_file(iq_path, samples)
+
+    result = server.hackrf_iq_detect_bursts(
+        iq_file_path=str(iq_path),
+        sample_rate_hz=sample_rate_hz,
+        center_freq_hz=100_000_000,
+        threshold_db=10.0,
+    )
+
+    assert "Found 1 burst" in result
+    assert "MHz" in result
+
+
+def test_hackrf_iq_detect_bursts_none_found(tmp_path):
+    sample_rate_hz = 100_000
+    n = sample_rate_hz
+    samples = (0.1 * np.ones(n)).astype(np.complex64)
+
+    iq_path = tmp_path / "capture.cs8"
+    _write_iq_file(iq_path, samples)
+
+    result = server.hackrf_iq_detect_bursts(
+        iq_file_path=str(iq_path),
+        sample_rate_hz=sample_rate_hz,
+    )
+
+    assert "No bursts found" in result
+
+
+def test_hackrf_iq_detect_bursts_empty_file(tmp_path):
+    iq_path = tmp_path / "empty.cs8"
+    iq_path.write_bytes(b"")
+
+    result = server.hackrf_iq_detect_bursts(iq_file_path=str(iq_path), sample_rate_hz=100_000)
+
+    assert "no IQ samples" in result

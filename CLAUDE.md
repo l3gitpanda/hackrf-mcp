@@ -49,9 +49,11 @@ asyncio.run(main())
   entry point (see `pyproject.toml`).
 - `src/hackrf_mcp/iq.py` — offline numpy/scipy/matplotlib helpers for IQ
   capture files written by `hackrf_transfer -r` (reading int8 IQ, mixing,
-  filtering, demodulation, resampling, WAV output, spectrogram computation
-  and PNG rendering). Pure functions, no device/subprocess access. Used by
-  the `hackrf_iq_to_wav` and `hackrf_iq_spectrogram` tools in `server.py`.
+  filtering, demodulation, resampling, WAV output, spectrogram/spectrum
+  computation, sweep CSV parsing, burst detection, and PNG rendering). Pure
+  functions, no device/subprocess access. Used by the `hackrf_iq_to_wav`,
+  `hackrf_iq_spectrogram`, `hackrf_iq_info`, `hackrf_iq_detect_bursts`, and
+  `hackrf_sweep` (for `output_image_path`) tools in `server.py`.
 
 ### Single-device constraint
 
@@ -62,10 +64,11 @@ hackrf_* tools and explains "device busy"/"resource busy" errors.
 that they hold the device for up to `timeout_seconds`. If you add a new tool
 that opens the device, mention this constraint in its docstring too.
 
-`hackrf_iq_to_wav` and `hackrf_iq_spectrogram` are the exception: they only
-read capture files from disk via `iq.py` and never touch the device, so they
-can run anytime (including while another `hackrf_*` tool holds the device).
-This is called out explicitly in the `FastMCP(... instructions=...)` string.
+`hackrf_iq_to_wav`, `hackrf_iq_spectrogram`, `hackrf_iq_info`, and
+`hackrf_iq_detect_bursts` are the exception: they only read capture files from
+disk via `iq.py` and never touch the device, so they can run anytime
+(including while another `hackrf_*` tool holds the device). This is called out
+explicitly in the `FastMCP(... instructions=...)` string.
 
 ### Tool design conventions (follow these for new tools)
 
@@ -84,10 +87,22 @@ This is called out explicitly in the `FastMCP(... instructions=...)` string.
   default.
 - `hackrf_sweep` writes CLI output to a temp file (the tool requires `-r
   <file>`), reads it back, truncates to ~50k chars, and deletes the temp file.
-- `hackrf_iq_to_wav` / `hackrf_iq_spectrogram` cap how many IQ samples they
-  read via `MAX_IQ_SAMPLES` (50M, ~100MB as complex64 / ~200MB on disk as raw
-  int8) and a `max_duration_seconds` param, so a huge capture file can't blow
-  up memory or runtime.
+- `hackrf_iq_to_wav`, `hackrf_iq_spectrogram`, `hackrf_iq_info`, and
+  `hackrf_iq_detect_bursts` cap how many IQ samples they read via
+  `MAX_IQ_SAMPLES` (50M, ~100MB as complex64 / ~200MB on disk as raw int8) and
+  a `max_duration_seconds` param, so a huge capture file can't blow up memory
+  or runtime.
+- **Output schema / mixed content gotcha**: do not annotate a tool's return
+  type as `-> list`, `-> dict`, etc. if it can return non-JSON-serializable
+  content like `Image`/`Audio`/`File`. FastMCP auto-generates an
+  `output_schema` from such annotations; when `pydantic_core.to_jsonable_python`
+  then fails on an `Image`/`Audio` in the result, `structured_content` ends up
+  empty and the MCP client rejects the whole response with "outputSchema
+  defined but no structured output returned" — even though the tool's actual
+  work (e.g. writing the PNG/WAV) succeeded. Tools that may return
+  `[text, Image(...)]` / `[text, Audio(...)]` (e.g. `hackrf_iq_spectrogram`,
+  `hackrf_sweep` with `output_image_path`, `hackrf_iq_to_wav` with
+  `return_audio`) should leave the return type unannotated.
 - `hackrf_iq_to_wav`'s docstring tells callers to capture with an LO offset
   (~25-50kHz) and pass the real signal frequency as `target_freq_hz`, since a
   signal sitting on HackRF's baseband DC spike demodulates as a loud constant

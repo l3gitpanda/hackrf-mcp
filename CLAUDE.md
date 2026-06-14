@@ -1,0 +1,103 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+An MCP (Model Context Protocol) server that exposes the `hackrf_tools` CLI
+(from <https://github.com/greatscottgadgets/hackrf>) as MCP tools, so Claude can
+inspect and control a HackRF SDR connected via USB. It's a local stdio server
+built with FastMCP 3.x, managed with `uv`.
+
+## Commands
+
+```bash
+uv sync              # install/sync dependencies into .venv
+uv run hackrf-mcp    # run the MCP server over stdio
+uv run pytest        # run the test suite
+uv run pytest tests/test_server.py::test_hackrf_sweep_truncates_large_output  # single test
+```
+
+Tests live in `tests/` and mock `hackrf_mcp.server.run` / `hackrf_mcp.cli.run`
+(and `subprocess`/`shutil.which`), so they run without a HackRF device or
+`hackrf_tools` installed. There is no lint config or CI yet.
+
+To sanity-check tool registration/annotations against a live FastMCP app:
+
+```bash
+uv run python -c "
+import asyncio
+from hackrf_mcp.server import mcp
+async def main():
+    for t in await mcp.list_tools():
+        print(t.name, t.annotations)
+asyncio.run(main())
+"
+```
+
+## Architecture
+
+- `src/hackrf_mcp/cli.py` — single `run(binary, args, timeout)` helper. Locates
+  a `hackrf_tools` binary with `shutil.which`, runs it via `subprocess.run`
+  (list args, no shell), and returns combined stdout/stderr (+ exit code on
+  failure). All tools funnel through this — there is no direct libhackrf/USB
+  access.
+- `src/hackrf_mcp/server.py` — the FastMCP app (`mcp = FastMCP("hackrf", ...)`)
+  and all tool definitions. Each tool is a thin wrapper that builds a CLI arg
+  list for the corresponding `hackrf_*` binary and calls `run(...)`. `main()`
+  calls `mcp.run()` (stdio transport) and is the `hackrf-mcp` console script
+  entry point (see `pyproject.toml`).
+
+### Single-device constraint
+
+A HackRF only allows one process to hold its USB connection at a time. The
+`FastMCP(... instructions=...)` string tells the model to serialize calls to
+hackrf_* tools and explains "device busy"/"resource busy" errors.
+`hackrf_sweep` and `hackrf_transfer` additionally note in their docstrings
+that they hold the device for up to `timeout_seconds`. If you add a new tool
+that opens the device, mention this constraint in its docstring too.
+
+### Tool design conventions (follow these for new tools)
+
+- One MCP tool per `hackrf_*` CLI command (Pattern A — small surface, ~9
+  commands total).
+- Every tool sets `annotations=` to one of the shared `ToolAnnotations`
+  constants defined near the top of `server.py`: `READ_ONLY` (read-only
+  queries), `CONFIG` (writes config/state but not destructive), or
+  `DANGEROUS` (`readOnlyHint=False, destructiveHint=True` — register writes,
+  firmware/CPLD flashing).
+- Long-running or potentially-unbounded operations (`hackrf_sweep`,
+  `hackrf_transfer`) take a `timeout_seconds` param passed to `run()`, which
+  relies on `subprocess.run`'s timeout to kill the process. `hackrf_sweep`
+  also defaults `one_shot=True` and `hackrf_transfer` rx defaults to a 5s
+  capture (via `duration_seconds` -> `num_samples`) so nothing runs forever by
+  default.
+- `hackrf_sweep` writes CLI output to a temp file (the tool requires `-r
+  <file>`), reads it back, truncates to ~50k chars, and deletes the temp file.
+- Tool docstrings double as the MCP tool description shown to the model.
+  Tools with real-world side effects (RF transmission, bias-tee power,
+  amplifier gain, firmware/register writes) include a `SAFETY:` paragraph
+  explaining the risk (regulatory issues for TX, DC bias damaging connected
+  equipment, bricking risk for flashing). Keep this pattern when adding tools.
+
+### Currently disabled tools
+
+`hackrf_debug`, `hackrf_cpldjtag`, and `hackrf_spiflash` are fully implemented
+at the bottom of `server.py` but commented out (and use the `DANGEROUS`
+annotation) because they can write firmware/CPLD/registers and potentially
+brick the device. Uncomment to enable; `DANGEROUS` is currently unused while
+they're off.
+
+## Safety notes (for any new tools touching RF/hardware state)
+
+- TX (`hackrf_transfer` with `direction="tx"`) is subject to RF transmission
+  regulations (e.g. FCC) — document that the user must be authorized for the
+  frequency/power used.
+- Bias-tee (`hackrf_biast`, or `antenna_enable` on `hackrf_transfer`) applies
+  DC power to the antenna port and can damage connected equipment that isn't
+  expecting it.
+- `amp_enable` adds ~11-14dB gain and can overdrive the receiver front end
+  when combined with bias-tee power or strong nearby signals.
+- Firmware/CPLD writes (`hackrf_spiflash`, `hackrf_cpldjtag`) can brick the
+  device; recovery is via DFU mode + `dfu-util` (see README "Safety notes" and
+  <https://hackrf.readthedocs.io/en/latest/updating_firmware.html>).

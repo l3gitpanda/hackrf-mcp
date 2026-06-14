@@ -30,6 +30,19 @@ MODE_BANDWIDTH_HZ: dict[Mode, float] = {
     "lsb": 2_900,
 }
 
+# Audio low-pass cutoff applied to the FM discriminator output. Without this,
+# the discriminator's triangular noise spectrum (power rises with frequency)
+# dominates the signal and swamps percentile-based normalization.
+AUDIO_LPF_HZ: dict[str, float] = {
+    "nfm": 3_000,
+    "wfm": 15_000,
+}
+
+# De-emphasis time constant (seconds) to undo transmitter pre-emphasis.
+DEEMPHASIS_TAU_S: dict[str, float] = {
+    "wfm": 75e-6,
+}
+
 
 def read_iq_int8(path: str | Path, max_samples: int | None = None) -> np.ndarray:
     """Read interleaved 8-bit signed I/Q samples (hackrf_transfer's default
@@ -94,6 +107,20 @@ def demodulate(
         trim = int(0.05 * sample_rate_hz)
         if audio.size > 2 * trim:
             audio = audio[trim:]
+
+        # De-emphasis: undo transmitter pre-emphasis (high frequencies
+        # boosted before transmission) via a one-pole RC low-pass.
+        tau = DEEMPHASIS_TAU_S.get(mode)
+        if tau:
+            alpha = (1.0 / sample_rate_hz) / (tau + 1.0 / sample_rate_hz)
+            audio = scipy_signal.lfilter([alpha], [1, -(1 - alpha)], audio)
+
+        # Audio low-pass: the FM discriminator's noise power rises with
+        # frequency, so without this the audio band is swamped by
+        # out-of-band noise.
+        audio_lpf = AUDIO_LPF_HZ[mode]
+        sos_audio = scipy_signal.butter(6, audio_lpf, btype="low", fs=sample_rate_hz, output="sos")
+        audio = scipy_signal.sosfilt(sos_audio, audio)
 
     if denoise:
         audio = spectral_denoise(audio, sample_rate_hz)

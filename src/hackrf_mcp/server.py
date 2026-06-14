@@ -392,12 +392,22 @@ def hackrf_iq_to_wav(
     bandwidth_hz: float | None = None,
     audio_rate_hz: int = 48_000,
     max_duration_seconds: float | None = 60.0,
+    denoise: bool = False,
 ) -> str:
     """Demodulate a raw IQ capture (from hackrf_transfer, 8-bit signed
     interleaved I/Q) to a WAV audio file.
 
     This is an offline file-processing tool and does not access the HackRF
     device.
+
+    IMPORTANT: capture with an LO offset. HackRF baseband has a DC spike at
+    0Hz. If the signal of interest sits at (or very near) center_freq_hz, it
+    demodulates as a loud constant tone ("Daffy Duck" effect) instead of
+    audio. When recording with hackrf_transfer, tune frequency_hz ~25-50kHz
+    away from the actual signal frequency, then pass the *actual* signal
+    frequency here as target_freq_hz (with center_freq_hz set to the
+    hackrf_transfer frequency_hz) so the signal gets mixed away from 0Hz
+    before demodulation.
 
     Args:
         iq_file_path: Path to the raw IQ capture file (e.g. from
@@ -411,15 +421,19 @@ def hackrf_iq_to_wav(
             Used together with target_freq_hz to compute the tuning offset.
         target_freq_hz: Frequency of the signal of interest, in Hz, if it is
             not at center_freq_hz. The signal is mixed down to baseband
-            before demodulation. Defaults to center_freq_hz (no shift).
+            before demodulation. Defaults to center_freq_hz (no shift) — see
+            the offset-tuning note above before relying on this default.
         bandwidth_hz: Channel bandwidth to filter to before demodulation, in
-            Hz. Defaults to a typical value for `mode` (e.g. 12.5kHz for
-            nfm, 180kHz for wfm).
+            Hz. Defaults to a typical value for `mode` (e.g. 16kHz for nfm,
+            180kHz for wfm).
         audio_rate_hz: Output WAV sample rate, in Hz.
         max_duration_seconds: Only process up to this many seconds of the
             input capture (from the start), to bound memory/runtime for
             large files. Set to None to process the whole file (use with
             caution on large captures).
+        denoise: If True, apply STFT spectral-subtraction noise reduction
+            (using the first second of audio as the noise profile). Useful
+            for marginal-SNR signals; may introduce artifacts on clean audio.
     """
     max_samples = None
     if max_duration_seconds is not None:
@@ -434,15 +448,25 @@ def hackrf_iq_to_wav(
     offset_hz = (target_freq_hz - center_freq_hz) if target_freq_hz is not None else 0
     baseband = iq.mix(samples, sample_rate_hz, offset_hz)
 
-    audio = iq.demodulate(baseband, sample_rate_hz, mode, bandwidth_hz=bandwidth_hz)
+    audio = iq.demodulate(baseband, sample_rate_hz, mode, bandwidth_hz=bandwidth_hz, denoise=denoise)
     audio = iq.resample_to_rate(audio, sample_rate_hz, audio_rate_hz)
     iq.write_wav(output_wav_path, audio, audio_rate_hz)
 
     duration_s = samples.size / sample_rate_hz
+    warning = ""
+    if offset_hz == 0 and mode in ("nfm", "wfm"):
+        warning = (
+            " WARNING: target_freq_hz == center_freq_hz (no tuning offset), "
+            "so the signal may sit on HackRF's baseband DC spike and "
+            "demodulate as a loud constant tone. Recapture with an "
+            "LO offset of ~25-50kHz and set target_freq_hz to the actual "
+            "signal frequency."
+        )
+
     return (
         f"Wrote {output_wav_path} ({audio.size / audio_rate_hz:.2f}s @ "
         f"{audio_rate_hz}Hz) demodulated as {mode} from {duration_s:.2f}s of "
-        f"input at {sample_rate_hz}Hz."
+        f"input at {sample_rate_hz}Hz.{warning}"
     )
 
 

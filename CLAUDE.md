@@ -88,6 +88,14 @@ This is called out explicitly in the `FastMCP(... instructions=...)` string.
   read via `MAX_IQ_SAMPLES` (50M, ~100MB as complex64 / ~200MB on disk as raw
   int8) and a `max_duration_seconds` param, so a huge capture file can't blow
   up memory or runtime.
+- `hackrf_iq_to_wav`'s docstring tells callers to capture with an LO offset
+  (~25-50kHz) and pass the real signal frequency as `target_freq_hz`, since a
+  signal sitting on HackRF's baseband DC spike demodulates as a loud constant
+  tone for nfm/wfm. The tool also appends a runtime warning to its result
+  string when `target_freq_hz == center_freq_hz` for nfm/wfm. NFM demod
+  additionally DC-blocks the discriminator output (`scipy.signal.butter`
+  high-pass) and trims the first 50ms transient; `iq.write_wav` normalizes by
+  the 99.5th percentile rather than raw peak for the same reason.
 - Tool docstrings double as the MCP tool description shown to the model.
   Tools with real-world side effects (RF transmission, bias-tee power,
   amplifier gain, firmware/register writes) include a `SAFETY:` paragraph

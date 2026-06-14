@@ -23,7 +23,7 @@ Mode = Literal["nfm", "wfm", "am", "usb", "lsb"]
 
 # Reasonable default channel bandwidths per mode, in Hz.
 MODE_BANDWIDTH_HZ: dict[Mode, float] = {
-    "nfm": 12_500,
+    "nfm": 16_000,
     "wfm": 180_000,
     "am": 10_000,
     "usb": 2_900,
@@ -61,6 +61,7 @@ def demodulate(
     sample_rate_hz: float,
     mode: Mode,
     bandwidth_hz: float | None = None,
+    denoise: bool = False,
 ) -> np.ndarray:
     """Demodulate a baseband-centered IQ array to a real-valued audio signal
     (still at sample_rate_hz; caller is responsible for resampling)."""
@@ -69,20 +70,69 @@ def demodulate(
     if mode == "am":
         filtered = _lowpass(iq, sample_rate_hz, bw / 2)
         audio = np.abs(filtered)
-        return audio - np.mean(audio)
-
-    if mode in ("usb", "lsb"):
+        audio = audio - np.mean(audio)
+    elif mode in ("usb", "lsb"):
         # Shift the desired sideband toward baseband, low-pass to its
         # bandwidth, then take the real part (phasing-method approximation).
         shift = bw / 2 if mode == "usb" else -bw / 2
         shifted = mix(iq, sample_rate_hz, shift)
         filtered = _lowpass(shifted, sample_rate_hz, bw / 2)
-        return np.real(filtered)
+        audio = np.real(filtered)
+    else:
+        # nfm / wfm: quadrature (phase-difference) FM discriminator.
+        filtered = _lowpass(iq, sample_rate_hz, bw / 2)
+        audio = np.angle(filtered[1:] * np.conj(filtered[:-1]))
 
-    # nfm / wfm: quadrature (phase-difference) FM discriminator.
-    filtered = _lowpass(iq, sample_rate_hz, bw / 2)
-    audio = np.angle(filtered[1:] * np.conj(filtered[:-1]))
+        # DC-block the discriminator output: a frequency offset between the
+        # signal and baseband shows up as a constant bias in the FM
+        # discriminator output, which sounds like a loud constant tone.
+        sos_dc = scipy_signal.butter(2, 50, btype="high", fs=sample_rate_hz, output="sos")
+        audio = scipy_signal.sosfilt(sos_dc, audio)
+
+        # Drop the filter startup transient, which can otherwise dominate
+        # peak-based normalization.
+        trim = int(0.05 * sample_rate_hz)
+        if audio.size > 2 * trim:
+            audio = audio[trim:]
+
+    if denoise:
+        audio = spectral_denoise(audio, sample_rate_hz)
+
     return audio
+
+
+def spectral_denoise(
+    audio: np.ndarray,
+    sample_rate_hz: float,
+    reduction_db: float = 12.0,
+    noise_seconds: float = 1.0,
+    nperseg: int = 1024,
+) -> np.ndarray:
+    """Reduce steady background noise via STFT spectral subtraction, using
+    the first `noise_seconds` of audio as the noise profile."""
+    if audio.size < nperseg:
+        return audio
+
+    noverlap = nperseg // 2
+    hop = nperseg - noverlap
+    freqs, times, z = scipy_signal.stft(audio, fs=sample_rate_hz, nperseg=nperseg, noverlap=noverlap)
+
+    mag = np.abs(z)
+    phase = np.angle(z)
+
+    noise_frames = max(1, min(int(noise_seconds * sample_rate_hz / hop), mag.shape[1]))
+    noise_profile = np.mean(mag[:, :noise_frames], axis=1, keepdims=True)
+
+    floor = 10 ** (-reduction_db / 20)
+    mag_denoised = np.maximum(mag - noise_profile, mag * floor)
+
+    z_denoised = mag_denoised * np.exp(1j * phase)
+    _, denoised = scipy_signal.istft(z_denoised, fs=sample_rate_hz, nperseg=nperseg, noverlap=noverlap)
+
+    denoised = np.real(denoised)
+    if denoised.size >= audio.size:
+        return denoised[: audio.size]
+    return np.pad(denoised, (0, audio.size - denoised.size))
 
 
 def resample_to_rate(audio: np.ndarray, in_rate_hz: float, out_rate_hz: float) -> np.ndarray:
@@ -93,9 +143,10 @@ def resample_to_rate(audio: np.ndarray, in_rate_hz: float, out_rate_hz: float) -
 
 
 def write_wav(path: str | Path, audio: np.ndarray, sample_rate_hz: int) -> None:
-    peak = np.max(np.abs(audio)) if audio.size else 0.0
-    scale = 0.95 / peak if peak > 0 else 1.0
-    pcm = np.clip(audio * scale * 32767, -32768, 32767).astype(np.int16)
+    # Normalize by a high percentile rather than the raw max, so that brief
+    # transient spikes (e.g. filter startup) don't crush the overall volume.
+    ref = np.percentile(np.abs(audio), 99.5) + 1e-9 if audio.size else 1.0
+    pcm = np.clip(audio / ref * 32767, -32768, 32767).astype(np.int16)
     wavfile.write(str(path), int(sample_rate_hz), pcm)
 
 

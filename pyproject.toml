@@ -3,13 +3,36 @@ name = "hackrf-mcp"
 version = "0.1.0"
 description = "MCP server that wraps the hackrf_tools CLI to control a HackRF SDR"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [{ name = "Aidan Holland", email = "thehappydinoa@gmail.com" }]
+keywords = ["mcp", "hackrf", "sdr", "software-defined-radio", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Ham Radio",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "fastmcp>=3.0",
     "matplotlib>=3.10.9",
     "numpy>=2.2.6",
     "scipy>=1.15.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/thehappydinoa/hackrf-mcp"
+Repository = "https://github.com/thehappydinoa/hackrf-mcp"
+Issues = "https://github.com/thehappydinoa/hackrf-mcp/issues"
 
 [project.scripts]
 hackrf-mcp = "hackrf_mcp.server:main"

@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a problem with hackrf-mcp
+title: ""
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report. Please fill in as much detail as you can.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear description of what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, hackrf-mcp version/commit, MCP client, how hackrf_tools was installed.
+      placeholder: |
+        - OS:
+        - Python version:
+        - hackrf-mcp version or commit:
+        - MCP client (Cursor, Claude Desktop, etc.):
+        - How hackrf_tools was installed:
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include full tool output or error messages.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Attach hackrf_info output if this is device-related.
+    validations:
+      required: false

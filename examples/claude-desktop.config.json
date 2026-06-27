@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "hackrf": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/hackrf-mcp",
+        "hackrf-mcp"
+      ],
+      "env": {
+        "HACKRF_TOOLS_DIR": "/absolute/path/to/hackrf-tools"
+      }
+    }
+  }
+}

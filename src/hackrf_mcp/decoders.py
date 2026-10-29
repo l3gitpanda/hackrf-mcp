@@ -470,7 +470,7 @@ def decode_adsb(cap: Capture, program: str, timeout: float, workdir: Path, recei
         parts.append(f"msgs={a['messages']}")
         table.append("  " + " ".join(parts))
     return Result(
-        f"adsb: {len(aircraft)} aircraft, {good} messages with a good CRC, {with_pos} aircraft with a "
+        f"adsb: {len(aircraft)} aircraft, {good} messages decoded, {with_pos} aircraft with a "
         f"position ({run.seconds:.0f} s to decode).",
         table,
         [],
@@ -660,7 +660,8 @@ def decode_vdl2(cap: Capture, program: str, timeout: float, workdir: Path, freqs
         "--iq-file",
         "-",
         "--sample-format",
-        "S16LE",
+        # dumpvdl2 2.6's --help says S16LE, but its parser only takes S16_LE.
+        "S16_LE",
         "--oversample",
         str(out_rate // VDL2_SYMBOL_RATE),
         "--centerfreq",

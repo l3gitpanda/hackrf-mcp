@@ -512,9 +512,15 @@ class Mixer:
     def __call__(self, x: np.ndarray) -> np.ndarray:
         if self.step == 0 or x.size == 0:
             return x
-        ph = self.phase + self.step * np.arange(x.size, dtype=np.float64)
+        # Phase in float64 (it grows over a chunk), wrapped, then the
+        # rotation itself in single precision, which is plenty for 8-bit
+        # samples and much cheaper.
+        ph = np.mod(self.phase + self.step * np.arange(x.size, dtype=np.float64), 2 * np.pi).astype(np.float32)
         self.phase = float((self.phase + self.step * x.size) % (2 * np.pi))
-        return (x * np.exp(1j * ph).astype(np.complex64)).astype(np.complex64)
+        rot = np.empty(x.size, dtype=np.complex64)
+        rot.real = np.cos(ph)
+        rot.imag = np.sin(ph)
+        return x * rot
 
 
 def _decimation_stages(factor: int) -> list[int]:
@@ -536,17 +542,32 @@ def _decimation_stages(factor: int) -> list[int]:
 
 
 class _DecimatorStage:
+    """One FIR low-pass + decimate-by-`factor` stage. It computes only the
+    samples it keeps (polyphase, via upfirdn), and carries the last
+    len(taps) - 1 input samples and its sample phase into the next chunk,
+    so the output is the same as filtering the whole capture at once."""
+
+    TAPS_PER_PHASE = 10
+
     def __init__(self, factor: int, cutoff: float):
         self.factor = factor
-        self.taps = scipy_signal.firwin(10 * factor + 1, cutoff / factor).astype(np.float32)
-        self.zi = np.zeros(self.taps.size - 1, dtype=np.complex64)
+        # len(taps) - 1 is a multiple of factor, which keeps the output
+        # indexing below simple.
+        self.taps = scipy_signal.firwin(self.TAPS_PER_PHASE * factor + 1, cutoff / factor).astype(np.float32)
+        self.history = np.zeros(self.taps.size - 1, dtype=np.complex64)
         self.offset = 0  # index into the next chunk of the next sample to keep
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
-        y, self.zi = scipy_signal.lfilter(self.taps, 1.0, x, zi=self.zi)
-        out = y[self.offset :: self.factor].astype(np.complex64)
-        self.offset = (self.offset - x.size) % self.factor
-        return out
+        n, f, o = x.size, self.factor, self.offset
+        ext = np.concatenate([self.history, x])
+        count = max(0, -(-(n - o) // f))
+        # upfirdn's output i is the filter at ext[o + i*f]; the first output
+        # that lands on x itself is i = (len(taps) - 1) / f.
+        first = self.TAPS_PER_PHASE
+        y = scipy_signal.upfirdn(self.taps, ext[o:], 1, f)[first : first + count]
+        self.history = ext[ext.size - (self.taps.size - 1) :]
+        self.offset = (o - n) % f
+        return y.astype(np.complex64, copy=False)
 
 
 class Decimator:

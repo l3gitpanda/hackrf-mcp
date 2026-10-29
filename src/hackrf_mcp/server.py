@@ -1106,7 +1106,9 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help=(
             "File holding the bearer token http clients must send. Env: "
-            "HACKRF_MCP_TOKEN_FILE, or the token itself in HACKRF_MCP_TOKEN."
+            "HACKRF_MCP_TOKEN_FILE, or the token itself in HACKRF_MCP_TOKEN. "
+            "HACKRF_MCP_TOKEN_SHA256 adds comma-separated SHA-256 hex digests "
+            "of further accepted tokens."
         ),
     )
     parser.add_argument(
@@ -1149,23 +1151,23 @@ def main(argv: list[str] | None = None) -> None:
 
     from starlette.middleware import Middleware
 
-    from hackrf_mcp.auth import BearerTokenMiddleware, load_token
+    from hackrf_mcp.auth import BearerTokenMiddleware, load_token_digests
 
     try:
-        token = load_token(args.token_file)
+        digests = load_token_digests(args.token_file)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
-    if not token:
+    if not digests:
         parser.error(
             "http transport needs a bearer token: pass --token-file, or set "
-            "HACKRF_MCP_TOKEN_FILE or HACKRF_MCP_TOKEN"
+            "HACKRF_MCP_TOKEN_FILE, HACKRF_MCP_TOKEN or HACKRF_MCP_TOKEN_SHA256"
         )
     mcp.run(
         transport="http",
         host=args.host,
         port=args.port,
         path=args.path,
-        middleware=[Middleware(BearerTokenMiddleware, token=token)],
+        middleware=[Middleware(BearerTokenMiddleware, digests=digests)],
     )
 
 

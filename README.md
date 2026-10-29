@@ -225,7 +225,9 @@ hackrf-mcp --transport http --host 0.0.0.0 --port 8765 --token-file ~/.config/ha
 
 This serves streamable HTTP at `http://<host>:8765/mcp`. Every request must
 carry `Authorization: Bearer <token>`. The server refuses to start in HTTP mode
-without a token. The token travels in cleartext, so on an untrusted network
+without a token. To give each client its own token without the server ever
+holding it, list the tokens' SHA-256 hex digests in `HACKRF_MCP_TOKEN_SHA256`
+(comma-separated). The token travels in cleartext, so on an untrusted network
 put a TLS reverse proxy in front. For Claude Code:
 
 ```bash

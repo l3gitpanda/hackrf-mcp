@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import os
+import re
 from pathlib import Path
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 MIN_TOKEN_LENGTH = 16
+_SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def token_digest(token: str) -> bytes:
+    return hashlib.sha256(token.encode()).digest()
 
 
 def load_token(token_file: str | None = None) -> str | None:
@@ -27,20 +34,54 @@ def load_token(token_file: str | None = None) -> str | None:
     return token
 
 
-class BearerTokenMiddleware:
-    """Reject every HTTP request whose Authorization header is not exactly
-    "Bearer <token>", compared in constant time."""
+def load_token_digests(token_file: str | None = None) -> list[bytes]:
+    """SHA-256 digests of every token the server accepts: the plain token
+    from load_token(), plus each hex digest in HACKRF_MCP_TOKEN_SHA256
+    (comma-separated). Accepting digests lets a client's token be issued
+    without the server, or whoever configures it, ever seeing the token."""
+    digests = []
+    token = load_token(token_file)
+    if token:
+        digests.append(token_digest(token))
+    for value in os.environ.get("HACKRF_MCP_TOKEN_SHA256", "").split(","):
+        value = value.strip()
+        if not value:
+            continue
+        if not _SHA256_HEX.match(value):
+            raise ValueError("HACKRF_MCP_TOKEN_SHA256 entries must be 64 hex characters")
+        digests.append(bytes.fromhex(value))
+    return digests
 
-    def __init__(self, app: ASGIApp, token: str) -> None:
+
+class BearerTokenMiddleware:
+    """Reject every HTTP request whose Authorization header is not
+    "Bearer <token>" for an accepted token. The supplied token is hashed and
+    compared against every accepted digest in constant time."""
+
+    def __init__(self, app: ASGIApp, token: str | None = None, digests: list[bytes] | None = None) -> None:
         self.app = app
-        self._expected = f"Bearer {token}".encode()
+        self._digests = list(digests or [])
+        if token:
+            self._digests.append(token_digest(token))
+        if not self._digests:
+            raise ValueError("BearerTokenMiddleware needs at least one token")
+
+    def _authorized(self, header: bytes) -> bool:
+        scheme, _, supplied = header.partition(b" ")
+        if scheme != b"Bearer" or not supplied:
+            return False
+        digest = hashlib.sha256(supplied).digest()
+        matched = False
+        for expected in self._digests:
+            matched |= hmac.compare_digest(digest, expected)
+        return matched
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
             await self.app(scope, receive, send)
             return
-        supplied = dict(scope.get("headers") or []).get(b"authorization", b"")
-        if hmac.compare_digest(supplied, self._expected):
+        header = dict(scope.get("headers") or []).get(b"authorization", b"")
+        if self._authorized(header):
             await self.app(scope, receive, send)
             return
         if scope["type"] == "http":

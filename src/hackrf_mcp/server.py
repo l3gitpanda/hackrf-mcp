@@ -939,7 +939,7 @@ def hackrf_decode(
 
     Capture first with hackrf_transfer (direction="rx"); each decoder needs
     a particular frequency and sample rate:
-      adsb  - aircraft, 1090 MHz at 2,400,000 S/s (2,000,000 works, worse).
+      adsb  - aircraft, 1090 MHz at 2,400,000 S/s (2,000,000 decodes nothing).
               Optional receiver_lat/receiver_lon resolve more positions.
       uat   - US general-aviation aircraft, 978 MHz at 2,083,333 S/s.
       ais   - ships, 162.0 MHz at 2,000,000 S/s (any rate).

@@ -51,7 +51,7 @@ DECODERS: dict[str, Decoder] = {
             "adsb",
             ("dump1090-mutability", "dump1090"),
             "ADS-B / Mode S aircraft transponders (1090 MHz)",
-            "1090 MHz at 2.4 MS/s (best) or 2.0 MS/s; 10-60 s. Other multiples of 2.4 MS/s are decimated.",
+            "1090 MHz at 2.4 MS/s; 10-60 s. Other multiples of 2.4 MS/s are decimated.",
             (1_090_000_000,),
         ),
         Decoder(
@@ -426,11 +426,11 @@ def decode_adsb(cap: Capture, program: str, timeout: float, workdir: Path, recei
         raise DecodeError("1090 MHz is outside this capture; capture at 1090 MHz.")
     shift = target - cap.center_freq_hz
     notes = []
-    if rate in (2_400_000, 2_000_000) and shift == 0:
+    if rate == 2_400_000 and shift == 0:
         stdin = iq.iter_cu8_chunks(cap.path, max_samples=cap.max_samples)
         fmt, out_rate = "UC8", rate
-    elif rate % 2_400_000 == 0 or rate % 2_000_000 == 0:
-        out_rate = 2_400_000 if rate % 2_400_000 == 0 else 2_000_000
+    elif rate % 2_400_000 == 0:
+        out_rate = 2_400_000
         gain = AutoGain(0.5)
         stdin = (
             _sc16(gain(c))
@@ -442,15 +442,14 @@ def decode_adsb(cap: Capture, program: str, timeout: float, workdir: Path, recei
             "at 2.4 MS/s directly decodes best."
         )
     else:
+        # On 2026-10-29 the QNAP's HackRF gave dump1090 nothing at 2.0 MS/s,
+        # recorded directly or decimated from 8 MS/s, while 2.4 MS/s a
+        # minute later decoded 746 messages from 12 aircraft.
         raise DecodeError(
-            f"ADS-B needs a capture at 2,400,000 S/s (best) or 2,000,000 S/s, or a multiple of either; "
-            f"this one is {rate} S/s. Recapture at 1090 MHz, 2.4 MS/s."
+            f"ADS-B needs a capture at 2,400,000 S/s or a multiple of it; this one is {rate} S/s "
+            "(2.0 MS/s decodes nothing with the HackRF). Recapture at 1090 MHz, 2.4 MS/s."
         )
-    if out_rate == 2_000_000:
-        notes.append("If little decodes at 2.0 MS/s, recapture at 2.4 MS/s, which dump1090 demodulates better.")
-    args = [program, "--ifile", "-", "--iformat", fmt, "--stats"]
-    if out_rate == 2_400_000:
-        args.append("--oversample")
+    args = [program, "--ifile", "-", "--iformat", fmt, "--stats", "--oversample"]
     if receiver:
         args += ["--lat", str(receiver[0]), "--lon", str(receiver[1])]
     run = run_program(args, stdin, timeout, workdir)

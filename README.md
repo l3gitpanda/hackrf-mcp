@@ -175,7 +175,7 @@ installed.
 
 | Decoder | Program | Capture |
 |---|---|---|
-| `adsb` | `dump1090-mutability` (or `dump1090`) | 1090 MHz at 2.4 MS/s (2.0 works, worse) |
+| `adsb` | `dump1090-mutability` (or `dump1090`) | 1090 MHz at 2.4 MS/s (2.0 MS/s decoded nothing in tests) |
 | `uat` | `dump978-fa` | 978 MHz at 2,083,333 S/s |
 | `ais` | `AIS-catcher` | 162.0 MHz, any rate (2 MS/s) |
 | `acars` | `acarsdec` | 130.8 MHz at 2 MS/s (a multiple of 12.5 kS/s) |

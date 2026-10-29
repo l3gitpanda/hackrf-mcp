@@ -126,6 +126,10 @@ def test_adsb_refuses_other_rates(tmp_path, fake_programs):
     result = server.hackrf_decode("adsb", str(path), 2_500_000, 1_090_000_000)
     assert result.startswith("Cannot decode:")
     assert "2,400,000" in result
+    # 2.0 MS/s, direct or decimated from 8 MS/s, decoded nothing on the QNAP.
+    for rate in (2_000_000, 8_000_000):
+        result = server.hackrf_decode("adsb", str(path), rate, 1_090_000_000)
+        assert result.startswith("Cannot decode:") and "2.0 MS/s decodes nothing" in result
 
 
 def test_missing_program_is_reported(tmp_path, monkeypatch):

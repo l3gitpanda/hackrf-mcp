@@ -41,6 +41,10 @@ class Settings:
     min_free_mb: float = 2048.0
     # Upper bound on any transmission, including repeat_tx.
     max_tx_seconds: float = 60.0
+    # Bias-tee DC power on the antenna port (hackrf_biast, antenna_enable)
+    # stays locked unless the operator allows it: it can damage an antenna,
+    # LNA or filter that isn't built for it.
+    allow_bias_tee: bool = False
 
     def __post_init__(self) -> None:
         if self.tx_mode not in TX_MODES:
@@ -70,7 +74,18 @@ class Settings:
         ):
             if v := env.get(key):
                 kwargs[name] = float(v)
+        if v := env.get("HACKRF_MCP_ALLOW_BIAS_TEE"):
+            kwargs["allow_bias_tee"] = parse_bool(v)
         return cls(**kwargs)
+
+
+def parse_bool(value: str) -> bool:
+    v = value.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"expected true or false, not {value!r}")
 
 
 def parse_band_set_names(value: str) -> tuple[str, ...]:

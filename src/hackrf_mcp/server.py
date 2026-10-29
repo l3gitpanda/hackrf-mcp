@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import tempfile
@@ -35,8 +36,8 @@ mcp = FastMCP(
         "hackrf_transfer can run for up to their timeout_seconds, so avoid "
         "issuing another HackRF tool call until one of those returns.\n\n"
         "hackrf_iq_to_wav, hackrf_iq_spectrogram, hackrf_iq_info, "
-        "hackrf_iq_detect_bursts, hackrf_list_captures and "
-        "hackrf_server_status do not access the device and can be run "
+        "hackrf_iq_detect_bursts, hackrf_decode_ism, hackrf_list_captures "
+        "and hackrf_server_status do not access the device and can be run "
         "anytime, including while the device is busy.\n\n"
         "FILES: every file path is relative to the server's capture "
         "directory (see hackrf_server_status); paths outside it are "
@@ -73,6 +74,12 @@ def _run_on_device(binary: str, args: list[str], timeout: float | None = None) -
 
 def _refused(reason: object) -> str:
     return f"REFUSED: {reason}"
+
+
+BIAS_TEE_LOCKED = (
+    "bias-tee power is locked on this server (HACKRF_MCP_ALLOW_BIAS_TEE is "
+    "off); DC on the antenna port can damage equipment that isn't built for it"
+)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -266,7 +273,8 @@ def hackrf_transfer(
             safety note above.
         antenna_enable: Enable antenna port power (bias-tee, ~3.3-5V DC). See
             safety note above — do not enable if an antenna/device that
-            cannot tolerate DC bias is connected.
+            cannot tolerate DC bias is connected. Refused unless the server
+            operator has allowed bias-tee power.
         repeat_tx: For tx, repeat the file continuously until timeout.
         device_serial: Serial number of a specific HackRF, if multiple are
             connected.
@@ -276,6 +284,8 @@ def hackrf_transfer(
     s = settings.get()
     args: list[str] = []
     tx_record: dict | None = None
+    if antenna_enable and not s.allow_bias_tee:
+        return _refused(BIAS_TEE_LOCKED)
     try:
         path = storage.resolve(file_path, must_exist=(direction == "tx"))
     except storage.PathNotAllowed as exc:
@@ -475,7 +485,9 @@ def hackrf_biast(
     SAFETY: enabling the bias tee applies DC power (~3.3-5V) to the antenna
     port. Only enable it when an antenna or accessory that expects bias-tee
     power (e.g. an LNA) is connected — applying DC bias to equipment that
-    doesn't expect it can damage that equipment.
+    doesn't expect it can damage that equipment. Unless the server operator
+    has allowed bias-tee power, anything that would turn it on is refused;
+    turning it off, "leave" and reset still work.
 
     Args:
         immediate_mode: Enable (true) or disable (false) the bias tee
@@ -489,6 +501,10 @@ def hackrf_biast(
         device_serial: Serial number of a specific HackRF, if multiple are
             connected.
     """
+    turns_on = immediate_mode is True or "on" in (rx_mode, tx_mode, off_mode)
+    if turns_on and not settings.get().allow_bias_tee:
+        return _refused(BIAS_TEE_LOCKED)
+
     args = []
     if reset:
         args += ["-R"]
@@ -842,6 +858,77 @@ def hackrf_iq_detect_bursts(
 
 
 @mcp.tool(annotations=READ_ONLY)
+def hackrf_decode_ism(
+    iq_file_path: str,
+    sample_rate_hz: int,
+    center_freq_hz: int,
+    protocols: list[int] | None = None,
+    max_events: int = 100,
+    timeout_seconds: float = 120,
+) -> str:
+    """Decode ISM-band devices in a raw IQ capture (from hackrf_transfer,
+    8-bit signed interleaved I/Q) with rtl_433, which knows 200+ protocols:
+    weather stations, temperature/humidity sensors, tire-pressure sensors,
+    doorbells, remotes, energy meters and more.
+
+    This is an offline file-processing tool and does not access the HackRF
+    device. It needs rtl_433 installed on the server.
+
+    Capture first with hackrf_transfer (direction="rx"). These devices
+    transmit in short bursts, often every 30-60 seconds, so capture for at
+    least a minute at 2 MHz sample rate (the HackRF minimum) on the band's
+    usual frequency: 433.92 MHz (sensors, remotes), 315 MHz (US remotes,
+    tire sensors), 345 MHz (US security sensors) or 915 MHz (US ISM).
+    Decoders are frequency-tolerant, so the device need only fall inside
+    the captured bandwidth.
+
+    Args:
+        iq_file_path: Path to the raw IQ capture file, relative to the
+            capture directory.
+        sample_rate_hz: Sample rate the capture was recorded at, in Hz.
+        center_freq_hz: Center frequency the capture was recorded at, in Hz.
+        protocols: rtl_433 protocol numbers to enable (rtl_433 -R). Defaults
+            to rtl_433's default set.
+        max_events: Maximum number of decoded messages to return.
+        timeout_seconds: Maximum time to let rtl_433 run.
+    """
+    try:
+        path = storage.resolve(iq_file_path, must_exist=True)
+    except storage.PathNotAllowed as exc:
+        return _refused(exc)
+
+    args = ["-r", f"cs8:{path}", "-s", str(sample_rate_hz), "-f", str(center_freq_hz)]
+    for p in protocols or []:
+        args += ["-R", str(int(p))]
+    args += ["-F", "json", "-M", "level", "-M", "protocol"]
+    output = run("rtl_433", args, timeout=timeout_seconds)
+
+    events = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+    if not events:
+        tail = output[-1500:]
+        return f"rtl_433 decoded nothing in {path.name}.\n--- rtl_433 output (tail) ---\n{tail}"
+
+    models: dict[str, int] = {}
+    for e in events:
+        models[str(e.get("model", "unknown"))] = models.get(str(e.get("model", "unknown")), 0) + 1
+    lines = [
+        f"rtl_433 decoded {len(events)} message(s) from {path.name}: "
+        + ", ".join(f"{m} x{n}" for m, n in sorted(models.items(), key=lambda kv: -kv[1]))
+    ]
+    lines += [json.dumps(e, sort_keys=True) for e in events[: max(1, max_events)]]
+    if len(events) > max_events:
+        lines.append(f"... {len(events) - max_events} more not shown")
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations=READ_ONLY)
 def hackrf_server_status() -> str:
     """Report how this server is configured: the transmit mode and the
     bands it allows, the capture directory and its free space, the capture
@@ -872,6 +959,7 @@ def hackrf_server_status() -> str:
         f"Capture directory: {root} ({free_mb:.0f} MiB free)",
         f"Limits: rx {s.max_rx_seconds:g}s and {s.max_capture_mb:g} MiB per capture, "
         f"{s.min_free_mb:g} MiB kept free; tx {s.max_tx_seconds:g}s per transmission",
+        f"Bias-tee power: {'allowed' if s.allow_bias_tee else 'locked'}",
         f"Device: {'busy' if _device_lock.locked() else 'idle'}",
         f"Transmit audit log: {s.tx_log_path}",
     ]

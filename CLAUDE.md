@@ -76,6 +76,8 @@ asyncio.run(main())
 - Every file path parameter goes through `storage.resolve()` (with
   `must_exist=True` for inputs) before use.
 - Refusals are returned as strings starting with `REFUSED:` (`_refused()`).
+- Anything that can turn bias-tee power on checks
+  `settings.get().allow_bias_tee` first.
 - Any new way to transmit must go through `policy.check_tx()` and
   `storage.audit_tx()`, like `hackrf_transfer`.
 - `tests/conftest.py` gives every test its own capture directory and audit

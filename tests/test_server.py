@@ -19,6 +19,15 @@ def fake_run(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def bias_tee_allowed(isolated_settings):
+    from dataclasses import replace
+
+    from hackrf_mcp import settings
+
+    settings.configure(replace(isolated_settings, allow_bias_tee=True))
+
+
 def test_hackrf_info_no_args(fake_run):
     result = server.hackrf_info()
 
@@ -154,7 +163,7 @@ def test_hackrf_transfer_tx_with_repeat(fake_run, tmp_path, isolated_settings):
     assert "-n" not in args
 
 
-def test_hackrf_transfer_gain_and_power_flags(fake_run):
+def test_hackrf_transfer_gain_and_power_flags(fake_run, bias_tee_allowed):
     server.hackrf_transfer(
         direction="rx",
         file_path="out.iq",
@@ -210,13 +219,13 @@ def test_hackrf_operacake_list_boards(fake_run):
     assert fake_run == [("hackrf_operacake", ["-l"], 15)]
 
 
-def test_hackrf_biast_immediate_enable(fake_run):
+def test_hackrf_biast_immediate_enable(fake_run, bias_tee_allowed):
     server.hackrf_biast(immediate_mode=True)
 
     assert fake_run == [("hackrf_biast", ["-b", "1"], 15)]
 
 
-def test_hackrf_biast_reset_and_modes(fake_run):
+def test_hackrf_biast_reset_and_modes(fake_run, bias_tee_allowed):
     server.hackrf_biast(reset=True, rx_mode="on", tx_mode="off", off_mode="leave")
 
     _, args, _ = fake_run[0]

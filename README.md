@@ -153,6 +153,7 @@ Add to `claude_desktop_config.json` (see
 | `hackrf_iq_spectrogram` | Render a spectrogram PNG from a raw IQ capture. |
 | `hackrf_iq_info` | Summarize an IQ capture: duration, power levels, occupied bandwidth. |
 | `hackrf_iq_detect_bursts` | Detect bursts of elevated power (keyfobs, packet preambles, etc.) in an IQ capture. |
+| `hackrf_decode_ism` | Decode ISM-band sensors, remotes and tire-pressure sensors in an IQ capture with rtl_433 (offline; needs `rtl_433`). |
 | `hackrf_server_status` | Show the transmit mode and allowed bands, capture directory, limits and recent transmit attempts. |
 | `hackrf_list_captures` | List files in the capture directory with sizes and free space. |
 | `hackrf_delete_capture` | Delete one file from the capture directory. |
@@ -205,6 +206,14 @@ audit log (`HACKRF_MCP_TX_LOG`, default
 measured span, gains, decision and the file's SHA-256. Each transmission is
 also stopped after `HACKRF_MCP_MAX_TX_SECONDS` (default 60), `repeat_tx`
 included.
+
+### Bias-tee lock
+
+Bias-tee power puts DC on the antenna port, which can damage an antenna,
+LNA or filter that isn't built for it. Anything that would turn it on
+(`hackrf_biast` with `immediate_mode`/`*_mode="on"`, or `antenna_enable` on
+`hackrf_transfer`) is refused unless `HACKRF_MCP_ALLOW_BIAS_TEE=true`.
+Turning it off and resetting always work.
 
 ### Files and capture limits
 

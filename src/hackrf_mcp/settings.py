@@ -121,3 +121,76 @@ def get() -> Settings:
 def configure(settings: Settings) -> None:
     global _current
     _current = settings
+
+
+@dataclass(frozen=True)
+class LiveSettings:
+    """Settings of the live decoder service (live_service.py), which the
+    MCP server's live tools also read to find its socket and log. Both
+    processes take them from the same environment (the service unit's
+    EnvironmentFile), so they agree. No tool can change them."""
+
+    # Holds the log (live.db), the control socket and the saved profile.
+    live_dir: Path = field(default_factory=lambda: _default_state_dir() / "live")
+    # Rows older than this, or beyond the size limit (oldest first), are deleted.
+    max_age_days: float = 7.0
+    max_db_mb: float = 256.0
+    # Nothing is written while free disk space is below this.
+    min_free_mb: float = 2048.0
+    # Pager (FLEX/POCSAG) message text is logged only if the operator turns
+    # this on; otherwise only time, channel, capcode and message type are.
+    pager_content: bool = False
+    # Receiver position (lat, lon), which lets dump1090 resolve more positions.
+    receiver: tuple[float, float] | None = None
+    # Default receive gains for profiles that don't set their own.
+    lna_gain_db: int | None = None
+    vga_gain_db: int | None = None
+
+    @property
+    def db_path(self) -> Path:
+        return self.live_dir / "live.db"
+
+    @property
+    def socket_path(self) -> Path:
+        return self.live_dir / "control.sock"
+
+    @property
+    def state_path(self) -> Path:
+        return self.live_dir / "state.json"
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> LiveSettings:
+        env = os.environ if env is None else env
+        kwargs: dict = {}
+        if v := env.get("HACKRF_LIVE_DIR"):
+            kwargs["live_dir"] = Path(v).expanduser()
+        for name, key in (
+            ("max_age_days", "HACKRF_LIVE_MAX_AGE_DAYS"),
+            ("max_db_mb", "HACKRF_LIVE_MAX_DB_MB"),
+            ("min_free_mb", "HACKRF_MCP_MIN_FREE_MB"),
+        ):
+            if v := env.get(key):
+                kwargs[name] = float(v)
+        if v := env.get("HACKRF_LIVE_PAGER_CONTENT"):
+            kwargs["pager_content"] = parse_bool(v)
+        if v := env.get("HACKRF_LIVE_RECEIVER"):
+            lat, sep, lon = v.partition(",")
+            if not sep:
+                raise ValueError(f"HACKRF_LIVE_RECEIVER {v!r} must look like LAT,LON")
+            kwargs["receiver"] = (float(lat), float(lon))
+        for name, key in (("lna_gain_db", "HACKRF_LIVE_LNA_GAIN"), ("vga_gain_db", "HACKRF_LIVE_VGA_GAIN")):
+            if v := env.get(key):
+                kwargs[name] = int(v)
+        return cls(**kwargs)
+
+
+_live = LiveSettings()
+
+
+def get_live() -> LiveSettings:
+    return _live
+
+
+def configure_live(settings: LiveSettings) -> None:
+    global _live
+    _live = settings

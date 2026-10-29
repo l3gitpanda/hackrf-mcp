@@ -1,0 +1,58 @@
+# systemd unit for hackrf-live, the live decoder service
+# (src/hackrf_mcp/live_service.py). It runs beside hackrf-mcp.service, as the
+# same user, and holds the HackRF while a live profile runs; hackrf-mcp
+# pauses it around every device tool call.
+#
+# Install, after hackrf-mcp.service:
+#   sudo cp deploy/hackrf-live.service /etc/systemd/system/
+#   sudo systemctl edit hackrf-live      # set User=/Group= to hackrf-mcp's
+#   (set HACKRF_LIVE_DIR in /etc/hackrf-mcp/env; see hackrf-mcp.env.example)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now hackrf-live
+#   sudo systemctl restart hackrf-mcp    # so it reads HACKRF_LIVE_DIR too
+#
+# The service is always running; with no profile started it is idle and
+# holds no device. The profile last started is saved and resumed at boot.
+
+[Unit]
+Description=hackrf-live (continuous HackRF decoding into a rolling log)
+After=network.target
+
+[Service]
+Type=simple
+User=hackrf
+Group=hackrf
+SupplementaryGroups=plugdev
+EnvironmentFile=/etc/hackrf-mcp/env
+ExecStart=/opt/hackrf-mcp/.venv/bin/python -m hackrf_mcp.live_service
+Restart=always
+RestartSec=5
+
+# The box may have other work to do (a media player, say). A runaway fails
+# this service rather than swapping the box; under CPU contention this
+# service gives way, and it never takes more than one and a half cores.
+# The log is bounded by HACKRF_LIVE_MAX_DB_MB and HACKRF_LIVE_MAX_AGE_DAYS,
+# and nothing is written while free disk is under HACKRF_MCP_MIN_FREE_MB.
+MemoryHigh=384M
+MemoryMax=512M
+CPUQuota=150%
+CPUWeight=50
+Nice=10
+IOWeight=50
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=200
+
+StateDirectory=hackrf-mcp
+RuntimeDirectory=hackrf-live
+UMask=0007
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

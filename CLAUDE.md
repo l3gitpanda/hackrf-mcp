@@ -68,6 +68,20 @@ asyncio.run(main())
   listing; the JSON-lines transmit audit log.
 - `src/hackrf_mcp/auth.py` — the bearer-token ASGI middleware for
   `--transport http`. HTTP mode refuses to start without a token.
+- `src/hackrf_mcp/live_service.py` — `hackrf-live`, a separate process and
+  systemd unit (`deploy/hackrf-live.service`) that keeps one decoding
+  profile running and owns the HackRF meanwhile. A supervisor loop starts,
+  switches, retries (with backoff) and pauses pipelines; a Unix-socket
+  control server takes status/start/stop/pause/resume; `LogPump` is the only
+  writer of the database. `--replay FILE` runs a profile over a capture.
+- `src/hackrf_mcp/live_profiles.py` — the profiles, their pipelines
+  (`hackrf_transfer -r -` or AIS-catcher's own HackRF input, then decoder
+  processes), the per-minute ADS-B/AIS aggregators and the line parsers,
+  including pager redaction (`MultimonParser`).
+- `src/hackrf_mcp/live_log.py` — the SQLite log: schema, writer (size/age
+  pruning, free-space floor) and the read side the MCP tools use.
+- `src/hackrf_mcp/live_client.py` — the MCP server's side of the socket.
+  `_run_on_device()` pauses the live service around every device call.
 
 ### Rules for this fork's additions
 
@@ -81,7 +95,16 @@ asyncio.run(main())
 - Any new way to transmit must go through `policy.check_tx()` and
   `storage.audit_tx()`, like `hackrf_transfer`.
 - `tests/conftest.py` gives every test its own capture directory and audit
-  log, with the free-space floor off.
+  log, with the free-space floor off, and a live-service directory where
+  nothing listens.
+- Pager (FLEX/POCSAG) message text is dropped in `MultimonParser` before a
+  row exists unless `LiveSettings.pager_content` is set; nothing else may
+  store, print or log it (decoder stdout never goes to the journal).
+- The live service never transmits and never turns on bias-tee power.
+- `iq.py` imports matplotlib only inside the PNG renderers, so the live
+  service doesn't load it. Keep it that way.
+- The socket tests in `tests/test_live_service.py` need `AF_UNIX`; a
+  sandbox that blocks it fails them with `PermissionError`.
 
 ### Single-device constraint
 
@@ -93,8 +116,9 @@ that they hold the device for up to `timeout_seconds`. If you add a new tool
 that opens the device, mention this constraint in its docstring too.
 
 `hackrf_iq_to_wav`, `hackrf_iq_spectrogram`, `hackrf_iq_info`,
-`hackrf_iq_detect_bursts`, `hackrf_decode` and `hackrf_decode_ism` are the exception: they only read capture files from
-disk via `iq.py` and never touch the device, so they can run anytime
+`hackrf_iq_detect_bursts`, `hackrf_decode`, `hackrf_decode_ism` and the
+`hackrf_live_*` tools are the exception: they only read capture files or
+the live log, or talk to the live service, and never open the device, so they can run anytime
 (including while another `hackrf_*` tool holds the device). This is called out
 explicitly in the `FastMCP(... instructions=...)` string.
 

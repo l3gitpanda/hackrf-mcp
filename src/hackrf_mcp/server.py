@@ -6,8 +6,10 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal
@@ -16,8 +18,9 @@ import numpy as np
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Audio, Image
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
 
-from hackrf_mcp import __version__, decoders, iq, policy, settings, storage
+from hackrf_mcp import __version__, decoders, iq, live_client, live_log, policy, settings, storage
 from hackrf_mcp.cli import run, set_bin_dir
 
 mcp = FastMCP(
@@ -40,6 +43,14 @@ mcp = FastMCP(
         "hackrf_list_captures and hackrf_server_status do not access the "
         "device and can be run anytime, including while the device is "
         "busy.\n\n"
+        "LIVE DECODING: a separate live service can keep one profile "
+        "(adsb, ais, acars, vdl2, flex, pocsag, aprs, eas) decoding "
+        "continuously into a rolling log. hackrf_live_start starts or "
+        "switches it (this is how to move the receiver to another band), "
+        "hackrf_live_stop stops it, hackrf_live_status shows what it is "
+        "doing, and hackrf_live_search / hackrf_live_summary read the log. "
+        "While it runs, any device tool above pauses it for the length of "
+        "the call and it resumes afterwards; the tool's result says so.\n\n"
         "DECODING: to find out what is on a frequency (aircraft, ships, "
         "pagers, ACARS, APRS, RDS, ISM sensors), capture with "
         "hackrf_transfer at the rate hackrf_decode's description gives for "
@@ -74,7 +85,29 @@ def _run_on_device(binary: str, args: list[str], timeout: float | None = None) -
     if not _device_lock.acquire(blocking=False):
         return DEVICE_BUSY
     try:
-        return run(binary, args, timeout=timeout)
+        # If the live decoder service holds the HackRF, it lets go for this
+        # call; the lease brings it back even if this process dies first.
+        try:
+            hold = live_client.pause(binary, (timeout or 60) + 30)
+        except live_client.Unavailable:
+            hold = None
+        except live_client.LiveError as exc:
+            return _refused(
+                f"the live decoder service holds the HackRF and did not release it ({exc}); "
+                "stop it with hackrf_live_stop and try again"
+            )
+        started = time.monotonic()
+        try:
+            result = run(binary, args, timeout=timeout)
+        finally:
+            if hold is not None:
+                live_client.resume(hold["token"])
+        if hold is not None and hold.get("paused_profile"):
+            result += (
+                f"\n(Live decoding of {hold['paused_profile']} was paused for this call, "
+                f"{time.monotonic() - started:.0f} s, and has resumed.)"
+            )
+        return result
     finally:
         _device_lock.release()
 
@@ -365,9 +398,11 @@ def hackrf_transfer(
 
     result = _run_on_device("hackrf_transfer", args, timeout=timeout_seconds)
     if tx_record is not None:
-        tx_record["result"] = "busy" if result == DEVICE_BUSY else "ran"
+        tx_record["result"] = (
+            "busy" if result == DEVICE_BUSY else "refused-live" if result.startswith("REFUSED:") else "ran"
+        )
         storage.audit_tx(tx_record)
-        if result != DEVICE_BUSY:
+        if tx_record["result"] == "ran":
             result = f"Transmit allowed: {tx_record['reason']}.\n{result}"
     return result
 
@@ -1124,6 +1159,7 @@ def hackrf_server_status() -> str:
             for name, prog in decoders.available().items()
         ),
         f"ISM decoder (hackrf_decode_ism): {'rtl_433' if shutil.which('rtl_433') else 'rtl_433 not installed'}",
+        f"Live decoding: {_live_one_line()}",
     ]
     recent = storage.recent_tx()
     if recent:
@@ -1178,6 +1214,457 @@ def hackrf_delete_capture(file_path: str) -> str:
     size = path.stat().st_size
     path.unlink()
     return f"Deleted {path.relative_to(storage.data_dir())} ({size / storage.MIB:.2f} MiB)."
+
+
+# --- Live decoding ------------------------------------------------------------
+#
+# The live service (live_service.py, its own systemd unit) owns the HackRF
+# while a profile runs. These tools talk to it over its socket and read its
+# log (live_log.py) directly, read-only.
+
+LIVE_NOT_RUNNING = (
+    "The live decoder service is not running on this server (hackrf-live.service), "
+    "so there is no live decoding. The other tools work as usual."
+)
+
+
+def _utc(ts: float | None) -> str:
+    if ts is None:
+        return "-"
+    return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(ts))
+
+
+def _ago(ts: float | None, now: float) -> str:
+    if ts is None:
+        return "never"
+    s = max(0, now - ts)
+    if s < 120:
+        return f"{s:.0f} s ago"
+    if s < 7200:
+        return f"{s / 60:.0f} min ago"
+    return f"{s / 3600:.1f} h ago"
+
+
+def parse_when(value: str | float | None, now: float) -> float | None:
+    """A time for the live tools: "30m", "2h", "1d" or "90s" ago; an ISO 8601
+    time (UTC unless it carries an offset); or Unix seconds."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    v = value.strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if v[-1:] in units and v[:-1].replace(".", "", 1).isdigit():
+        return now - float(v[:-1]) * units[v[-1]]
+    if v.replace(".", "", 1).isdigit():
+        return float(v)
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            f"can't read the time {value!r}: use e.g. 30m, 2h, 1d, or 2026-10-29T21:00:00Z"
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _live_one_line() -> str:
+    try:
+        st = live_client.request({"cmd": "status"}, timeout=3)
+    except live_client.Unavailable:
+        return "service not running"
+    except live_client.LiveError as exc:
+        return f"service not answering ({exc})"
+    return st["state"] + (f", {st['profile']}" if st.get("profile") else "") + " (see hackrf_live_status)"
+
+
+def _format_live_status(st: dict) -> str:
+    now = st.get("now") or time.time()
+    lines = []
+    state = st["state"]
+    if state == "running":
+        lines.append(f"Live decoding: RUNNING {st['profile']} since {_utc(st['running_since'])} ({_ago(st['running_since'], now)}).")
+        lines.append(f"  Tuning: {st['tuning']}")
+    elif state == "paused":
+        h = st["hold"] or {}
+        lines.append(
+            f"Live decoding: PAUSED by {h.get('owner')} since {_utc(h.get('since'))}; resumes when it finishes "
+            f"or at {_utc(h.get('until'))} at the latest" + (f" (was running {h['stopped']})." if h.get("stopped") else ".")
+        )
+    elif state == "waiting":
+        lines.append(f"Live decoding: WAITING to retry {st['target']} at {_utc(st.get('retry_at'))} after an error.")
+    elif state == "starting":
+        lines.append(f"Live decoding: STARTING {st['target']}.")
+    else:
+        lines.append("Live decoding: IDLE (no profile running; the HackRF is free).")
+    d = st.get("desired")
+    if d and "schedule" in d:
+        parts = [f"{e['profile']} {e['minutes']:g} min" for e in d["schedule"]]
+        lines.append(f"  Rotation: {' -> '.join(parts)}, repeating; next switch {_utc(st.get('next_switch'))}.")
+    if state != "idle" or st.get("decoded_total"):
+        lines.append(
+            f"  Decoded messages: {st['decoded_1m']} in the last minute, {st['decoded_10m']} in 10 min, "
+            f"{st['decoded_total']} since the service started."
+        )
+        lines.append(
+            f"  Log rows: {st['rows_10m']} in 10 min, {st['rows_total']} since the service started; "
+            f"last row {_ago(st.get('last_row_at'), now)}."
+        )
+    h = st.get("health") or {}
+    if h.get("input_ratio") is not None or h.get("input_power_dbfs") is not None:
+        bits = []
+        if h.get("input_ratio") is not None:
+            bits.append(f"samples arriving at {h['input_ratio']:.0%} of the sample rate")
+        if h.get("input_power_dbfs") is not None:
+            bits.append(f"input power {h['input_power_dbfs']:.1f} dBFS")
+        lines.append("  Input: " + ", ".join(bits) + (" -- FALLING BEHIND, samples are being lost" if st.get("falling_behind") else "") + ".")
+    if h.get("channel_levels_dbfs"):
+        lines.append(
+            "  Channel levels (last ~40 ms, dBFS): "
+            + ", ".join(f"{f} MHz {v if v is not None else '-'}" for f, v in h["channel_levels_dbfs"].items())
+        )
+    if st.get("last_error"):
+        lines.append(f"  Last error ({_utc(st.get('last_error_at'))}): {st['last_error']}")
+    if st.get("restarts"):
+        lines.append(f"  Restarts after errors since the service started: {st['restarts']}")
+    if st.get("stderr_tail") and (state != "running" or st.get("last_error")):
+        lines.append("  Decoder output (tail): " + " | ".join(st["stderr_tail"]))
+    log = st.get("log") or {}
+    if log:
+        lines.append(
+            f"  Log: {log.get('path')}, {log.get('file_bytes', 0) / storage.MIB:.1f} MiB of {log.get('max_db_mb'):g} MiB, "
+            f"rows kept {log.get('max_age_days'):g} days; pager message text "
+            f"{'IS logged' if log.get('pager_content') else 'is not logged (metadata only)'}."
+        )
+        if log.get("rows_dropped"):
+            lines.append(f"  Rows dropped: {log['rows_dropped']}" + (" (free disk below the floor)" if log.get("low_disk") else ""))
+    lines.append(f"  Service started {_utc(st.get('service_started'))}, pid {st.get('pid')}.")
+    return "\n".join(lines)
+
+
+class LiveScheduleEntry(BaseModel):
+    profile: Literal["adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas"]
+    minutes: float = Field(description="How long this entry runs each time round, 1-1440.")
+    frequencies_hz: list[int] | None = Field(default=None, description="Channels, for flex/pocsag (required) or to narrow the others.")
+    lna_gain_db: int | None = None
+    vga_gain_db: int | None = None
+    amp_enable: bool = False
+
+
+@mcp.tool(annotations=READ_ONLY)
+def hackrf_live_status() -> str:
+    """Show what the live decoder service is doing: running, paused, idle or
+    waiting to retry after an error; the profile and its tuning and since
+    when; decoded-message and log-row rates; whether samples are arriving
+    at the full rate; the last error; a rotation schedule if one is set;
+    the log's size and limits; and recent events (starts, stops, pauses,
+    errors) from the log.
+
+    This does not access the HackRF device.
+    """
+    try:
+        st = live_client.request({"cmd": "status"}, timeout=5)
+    except live_client.Unavailable:
+        return LIVE_NOT_RUNNING
+    except live_client.LiveError as exc:
+        return f"The live decoder service did not answer: {exc}"
+    out = _format_live_status(st)
+    try:
+        conn = live_log.open_reader(settings.get_live().db_path)
+        try:
+            ev = live_log.events(conn, limit=8)
+        finally:
+            conn.close()
+        if ev:
+            out += "\nRecent events (newest first):\n" + "\n".join(
+                f"  {_utc(e['ts'])} {e['event']}" + (f" [{e['profile']}]" if e["profile"] else "")
+                + (f": {e['detail']}" if e["detail"] else "")
+                for e in ev
+            )
+    except (live_log.LogNotFound, sqlite3.Error):
+        pass
+    return out
+
+
+@mcp.tool(annotations=CONFIG)
+def hackrf_live_start(
+    profile: Literal["adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas"] | None = None,
+    frequencies_hz: list[int] | None = None,
+    lna_gain_db: int | None = None,
+    vga_gain_db: int | None = None,
+    amp_enable: bool = False,
+    schedule: list[LiveScheduleEntry] | None = None,
+) -> str:
+    """Start live decoding, or switch it to another profile: this is how to
+    move the receiver to another band. The live service decodes the profile
+    continuously into a rolling log (see hackrf_live_search and
+    hackrf_live_summary) until it is stopped or switched, and resumes it
+    after a restart.
+
+    Profiles:
+      adsb   - aircraft, 1090 MHz at 2.4 MS/s (dump1090); one log row per
+               aircraft per minute: callsign, squawk, altitude range, last
+               position, speed, track, messages, strongest RSSI.
+      ais    - ships, base stations and aids to navigation, 161.975 and
+               162.025 MHz (AIS-catcher, which opens the HackRF itself);
+               position reports one row per ship per minute, other AIS
+               messages one row each.
+      acars  - aircraft datalink, the US channels 130.025-131.550 MHz.
+      vdl2   - aircraft datalink, 136.650-136.975 MHz.
+      flex, pocsag - pagers on the channels in frequencies_hz (required,
+               e.g. [931750000]); several channels must fit within about
+               1.7 MHz. Only time, channel, capcode and message type are
+               logged unless the server operator has turned on pager
+               content logging (hackrf_live_status says which).
+      aprs   - APRS packet radio, US 144.390 MHz.
+      eas    - EAS/SAME alert headers on the seven NOAA Weather Radio
+               channels, 162.400-162.550 MHz (they carry headers only
+               during alerts and weekly tests).
+
+    schedule rotates through two or more profiles instead, e.g.
+    [{"profile": "adsb", "minutes": 10}, {"profile": "ais", "minutes": 10}],
+    repeating until stopped; leave profile out when giving one.
+
+    NOTE: while a profile runs, the live service holds the HackRF. The other
+    device tools (hackrf_transfer, hackrf_sweep, hackrf_info, ...) still
+    work: each pauses live decoding for the length of its call, and it
+    resumes by itself afterwards.
+
+    SAFETY: amp_enable adds ~11-14 dB of gain and can overload the receiver
+    on strong nearby signals. The live service never turns on bias-tee
+    power and never transmits.
+
+    Args:
+        profile: The profile to run (see above).
+        frequencies_hz: Channel frequencies in Hz: required for flex and
+            pocsag; for acars, vdl2, aprs and eas they narrow the default
+            channels. Not used for adsb and ais.
+        lna_gain_db: RX LNA gain, 0-40 dB in 8 dB steps (default per profile).
+        vga_gain_db: RX VGA gain, 0-62 dB in 2 dB steps (default per profile).
+        amp_enable: Turn on the HackRF's RF amplifier.
+        schedule: A rotation, instead of profile.
+    """
+    if schedule:
+        if profile is not None:
+            return "Give either profile or schedule, not both."
+        req = {
+            "cmd": "start",
+            "schedule": [
+                {
+                    "profile": e.profile,
+                    "minutes": e.minutes,
+                    "freqs_hz": e.frequencies_hz or [],
+                    "lna_gain_db": e.lna_gain_db,
+                    "vga_gain_db": e.vga_gain_db,
+                    "amp": e.amp_enable,
+                }
+                for e in schedule
+            ],
+        }
+    elif profile is not None:
+        req = {
+            "cmd": "start",
+            "profile": profile,
+            "freqs_hz": frequencies_hz or [],
+            "lna_gain_db": lna_gain_db,
+            "vga_gain_db": vga_gain_db,
+            "amp": amp_enable,
+        }
+    else:
+        return "Give a profile to start (or a schedule)."
+    try:
+        st = live_client.request(req, timeout=30)
+    except live_client.Unavailable:
+        return LIVE_NOT_RUNNING
+    except live_client.LiveError as exc:
+        return f"Not started: {exc}"
+    return _format_live_status(st)
+
+
+@mcp.tool(annotations=CONFIG)
+def hackrf_live_stop() -> str:
+    """Stop live decoding and release the HackRF. The service stays up,
+    idle, and the log is kept; hackrf_live_start starts it again.
+    """
+    try:
+        st = live_client.request({"cmd": "stop"}, timeout=30)
+    except live_client.Unavailable:
+        return LIVE_NOT_RUNNING
+    except live_client.LiveError as exc:
+        return f"Not stopped: {exc}"
+    return _format_live_status(st)
+
+
+_FIELD_KINDS = {"acars", "vdl2", "ais"}
+
+
+def _row_line(r) -> str:
+    head = (
+        f"{_utc(r['ts'])}"
+        + (f"..{time.strftime('%H:%M:%SZ', time.gmtime(r['ts_end']))}" if r["ts_end"] and r["ts_end"] - r["ts"] >= 1 else "")
+        + f" {r['profile']}/{r['kind']}"
+        + (f" {r['subject']}" if r["subject"] else "")
+        + (f" ({r['label']})" if r["label"] else "")
+        + (f" {r['freq_hz'] / 1e6:.4f} MHz" if r["freq_hz"] else "")
+        + (f" {r['level_db']:.1f} dB" if r["level_db"] is not None else "")
+    )
+    body = r["fields"] if r["kind"] in _FIELD_KINDS else (r["raw"] or r["fields"])
+    body = body.replace("\n", " / ")
+    if len(body) > 400:
+        body = body[:400] + "..."
+    return f"  {head} | {body}"
+
+
+@mcp.tool(annotations=READ_ONLY)
+def hackrf_live_search(
+    since: str | None = "24h",
+    until: str | None = None,
+    profile: Literal["adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas"] | None = None,
+    subject: str | None = None,
+    text: str | None = None,
+    frequency_hz: int | None = None,
+    kind: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Search the live decoding log, newest first.
+
+    Rows are: one per aircraft per minute (adsb), one per ship per minute
+    for AIS position reports and one per other AIS message (ais), and one
+    per decoded message for the other profiles. Each shows its time (a
+    range for per-minute rows), profile/kind, subject (ICAO address, MMSI,
+    capcode, registration or APRS source), label (callsign, flight or ship
+    name), frequency, signal level, and the decoded text or fields.
+
+    This does not access the HackRF device.
+
+    Args:
+        since: Start of the time range: "30m", "2h", "1d" ago, an ISO 8601
+            time (UTC unless it has an offset), or Unix seconds. Default 24h.
+        until: End of the time range, in the same forms. Default now.
+        profile: Only rows from this profile.
+        subject: An exact identity, case-insensitive: ICAO address
+            (A1B2C3), MMSI, pager capcode (leading zeros optional), APRS
+            callsign, aircraft registration, or a label such as a
+            callsign, flight number or ship name.
+        text: Free text, matched as a substring of the decoded text and
+            fields.
+        frequency_hz: Only rows heard within 5 kHz of this frequency.
+        kind: Only rows of this kind (aircraft, vessel, base-station,
+            aid-to-navigation, ais, acars, vdl2, page, aprs, eas).
+        limit: Maximum rows to return (default 50, at most 500).
+    """
+    now = time.time()
+    try:
+        t0, t1 = parse_when(since, now), parse_when(until, now)
+    except ValueError as exc:
+        return str(exc)
+    try:
+        conn = live_log.open_reader(settings.get_live().db_path)
+    except live_log.LogNotFound as exc:
+        return str(exc)
+    try:
+        rows = live_log.search(
+            conn,
+            since=t0,
+            until=t1,
+            profile=profile,
+            kind=kind,
+            subject=subject,
+            text=text,
+            freq_hz=frequency_hz,
+            limit=min(max(1, limit), 500),
+        )
+    finally:
+        conn.close()
+    what = f"from {_utc(t0)}" if t0 else "from the start of the log"
+    what += f" to {_utc(t1)}" if t1 else " to now"
+    if not rows:
+        return f"No rows {what} match."
+    lines = [f"{len(rows)} row(s) {what}, newest first" + (" (limit reached)" if len(rows) >= limit else "") + ":"]
+    lines += [_row_line(r) for r in rows]
+    return "\n".join(lines)
+
+
+_SUMMARY_FIELDS = {
+    "adsb": ("callsign", "squawk", "altitude_min", "altitude_max", "lat", "lon", "speed", "messages"),
+    "ais": ("name", "callsign", "shiptype", "aid_type", "destination", "status", "lat", "lon", "speed", "messages"),
+    "acars": ("flight", "label", "mode"),
+    "vdl2": ("src_type", "dst", "dst_type"),
+    "flex": ("type", "mode"),
+    "pocsag": ("type", "function", "protocol"),
+    "aprs": ("dst", "path"),
+    "eas": ("event", "originator", "locations", "duration"),
+}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def hackrf_live_summary(
+    profile: Literal["adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas"],
+    since: str | None = "1h",
+    until: str | None = None,
+    limit: int = 100,
+) -> str:
+    """Summarise the live decoding log by subject over a time range: e.g.
+    the aircraft seen in the last hour (profile adsb), ships today (ais,
+    since "1d"), or which pager capcodes were active (flex). One line per
+    aircraft, ship, capcode or station, most recently heard first, with
+    first and last time heard, rows, frequencies, strongest signal and the
+    latest values of its main fields (summed message counts, altitude range).
+
+    This does not access the HackRF device.
+
+    Args:
+        profile: Which profile's rows to summarise.
+        since: Start of the range ("30m", "2h", "1d", ISO 8601 or Unix
+            seconds). Default 1h.
+        until: End of the range. Default now.
+        limit: Maximum subjects listed (default 100).
+    """
+    now = time.time()
+    try:
+        t0 = parse_when(since, now) or 0.0
+        t1 = parse_when(until, now)
+    except ValueError as exc:
+        return str(exc)
+    try:
+        conn = live_log.open_reader(settings.get_live().db_path)
+    except live_log.LogNotFound as exc:
+        return str(exc)
+    try:
+        entries = live_log.summarise(conn, profile, t0, t1, limit=min(max(1, limit), 1000) + 1)
+    finally:
+        conn.close()
+    what = f"{profile} from {_utc(t0)} to {_utc(t1) if t1 else 'now'}"
+    if not entries:
+        return f"Nothing logged for {what}."
+    more = len(entries) > limit
+    entries = entries[:limit]
+    noun = {"adsb": "aircraft", "ais": "stations"}.get(profile, "subjects")
+    lines = [f"{len(entries)}{'+' if more else ''} {noun} for {what}, most recently heard first:"]
+    for e in entries:
+        parts = [e["subject"]]
+        if e["labels"]:
+            parts.append("(" + ", ".join(e["labels"][:3]) + ")")
+        parts.append(f"{_utc(e['first'])} to {time.strftime('%H:%M:%SZ', time.gmtime(e['last']))}")
+        parts.append(f"rows {e['rows']}")
+        if e["freqs"]:
+            parts.append("on " + ", ".join(f"{f / 1e6:.4f}" for f in sorted(e["freqs"])[:4]) + " MHz")
+        if e["max_level_db"] is not None:
+            parts.append(f"max {e['max_level_db']:.1f} dB")
+        f = e["fields"]
+        for key in _SUMMARY_FIELDS.get(profile, ()):
+            if key in f:
+                v = f[key]
+                if isinstance(v, list):
+                    v = ",".join(str(x) for x in v[:6])
+                parts.append(f"{key}={v}")
+        lines.append("  " + " ".join(str(p) for p in parts))
+    if more:
+        lines.append(f"  ... more not shown; raise limit or narrow the range.")
+    return "\n".join(lines)
 
 
 # @mcp.tool(annotations=DANGEROUS)
@@ -1391,9 +1878,11 @@ def main(argv: list[str] | None = None) -> None:
             s = replace(s, data_dir=Path(args.data_dir).expanduser())
         if s.tx_mode == "allowed-bands":
             policy.allowed_bands(s)  # fail at startup on an unknown band set
+        live = settings.LiveSettings.from_env()
     except (ValueError, OSError) as exc:
         parser.error(f"invalid configuration: {exc}")
     settings.configure(s)
+    settings.configure_live(live)
 
     if args.transport == "stdio":
         mcp.run()

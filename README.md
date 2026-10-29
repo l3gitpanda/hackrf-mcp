@@ -18,6 +18,9 @@ Cursor, Claude Desktop, Claude Code, and any other MCP client.
   configure clocking, Opera Cake antenna switching, and bias-tee power.
 - **Offline IQ analysis** — demodulate captures to WAV, render spectrograms,
   summarize signal metrics, and detect RF bursts (numpy/scipy/matplotlib).
+- **Live decoding** — a companion service keeps ADS-B, AIS, ACARS, VDL2,
+  pagers, APRS or EAS decoding into a rolling, searchable log, and steps
+  aside whenever a device tool needs the HackRF.
 - **Safe defaults** — bounded timeouts, truncated sweep output, sample caps on
   large IQ files, and destructive firmware/CPLD tools disabled by default.
 
@@ -155,6 +158,10 @@ Add to `claude_desktop_config.json` (see
 | `hackrf_iq_detect_bursts` | Detect bursts of elevated power (keyfobs, packet preambles, etc.) in an IQ capture. |
 | `hackrf_decode_ism` | Decode ISM-band sensors, remotes and tire-pressure sensors in an IQ capture with rtl_433 (offline; needs `rtl_433`). |
 | `hackrf_decode` | Decode a protocol in an IQ capture with an external decoder and summarise it: ADS-B, UAT, AIS, ACARS, VDL2, POCSAG, FLEX, APRS, EAS/SAME, DTMF, RDS (offline; see [Decoders](#decoders)). |
+| `hackrf_live_start` / `hackrf_live_stop` | Start, switch or stop continuous decoding by the live service (see [Live decoding](#live-decoding)). |
+| `hackrf_live_status` | What the live service is doing: profile, rates, input health, errors, log size. |
+| `hackrf_live_search` | Search the live log by time, profile, ICAO/MMSI/capcode/callsign, text or frequency. |
+| `hackrf_live_summary` | Summarise the live log by aircraft, ship, capcode or station over a time range. |
 | `hackrf_server_status` | Show the transmit mode and allowed bands, capture directory, limits and recent transmit attempts. |
 | `hackrf_list_captures` | List files in the capture directory with sizes and free space. |
 | `hackrf_delete_capture` | Delete one file from the capture directory. |
@@ -196,6 +203,84 @@ The lower-level/destructive tools (`hackrf_debug`, `hackrf_cpldjtag`,
 in `server.py`) because misuse can brick the device. Uncomment them in
 `src/hackrf_mcp/server.py` if you need register access, CPLD programming, or
 firmware flashing.
+
+## Live decoding
+
+A second service, `hackrf-live` ([`deploy/hackrf-live.service`](deploy/hackrf-live.service)),
+keeps one **profile** decoding continuously and writes everything it decodes
+to a rolling SQLite log. The MCP tools start, stop and switch it, which is
+how an assistant moves the receiver to another band, and search the log.
+
+| Profile | Decoder | Tuning | Logged as |
+|---|---|---|---|
+| `adsb` | `dump1090-mutability` | 1090 MHz, 2.4 MS/s | one row per aircraft per minute: callsign, squawk, altitude range, last position, speed, track, messages, strongest RSSI |
+| `ais` | `AIS-catcher` (opens the HackRF itself) | 162.0 MHz | one row per ship, base station or aid to navigation per minute for position reports; one row per other message (static/voyage data, safety text) |
+| `acars` | `acarsdec` | 130.8 MHz, 2 MS/s: 130.025–131.550 MHz | one row per message |
+| `vdl2` | `dumpvdl2` | 136.8125 MHz, 2.1 MS/s: 136.650–136.975 MHz | one row per frame |
+| `flex`, `pocsag` | `multimon-ng` | the channels given, 2.205 MS/s | one row per page: time, channel, capcode, message type (see below) |
+| `aprs` | `multimon-ng` | 144.390 MHz, 2.205 MS/s | one row per packet |
+| `eas` | `multimon-ng` | the seven NOAA Weather Radio channels, 162.400–162.550 MHz | one row per SAME header |
+
+Except for AIS, the service reads `hackrf_transfer -r -` and streams the
+samples to the decoder: dump1090 and dumpvdl2 take them as they are (cu8);
+for acarsdec and multimon-ng one shared FFT per block cuts every channel
+out at once (`iq.FFTChannelizer`), which costs about what a single
+per-channel filter would. Measured on a 2-core Celeron J4025: ADS-B about
+15% of one core in total, ACARS (five channels) about 35%, VDL2 (nine
+channels) about 45%, FLEX about 35%, AIS 12%. `hackrf_live_status` warns
+when samples arrive below the sample rate, which means some are being lost.
+
+**Tools.** `hackrf_live_start` (a profile, or a `schedule` that rotates
+through several, e.g. 10 min ADS-B then 10 min AIS), `hackrf_live_stop`,
+`hackrf_live_status`, `hackrf_live_search` (time range, profile, an exact
+ICAO address / MMSI / capcode / callsign / registration, free text, or
+frequency) and `hackrf_live_summary` (e.g. aircraft in the last hour, ships
+today, active capcodes).
+
+**Device sharing.** While a profile runs, the live service holds the HackRF.
+Every device tool still works: the MCP server asks the service to release
+the device, runs the tool, and hands the device back; the tool's result
+says that live decoding was paused and for how long. The release carries a
+lease (the tool's timeout plus 30 s), so if the MCP server dies mid-call the
+service resumes by itself. If the service doesn't release the device the
+tool is refused with a message saying so. Without the service, the tools
+behave exactly as before.
+
+**Pager privacy.** By default only the time, channel, capcode and message
+type of a FLEX or POCSAG page are stored: the message text, and any
+continuation lines it runs onto, are dropped before a row exists, and the
+stored raw line is the header with `[content not logged]`. Storing the text
+takes `HACKRF_LIVE_PAGER_CONTENT=true` in the service's environment; no tool
+can change it.
+
+**The log.** `$HACKRF_LIVE_DIR/live.db` (WAL mode; the MCP server opens it
+read-only). Each row has its time (and end time, for per-minute rows),
+profile, kind, receiver, frequency, signal level, subject (ICAO address,
+MMSI, capcode, ...), label (callsign, flight, ship name), the decoded fields
+as JSON, and the decoder's raw text. Once a minute rows older than the age
+limit, then the oldest rows beyond the size limit, are deleted and the
+space given back to the disk; nothing is written while free disk is below
+`HACKRF_MCP_MIN_FREE_MB`. Starts, stops, pauses and errors go to an
+`events` table, so gaps in coverage can be seen.
+
+| Variable | Default | |
+|---|---|---|
+| `HACKRF_LIVE_DIR` | `~/.local/state/hackrf-mcp/live` | log, control socket and saved profile; set it for both services |
+| `HACKRF_LIVE_MAX_AGE_DAYS` | `7` | rows older than this are deleted |
+| `HACKRF_LIVE_MAX_DB_MB` | `256` | the oldest rows beyond this are deleted |
+| `HACKRF_LIVE_PAGER_CONTENT` | `false` | store pager message text |
+| `HACKRF_LIVE_RECEIVER` | none | `LAT,LON`, so dump1090 can resolve more positions |
+| `HACKRF_LIVE_LNA_GAIN`, `HACKRF_LIVE_VGA_GAIN` | 32, 40 | default gains (a start call can set its own) |
+
+The unit limits the service to `MemoryMax=512M` and 1.5 cores
+(`CPUQuota=150%`), and gives way under contention (`CPUWeight=50`,
+`Nice=10`). The profile last started is saved and resumed after a restart
+or reboot. To check a profile against a recording instead of the radio:
+
+```bash
+python -m hackrf_mcp.live_service --replay capture.cs8 --profile acars \
+    --rate 2000000 --center 130800000 --db /tmp/replay.db --fast
+```
 
 ## Transmit policy, file limits and network mode
 

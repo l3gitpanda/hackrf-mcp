@@ -10,11 +10,6 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Literal
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal as scipy_signal
 from scipy.io import wavfile
@@ -42,6 +37,17 @@ AUDIO_LPF_HZ: dict[str, float] = {
 DEEMPHASIS_TAU_S: dict[str, float] = {
     "wfm": 75e-6,
 }
+
+
+def _pyplot():
+    """matplotlib, imported on first use: only the PNG renderers need it,
+    and the live decoder service (live_service.py) never does."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
 
 
 def read_iq_int8(path: str | Path, max_samples: int | None = None) -> np.ndarray:
@@ -330,6 +336,7 @@ def render_sweep_png(
     power_db: np.ndarray,
     title: str | None = None,
 ) -> None:
+    plt = _pyplot()
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(freqs_hz / 1e6, power_db, linewidth=0.7)
     ax.set_xlabel("Frequency (MHz)")
@@ -424,6 +431,7 @@ def render_spectrogram_png(
         rows = freqs_hz.size // group
         freqs_hz = freqs_hz[: rows * group].reshape(rows, group).mean(axis=1)
         power_db = power_db[: rows * group].reshape(rows, group, -1).max(axis=1)
+    plt = _pyplot()
     fig, ax = plt.subplots(figsize=(10, 6))
     freqs_mhz = (freqs_hz + center_freq_hz) / 1e6
     mesh = ax.pcolormesh(times_s, freqs_mhz, power_db, shading="auto", cmap="viridis")
@@ -484,6 +492,19 @@ def iter_cu8_chunks(path: str | Path, chunk_samples: int = CHUNK_SAMPLES, max_sa
     raw = np.memmap(path, dtype=np.uint8, mode="r", shape=(2 * total,))
     for start in range(0, total, chunk_samples):
         yield np.bitwise_xor(raw[2 * start : 2 * min(start + chunk_samples, total)], 0x80).tobytes()
+
+
+def cs8_to_complex(buf: bytes) -> np.ndarray:
+    """Complex64 samples (scaled to roughly [-1, 1]) from a block of int8 I/Q
+    bytes as hackrf_transfer writes them. The block must hold whole samples."""
+    seg = np.frombuffer(buf, dtype=np.int8).astype(np.float32)
+    seg *= 1.0 / 128.0
+    return seg.view(np.complex64)
+
+
+def cs8_to_cu8(buf: bytes) -> bytes:
+    """int8 I/Q bytes as unsigned 8-bit (cu8), by flipping each top bit."""
+    return np.bitwise_xor(np.frombuffer(buf, dtype=np.uint8), 0x80).tobytes()
 
 
 def complex_to_cu8(x: np.ndarray, scale: float = 127.0) -> bytes:
@@ -612,6 +633,93 @@ def channelize(
             y = decimator(y)
         if y.size:
             yield y
+
+
+class FFTChannelizer:
+    """Several narrow channels out of one wideband stream at once, by
+    overlap-save fast convolution: one forward FFT per block, shared by all
+    channels, then a small inverse FFT per channel that keeps only the bins
+    around it. A Mixer and Decimator per channel costs a full-rate pass for
+    every channel; this costs about one, however many channels there are.
+
+    Channel offsets are rounded to `bin_hz`, so the sample rate must be a
+    multiple of it, and `decimation` must divide sample_rate_hz / bin_hz.
+    Each channel's output is continuous from block to block (the mixer
+    phase is carried), so it can be FM-demodulated. Call it with successive
+    complex64 chunks of any size; it returns one array per channel, empty
+    until a whole block has arrived.
+    """
+
+    def __init__(
+        self,
+        sample_rate_hz: int,
+        offsets_hz: list[float] | tuple[float, ...],
+        decimation: int,
+        bandwidth_hz: float,
+        bin_hz: int = 25,
+    ):
+        if sample_rate_hz % bin_hz:
+            raise ValueError(f"sample rate {sample_rate_hz} is not a multiple of {bin_hz} Hz")
+        n = sample_rate_hz // bin_hz
+        if n % decimation:
+            raise ValueError(f"decimation {decimation} does not divide the {n}-point block")
+        out_rate = sample_rate_hz / decimation
+        if bandwidth_hz >= out_rate:
+            raise ValueError(f"bandwidth {bandwidth_hz:g} Hz does not fit the {out_rate:g} S/s output")
+        self.sample_rate_hz = sample_rate_hz
+        self.n = n
+        self.decimation = decimation
+        self.m = n // decimation
+        # The overlap holds the filter's memory (its length - 1); about a
+        # tenth of the block gives a transition band near 1 kHz.
+        self.overlap = decimation * max(4, -(-n // (10 * decimation)))
+        self.step = n - self.overlap
+        taps = scipy_signal.firwin(
+            self.overlap + 1, bandwidth_hz / 2, fs=sample_rate_hz, window=("kaiser", 8.0)
+        )
+        response = np.fft.fft(taps, n)
+        j = np.fft.fftfreq(self.m, 1.0 / self.m).astype(np.int64)  # bins in ifft order
+        self.bins = [int(round(f / bin_hz)) for f in offsets_hz]
+        self.offsets_hz = [k * bin_hz for k in self.bins]
+        self._index = [(k + j) % n for k in self.bins]
+        self._response = (response[j % n] / decimation).astype(np.complex64)
+        self._history = np.zeros(self.overlap, dtype=np.complex64)
+        self._pending: list[np.ndarray] = []
+        self._pending_samples = 0
+        self._block = 0
+        # Mean power of each channel's last block, in dB relative to full scale.
+        self.power_db = [float("-inf")] * len(self.bins)
+
+    def __call__(self, x: np.ndarray) -> list[np.ndarray]:
+        if x.size:
+            self._pending.append(x.astype(np.complex64, copy=False))
+            self._pending_samples += x.size
+        outs: list[list[np.ndarray]] = [[] for _ in self.bins]
+        if self._pending_samples < self.step:
+            return [np.zeros(0, np.complex64) for _ in self.bins]
+        data = np.concatenate(self._pending)
+        used = 0
+        keep = self.overlap // self.decimation
+        while data.size - used >= self.step:
+            block = np.concatenate([self._history, data[used : used + self.step]])
+            used += self.step
+            spectrum = np.fft.fft(block)
+            start = self._block * self.step - self.overlap
+            for i, (k, idx) in enumerate(zip(self.bins, self._index)):
+                y = np.fft.ifft(spectrum[idx] * self._response)[keep:]
+                # The bins were taken relative to this block's first sample;
+                # rotate to the stream's phase so blocks join seamlessly.
+                turn = (k * start) % self.n
+                y = (y * np.complex64(np.exp(-2j * np.pi * turn / self.n))).astype(np.complex64)
+                outs[i].append(y)
+                p = float(np.mean(np.abs(y) ** 2)) if y.size else 0.0
+                self.power_db[i] = 10 * np.log10(p) if p > 0 else float("-inf")
+            self._history = block[-self.overlap :]
+            self._block += 1
+        rest = data[used:]
+        self._pending = [rest] if rest.size else []
+        self._pending_samples = rest.size
+        return [np.concatenate(o) for o in outs]
 
 
 def channelize_to_array(

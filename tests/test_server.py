@@ -104,7 +104,7 @@ def test_hackrf_sweep_truncates_large_output(monkeypatch):
     assert "(output truncated)" in result
 
 
-def test_hackrf_transfer_rx_defaults_to_five_second_capture(fake_run):
+def test_hackrf_transfer_rx_defaults_to_five_second_capture(fake_run, tmp_path):
     server.hackrf_transfer(
         direction="rx",
         file_path="out.iq",
@@ -114,7 +114,7 @@ def test_hackrf_transfer_rx_defaults_to_five_second_capture(fake_run):
 
     binary, args, timeout = fake_run[0]
     assert binary == "hackrf_transfer"
-    assert args[:2] == ["-r", "out.iq"]
+    assert args[:2] == ["-r", str(tmp_path / "out.iq")]
     assert "-n" in args
     assert args[args.index("-n") + 1] == str(5 * 10_000_000)
     assert "-f" in args and "2400000000" in args
@@ -133,7 +133,14 @@ def test_hackrf_transfer_rx_with_explicit_num_samples(fake_run):
     assert args[args.index("-n") + 1] == "12345"
 
 
-def test_hackrf_transfer_tx_with_repeat(fake_run):
+def test_hackrf_transfer_tx_with_repeat(fake_run, tmp_path, isolated_settings):
+    from dataclasses import replace
+
+    from hackrf_mcp import settings
+
+    settings.configure(replace(isolated_settings, tx_mode="unrestricted"))
+    (tmp_path / "in.iq").write_bytes(b"\x10\x00" * 1024)
+
     server.hackrf_transfer(
         direction="tx",
         file_path="in.iq",
@@ -142,7 +149,7 @@ def test_hackrf_transfer_tx_with_repeat(fake_run):
     )
 
     _, args, _ = fake_run[0]
-    assert args[:2] == ["-t", "in.iq"]
+    assert args[:2] == ["-t", str(tmp_path / "in.iq")]
     assert "-R" in args
     assert "-n" not in args
 

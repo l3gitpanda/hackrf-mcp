@@ -55,6 +55,32 @@ asyncio.run(main())
   `hackrf_iq_spectrogram`, `hackrf_iq_info`, `hackrf_iq_detect_bursts`, and
   `hackrf_sweep` (for `output_image_path`) tools in `server.py`.
 
+- `src/hackrf_mcp/settings.py` — the `Settings` dataclass (transmit mode,
+  band sets, capture directory, limits), read once in `main()` from
+  `HACKRF_MCP_*` env vars and CLI flags. `settings.get()` returns it. No tool
+  may change it; the transmit mode is the operator's decision.
+- `src/hackrf_mcp/policy.py` — the built-in US band sets (`ism`, `amateur`)
+  and `check_tx()`, which decides a transmission from the mode, the carrier
+  and the measured occupied span (`iq.file_power_spectrum` +
+  `iq.power_bandwidth`).
+- `src/hackrf_mcp/storage.py` — `resolve()` confines every tool file path to
+  the capture directory; capture size and free-space checks; capture
+  listing; the JSON-lines transmit audit log.
+- `src/hackrf_mcp/auth.py` — the bearer-token ASGI middleware for
+  `--transport http`. HTTP mode refuses to start without a token.
+
+### Rules for this fork's additions
+
+- Tools that open the device call `_run_on_device()`, not `run()`, so a
+  second concurrent call gets `DEVICE_BUSY` instead of fighting over USB.
+- Every file path parameter goes through `storage.resolve()` (with
+  `must_exist=True` for inputs) before use.
+- Refusals are returned as strings starting with `REFUSED:` (`_refused()`).
+- Any new way to transmit must go through `policy.check_tx()` and
+  `storage.audit_tx()`, like `hackrf_transfer`.
+- `tests/conftest.py` gives every test its own capture directory and audit
+  log, with the free-space floor off.
+
 ### Single-device constraint
 
 A HackRF only allows one process to hold its USB connection at a time. The

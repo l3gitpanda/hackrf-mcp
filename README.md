@@ -153,6 +153,9 @@ Add to `claude_desktop_config.json` (see
 | `hackrf_iq_spectrogram` | Render a spectrogram PNG from a raw IQ capture. |
 | `hackrf_iq_info` | Summarize an IQ capture: duration, power levels, occupied bandwidth. |
 | `hackrf_iq_detect_bursts` | Detect bursts of elevated power (keyfobs, packet preambles, etc.) in an IQ capture. |
+| `hackrf_server_status` | Show the transmit mode and allowed bands, capture directory, limits and recent transmit attempts. |
+| `hackrf_list_captures` | List files in the capture directory with sizes and free space. |
+| `hackrf_delete_capture` | Delete one file from the capture directory. |
 
 `hackrf_iq_*` tools are **offline** — they read capture files written by
 `hackrf_transfer` and never touch the device, so they can run while the HackRF
@@ -166,6 +169,71 @@ The lower-level/destructive tools (`hackrf_debug`, `hackrf_cpldjtag`,
 in `server.py`) because misuse can brick the device. Uncomment them in
 `src/hackrf_mcp/server.py` if you need register access, CPLD programming, or
 firmware flashing.
+
+## Transmit policy, file limits and network mode
+
+All of these are set by whoever runs the server, through `HACKRF_MCP_*`
+environment variables or the matching CLI flags. No tool can change them.
+`hackrf_server_status` reports the current values.
+
+### Transmit modes
+
+| `HACKRF_MCP_TX_MODE` | Behaviour |
+|---|---|
+| `off` (default) | Every transmission is refused. |
+| `allowed-bands` | Transmits only if the signal fits inside one allowed band. The server measures the transmit file's occupied bandwidth (99% of its power, sampled across the whole file) and requires that span, plus the carrier at `frequency_hz` and a small margin, to sit inside one band. If the file can't be analyzed it assumes the full sample-rate bandwidth. |
+| `unrestricted` | No band check. |
+
+`allowed-bands` permits the band sets named in `HACKRF_MCP_TX_BANDS`
+(default `ism`):
+
+- `ism`: the US ISM bands at 13.56, 27.12, 40.68, 915, 2450 and 5800 MHz.
+- `amateur`: the US amateur bands from 160 m to 5 cm, without the
+  channelized 60 m band. Your license class may not cover all of them.
+
+`HACKRF_MCP_TX_EXTRA_RANGES` adds ranges in MHz (`433.05-434.79,…`), and
+`HACKRF_MCP_BANDS_FILE` points at a JSON file that adds or replaces sets:
+`{"sets": {"name": [[low_mhz, high_mhz, "label"], …]}}`.
+
+The band check is a **frequency check only**. Power limits, modulation and
+emission rules, harmonics, and which bands your license allows are still
+your responsibility.
+
+Every transmit attempt, allowed or refused, is appended to a JSON-lines
+audit log (`HACKRF_MCP_TX_LOG`, default
+`~/.local/state/hackrf-mcp/tx-audit.jsonl`) with the time, frequency,
+measured span, gains, decision and the file's SHA-256. Each transmission is
+also stopped after `HACKRF_MCP_MAX_TX_SECONDS` (default 60), `repeat_tx`
+included.
+
+### Files and capture limits
+
+Every file path a tool takes is relative to the capture directory
+(`HACKRF_MCP_DATA_DIR`, default `~/hackrf-captures`). Paths that resolve
+outside it, through `..`, an absolute path or a symlink, are refused. Captures
+longer than `HACKRF_MCP_MAX_RX_SECONDS` (60), larger than
+`HACKRF_MCP_MAX_CAPTURE_MB` (2048), or that would leave less than
+`HACKRF_MCP_MIN_FREE_MB` (2048) free, are refused. Only one device call runs
+at a time; a second gets a "HackRF is busy" reply.
+
+### Network mode
+
+```bash
+openssl rand -hex 32 > ~/.config/hackrf-mcp.token && chmod 600 ~/.config/hackrf-mcp.token
+hackrf-mcp --transport http --host 0.0.0.0 --port 8765 --token-file ~/.config/hackrf-mcp.token
+```
+
+This serves streamable HTTP at `http://<host>:8765/mcp`. Every request must
+carry `Authorization: Bearer <token>`. The server refuses to start in HTTP mode
+without a token. The token travels in cleartext, so on an untrusted network
+put a TLS reverse proxy in front. For Claude Code:
+
+```bash
+claude mcp add --transport http hackrf http://<host>:8765/mcp --header "Authorization: Bearer <token>"
+```
+
+[`deploy/`](deploy/) has a hardened systemd unit and an environment-file
+template for running it as a service.
 
 ## Typical workflow
 

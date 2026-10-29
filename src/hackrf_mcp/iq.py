@@ -226,6 +226,61 @@ def compute_spectrum(
     return freqs, power_db
 
 
+def file_power_spectrum(
+    path: str | Path,
+    sample_rate_hz: float,
+    fft_size: int = 4096,
+    num_segments: int = 16,
+    segment_samples: int = 1 << 18,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (freqs_hz, power) for an int8 IQ file: the linear power
+    spectrum averaged over `num_segments` evenly spaced segments, so a long
+    file is sampled from start to end without being read in full. freqs are
+    centered on 0 Hz. Both arrays are empty for an empty file."""
+    raw = np.memmap(path, dtype=np.int8, mode="r") if Path(path).stat().st_size else np.zeros(0, np.int8)
+    total = raw.size // 2
+    if total == 0:
+        return np.zeros(0), np.zeros(0)
+    seg_len = min(segment_samples, total)
+    nperseg = min(fft_size, seg_len)
+    starts = np.unique(np.linspace(0, total - seg_len, num=num_segments).astype(np.int64))
+    acc = None
+    for start in starts:
+        seg = np.asarray(raw[2 * start : 2 * (start + seg_len)], dtype=np.float32) / 128.0
+        x = seg[0::2] + 1j * seg[1::2]
+        freqs, pxx = scipy_signal.welch(
+            x,
+            fs=sample_rate_hz,
+            nperseg=nperseg,
+            return_onesided=False,
+            scaling="spectrum",
+            window="hann",
+        )
+        acc = pxx if acc is None else acc + pxx
+    return np.fft.fftshift(freqs), np.fft.fftshift(acc / len(starts))
+
+
+def power_bandwidth(
+    freqs_hz: np.ndarray,
+    power: np.ndarray,
+    fraction: float = 0.99,
+) -> tuple[float, float] | None:
+    """Edges (low_hz, high_hz) of the band holding `fraction` of the total
+    power, cutting (1 - fraction) / 2 from each side (the usual definition
+    of occupied bandwidth). None if the spectrum holds no power."""
+    total = float(np.sum(power))
+    if freqs_hz.size == 0 or total <= 0:
+        return None
+    cumulative = np.cumsum(power) / total
+    tail = (1.0 - fraction) / 2
+    low_idx = int(np.searchsorted(cumulative, tail))
+    high_idx = int(np.searchsorted(cumulative, 1.0 - tail))
+    high_idx = min(high_idx, freqs_hz.size - 1)
+    bin_hz = float(freqs_hz[1] - freqs_hz[0]) if freqs_hz.size > 1 else 0.0
+    # Widen by half a bin on each side: a bin covers +-bin/2 around its center.
+    return float(freqs_hz[low_idx]) - bin_hz / 2, float(freqs_hz[high_idx]) + bin_hz / 2
+
+
 def occupied_bandwidth(
     freqs_hz: np.ndarray,
     power_db: np.ndarray,

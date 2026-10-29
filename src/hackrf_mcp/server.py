@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import tempfile
+import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -13,7 +16,7 @@ from fastmcp import FastMCP
 from fastmcp.utilities.types import Audio, Image
 from mcp.types import ToolAnnotations
 
-from hackrf_mcp import iq
+from hackrf_mcp import __version__, iq, policy, settings, storage
 from hackrf_mcp.cli import run, set_bin_dir
 
 mcp = FastMCP(
@@ -24,23 +27,52 @@ mcp = FastMCP(
         "time (it opens an exclusive USB connection). Only call one of "
         "hackrf_info, hackrf_sweep, hackrf_transfer, hackrf_clock, "
         "hackrf_operacake, or hackrf_biast at a time, and wait for it to "
-        "finish before starting another. If a tool fails with a "
-        "'device is busy' / 'resource busy' / 'access denied' style error, "
-        "another hackrf_tools process (including a previous call that is "
-        "still running or was not cleanly terminated) is likely still "
-        "holding the device. hackrf_sweep and hackrf_transfer can run for "
-        "up to their timeout_seconds, so avoid issuing another HackRF tool "
-        "call until one of those returns.\n\n"
-        "hackrf_iq_to_wav and hackrf_iq_spectrogram are offline analysis "
-        "tools that operate on capture files already written by "
-        "hackrf_transfer. They do not access the device and can be run "
-        "anytime, including while the device is busy."
+        "finish before starting another. This server refuses a second "
+        "device call while one is running and says the HackRF is busy. If a "
+        "tool fails with a 'device is busy' / 'resource busy' / 'access "
+        "denied' style error from hackrf_tools, another process outside "
+        "this server is likely holding the device. hackrf_sweep and "
+        "hackrf_transfer can run for up to their timeout_seconds, so avoid "
+        "issuing another HackRF tool call until one of those returns.\n\n"
+        "hackrf_iq_to_wav, hackrf_iq_spectrogram, hackrf_iq_info, "
+        "hackrf_iq_detect_bursts, hackrf_list_captures and "
+        "hackrf_server_status do not access the device and can be run "
+        "anytime, including while the device is busy.\n\n"
+        "FILES: every file path is relative to the server's capture "
+        "directory (see hackrf_server_status); paths outside it are "
+        "refused.\n\n"
+        "TRANSMIT: whether hackrf_transfer may transmit, and on which "
+        "frequencies, is set by the server operator (see "
+        "hackrf_server_status). A refused transmission returns a message "
+        "starting with REFUSED. Report it to the user; do not retry with "
+        "altered parameters to get around it."
     ),
 )
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 CONFIG = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 DANGEROUS = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+
+# Calls from concurrent clients run in a thread pool, so this lock keeps two
+# of them from opening the HackRF at once.
+_device_lock = threading.Lock()
+DEVICE_BUSY = (
+    "HackRF is busy: another hackrf_* call on this server is still using "
+    "the device. Wait for it to return, then try again."
+)
+
+
+def _run_on_device(binary: str, args: list[str], timeout: float | None = None) -> str:
+    if not _device_lock.acquire(blocking=False):
+        return DEVICE_BUSY
+    try:
+        return run(binary, args, timeout=timeout)
+    finally:
+        _device_lock.release()
+
+
+def _refused(reason: object) -> str:
+    return f"REFUSED: {reason}"
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -55,7 +87,7 @@ def hackrf_info(device_serial: str | None = None) -> str:
     args = []
     if device_serial:
         args += ["-d", device_serial]
-    return run("hackrf_info", args, timeout=15)
+    return _run_on_device("hackrf_info", args, timeout=15)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -100,10 +132,16 @@ def hackrf_sweep(
         timeout_seconds: Maximum time to let the sweep run before it is
             terminated.
         output_image_path: If given, also render a power-vs-frequency plot
-            (PNG) of the sweep data to this path and return it as an image.
-            Useful for visualizing wide sweeps where the raw CSV is hard to
-            read.
+            (PNG) of the sweep data to this path in the capture directory and
+            return it as an image. Useful for visualizing wide sweeps where
+            the raw CSV is hard to read.
     """
+    if output_image_path:
+        try:
+            output_image_path = str(storage.resolve(output_image_path))
+        except storage.PathNotAllowed as exc:
+            return _refused(exc)
+
     args = ["-f", f"{freq_min_mhz}:{freq_max_mhz}"]
     if bin_width_hz is not None:
         args += ["-w", str(bin_width_hz)]
@@ -125,7 +163,9 @@ def hackrf_sweep(
 
     try:
         args += ["-r", str(out_path)]
-        log = run("hackrf_sweep", args, timeout=timeout_seconds)
+        log = _run_on_device("hackrf_sweep", args, timeout=timeout_seconds)
+        if log == DEVICE_BUSY:
+            return log
         data = out_path.read_text(errors="replace")
     finally:
         out_path.unlink(missing_ok=True)
@@ -178,8 +218,12 @@ def hackrf_transfer(
 
     For rx, the capture is bounded by num_samples if given, otherwise by
     duration_seconds (default 5 seconds), converted to a sample count using
-    sample_rate_hz. For tx, the transfer ends when the input file is exhausted
-    unless repeat_tx is set, in which case it runs until timeout_seconds.
+    sample_rate_hz. The server refuses captures longer than its
+    max_rx_seconds, larger than its max_capture_mb, or that would fill the
+    disk (see hackrf_server_status). For tx, the transfer ends when the input
+    file is exhausted unless repeat_tx is set, in which case it runs until
+    timeout_seconds; either way the server stops it after its
+    max_tx_seconds.
 
     NOTE: this holds the HackRF's exclusive USB connection for up to
     timeout_seconds (longer for repeat_tx). Do not call this or any other
@@ -190,6 +234,14 @@ def hackrf_transfer(
     regulations in your jurisdiction (e.g. FCC rules in the US) — only
     transmit on frequencies and at power levels you are authorized to use,
     and consider using a dummy load or shielded enclosure for testing.
+    The server operator sets a transmit mode: "off" refuses every
+    transmission; "allowed-bands" measures the occupied bandwidth of the
+    file and transmits only if it and the carrier fit inside one allowed
+    band; "unrestricted" skips the band check. The band check covers
+    frequency only, not power or emissions. Every attempt, allowed or
+    refused, is written to the server's transmit audit log. A refusal
+    returns a message starting with REFUSED; do not retry with altered
+    parameters to get around it.
     Enabling antenna_enable (bias-tee) applies DC power to the antenna port
     and can damage equipment connected to that port that does not expect DC
     bias. Enabling amp_enable adds significant additional gain (~11-14dB);
@@ -199,7 +251,8 @@ def hackrf_transfer(
     Args:
         direction: "rx" to receive into file_path, "tx" to transmit from
             file_path.
-        file_path: Path to the IQ sample file to read from or write to.
+        file_path: Path of the IQ sample file to read from or write to,
+            relative to the capture directory.
         frequency_hz: Center frequency in Hz.
         sample_rate_hz: Sample rate in Hz (2-20 MHz supported, default 10MHz).
         duration_seconds: For rx, how long to capture if num_samples is not
@@ -220,15 +273,62 @@ def hackrf_transfer(
         timeout_seconds: Maximum time to let the transfer run before it is
             terminated.
     """
+    s = settings.get()
     args: list[str] = []
+    tx_record: dict | None = None
+    try:
+        path = storage.resolve(file_path, must_exist=(direction == "tx"))
+    except storage.PathNotAllowed as exc:
+        return _refused(exc)
+
     if direction == "rx":
-        args += ["-r", file_path]
         if num_samples is None:
             secs = duration_seconds if duration_seconds is not None else 5.0
             num_samples = int(secs * sample_rate_hz)
-        args += ["-n", str(num_samples)]
+        if num_samples / sample_rate_hz > s.max_rx_seconds:
+            return _refused(
+                f"capture of {num_samples / sample_rate_hz:.1f}s is over this "
+                f"server's {s.max_rx_seconds:g}s limit"
+            )
+        try:
+            # hackrf_transfer writes 2 bytes (8-bit I and Q) per sample.
+            storage.check_capture_space(2 * num_samples)
+        except storage.CaptureRefused as exc:
+            return _refused(exc)
+        args += ["-r", str(path), "-n", str(num_samples)]
     else:
-        args += ["-t", file_path]
+        occupied = None
+        if s.tx_mode == "allowed-bands":
+            try:
+                freqs, power = iq.file_power_spectrum(path, sample_rate_hz)
+                occupied = iq.power_bandwidth(freqs, power)
+            except (OSError, ValueError):
+                occupied = None  # fall back to assuming the full bandwidth
+        # A few FFT bins of margin on each side of the measured span.
+        margin_hz = 4 * sample_rate_hz / 4096
+        try:
+            decision = policy.check_tx(s, frequency_hz, sample_rate_hz, occupied, margin_hz)
+        except ValueError as exc:  # misconfigured band sets
+            decision = policy.TxDecision(False, f"transmit policy error: {exc}")
+        tx_record = {
+            "file": str(path.relative_to(storage.data_dir())),
+            "file_sha256": storage.sha256_file(path),
+            "frequency_hz": frequency_hz,
+            "sample_rate_hz": sample_rate_hz,
+            "span_hz": decision.span_hz,
+            "tx_mode": s.tx_mode,
+            "txvga_gain_db": txvga_gain_db,
+            "amp_enable": amp_enable,
+            "antenna_enable": antenna_enable,
+            "repeat_tx": repeat_tx,
+            "allowed": decision.allowed,
+            "reason": decision.reason,
+        }
+        if not decision.allowed:
+            storage.audit_tx(tx_record)
+            return _refused(decision.reason)
+        timeout_seconds = min(timeout_seconds, s.max_tx_seconds)
+        args += ["-t", str(path)]
         if repeat_tx:
             args += ["-R"]
 
@@ -246,7 +346,13 @@ def hackrf_transfer(
     if device_serial:
         args += ["-d", device_serial]
 
-    return run("hackrf_transfer", args, timeout=timeout_seconds)
+    result = _run_on_device("hackrf_transfer", args, timeout=timeout_seconds)
+    if tx_record is not None:
+        tx_record["result"] = "busy" if result == DEVICE_BUSY else "ran"
+        storage.audit_tx(tx_record)
+        if result != DEVICE_BUSY:
+            result = f"Transmit allowed: {tx_record['reason']}.\n{result}"
+    return result
 
 
 @mcp.tool(annotations=CONFIG)
@@ -294,7 +400,7 @@ def hackrf_clock(
         args += ["-c", clkin_ctrl]
     if device_serial:
         args += ["-d", device_serial]
-    return run("hackrf_clock", args, timeout=15)
+    return _run_on_device("hackrf_clock", args, timeout=15)
 
 
 @mcp.tool(annotations=CONFIG)
@@ -351,7 +457,7 @@ def hackrf_operacake(
         args += ["-w", str(default_dwell)]
     if device_serial:
         args += ["-d", device_serial]
-    return run("hackrf_operacake", args, timeout=15)
+    return _run_on_device("hackrf_operacake", args, timeout=15)
 
 
 @mcp.tool(annotations=CONFIG)
@@ -396,7 +502,7 @@ def hackrf_biast(
         args += ["-o", off_mode]
     if device_serial:
         args += ["-d", device_serial]
-    return run("hackrf_biast", args, timeout=15)
+    return _run_on_device("hackrf_biast", args, timeout=15)
 
 
 # Default cap on samples processed by the offline analysis tools below, to
@@ -436,12 +542,14 @@ def hackrf_iq_to_wav(
 
     Args:
         iq_file_path: Path to the raw IQ capture file (e.g. from
-            `hackrf_transfer` with `direction="rx"`).
+            `hackrf_transfer` with `direction="rx"`), relative to the
+            capture directory.
         sample_rate_hz: Sample rate the capture was recorded at, in Hz.
         mode: Demodulation mode: "nfm" (narrowband FM, e.g. analog two-way
             radio), "wfm" (wideband FM, e.g. broadcast FM radio), "am"
             (amplitude modulation), "usb"/"lsb" (single-sideband voice).
-        output_wav_path: Path to write the demodulated WAV file to.
+        output_wav_path: Path to write the demodulated WAV file to,
+            relative to the capture directory.
         center_freq_hz: Center frequency the capture was recorded at, in Hz.
             Used together with target_freq_hz to compute the tuning offset.
         target_freq_hz: Frequency of the signal of interest, in Hz, if it is
@@ -462,6 +570,12 @@ def hackrf_iq_to_wav(
         return_audio: If True, also return the WAV file as inline playable
             audio content (in addition to writing it to output_wav_path).
     """
+    try:
+        iq_file_path = str(storage.resolve(iq_file_path, must_exist=True))
+        output_wav_path = str(storage.resolve(output_wav_path))
+    except storage.PathNotAllowed as exc:
+        return _refused(exc)
+
     max_samples = None
     if max_duration_seconds is not None:
         max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
@@ -521,9 +635,11 @@ def hackrf_iq_spectrogram(
 
     Args:
         iq_file_path: Path to the raw IQ capture file (e.g. from
-            `hackrf_transfer` with `direction="rx"`).
+            `hackrf_transfer` with `direction="rx"`), relative to the
+            capture directory.
         sample_rate_hz: Sample rate the capture was recorded at, in Hz.
-        output_image_path: Path to write the spectrogram PNG to.
+        output_image_path: Path to write the spectrogram PNG to,
+            relative to the capture directory.
         center_freq_hz: Center frequency the capture was recorded at, in Hz.
             Used to label the frequency axis in absolute terms.
         fft_size: FFT size (frequency resolution) for the spectrogram.
@@ -532,6 +648,12 @@ def hackrf_iq_spectrogram(
             large files. Set to None to process the whole file (use with
             caution on large captures).
     """
+    try:
+        iq_file_path = str(storage.resolve(iq_file_path, must_exist=True))
+        output_image_path = str(storage.resolve(output_image_path))
+    except storage.PathNotAllowed as exc:
+        return [_refused(exc)]
+
     max_samples = None
     if max_duration_seconds is not None:
         max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
@@ -585,7 +707,8 @@ def hackrf_iq_info(
 
     Args:
         iq_file_path: Path to the raw IQ capture file (e.g. from
-            `hackrf_transfer` with `direction="rx"`).
+            `hackrf_transfer` with `direction="rx"`), relative to the
+            capture directory.
         sample_rate_hz: Sample rate the capture was recorded at, in Hz.
         center_freq_hz: Center frequency the capture was recorded at, in Hz.
             Used to report occupied frequencies in absolute terms.
@@ -597,6 +720,11 @@ def hackrf_iq_info(
             large files. Set to None to process the whole file (use with
             caution on large captures).
     """
+    try:
+        iq_file_path = str(storage.resolve(iq_file_path, must_exist=True))
+    except storage.PathNotAllowed as exc:
+        return _refused(exc)
+
     max_samples = None
     if max_duration_seconds is not None:
         max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
@@ -651,7 +779,8 @@ def hackrf_iq_detect_bursts(
 
     Args:
         iq_file_path: Path to the raw IQ capture file (e.g. from
-            `hackrf_transfer` with `direction="rx"`).
+            `hackrf_transfer` with `direction="rx"`), relative to the
+            capture directory.
         sample_rate_hz: Sample rate the capture was recorded at, in Hz.
         center_freq_hz: Center frequency the capture was recorded at, in Hz.
             Used to report burst frequencies in absolute terms.
@@ -667,6 +796,11 @@ def hackrf_iq_detect_bursts(
             large files. Set to None to process the whole file (use with
             caution on large captures).
     """
+    try:
+        iq_file_path = str(storage.resolve(iq_file_path, must_exist=True))
+    except storage.PathNotAllowed as exc:
+        return _refused(exc)
+
     max_samples = None
     if max_duration_seconds is not None:
         max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
@@ -705,6 +839,95 @@ def hackrf_iq_detect_bursts(
             f"freq {freq_hz / 1e6:.4f}MHz"
         )
     return "\n".join(lines)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def hackrf_server_status() -> str:
+    """Report how this server is configured: the transmit mode and the
+    bands it allows, the capture directory and its free space, the capture
+    and transmit limits, and the most recent transmit-audit entries.
+
+    This does not access the HackRF device. The transmit mode is set by the
+    server operator when the server starts; no tool can change it.
+    """
+    s = settings.get()
+    root = storage.data_dir()
+    free_mb = shutil.disk_usage(root).free / storage.MIB
+    lines = [
+        f"hackrf-mcp {__version__}",
+        f"Transmit mode: {s.tx_mode}",
+    ]
+    if s.tx_mode == "allowed-bands":
+        try:
+            bands = policy.allowed_bands(s)
+            lines.append(f"Band sets: {', '.join(s.tx_band_sets) or 'none'}")
+            lines += [f"  {b.describe()}" for b in bands] or ["  (no bands: every transmission is refused)"]
+        except ValueError as exc:
+            lines.append(f"Band configuration error, so every transmission is refused: {exc}")
+        lines.append(
+            "  The band check covers frequency only. Power, modulation, emissions "
+            "and license-class privileges are the operator's responsibility."
+        )
+    lines += [
+        f"Capture directory: {root} ({free_mb:.0f} MiB free)",
+        f"Limits: rx {s.max_rx_seconds:g}s and {s.max_capture_mb:g} MiB per capture, "
+        f"{s.min_free_mb:g} MiB kept free; tx {s.max_tx_seconds:g}s per transmission",
+        f"Device: {'busy' if _device_lock.locked() else 'idle'}",
+        f"Transmit audit log: {s.tx_log_path}",
+    ]
+    recent = storage.recent_tx()
+    if recent:
+        lines.append("Recent transmit attempts (oldest first):")
+        for r in recent:
+            outcome = "allowed" if r.get("allowed") else "refused"
+            lines.append(
+                f"  {r.get('time_utc')} {r.get('frequency_hz', 0) / 1e6:.6f} MHz "
+                f"{r.get('file')} {outcome}: {r.get('reason')}"
+            )
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def hackrf_list_captures(limit: int = 50) -> str:
+    """List files in the capture directory, newest first, with their sizes,
+    plus the total size and the free disk space.
+
+    This does not access the HackRF device.
+
+    Args:
+        limit: Maximum number of files to list.
+    """
+    entries, total = storage.list_captures(limit=max(1, limit))
+    free_mb = shutil.disk_usage(storage.data_dir()).free / storage.MIB
+    lines = [f"Capture directory {storage.data_dir()}: {total / storage.MIB:.1f} MiB used, {free_mb:.0f} MiB free."]
+    if not entries:
+        lines.append("No captures yet.")
+    for e in entries:
+        lines.append(f"  {e['modified_utc']}  {e['bytes'] / storage.MIB:10.2f} MiB  {e['path']}")
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations=DANGEROUS)
+def hackrf_delete_capture(file_path: str) -> str:
+    """Delete one file from the capture directory, e.g. to free disk space
+    for new captures. Directories and the transmit audit log cannot be
+    deleted.
+
+    This does not access the HackRF device.
+
+    Args:
+        file_path: Path of the file to delete, relative to the capture
+            directory.
+    """
+    try:
+        path = storage.resolve(file_path, must_exist=True)
+    except storage.PathNotAllowed as exc:
+        return _refused(exc)
+    if path == settings.get().tx_log_path.expanduser().resolve():
+        return _refused("the transmit audit log cannot be deleted through this server")
+    size = path.stat().st_size
+    path.unlink()
+    return f"Deleted {path.relative_to(storage.data_dir())} ({size / storage.MIB:.2f} MiB)."
 
 
 # @mcp.tool(annotations=DANGEROUS)
@@ -845,7 +1068,7 @@ def hackrf_iq_detect_bursts(
 #     return run("hackrf_spiflash", args, timeout=120)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--bin-dir",
@@ -856,10 +1079,94 @@ def main() -> None:
             "given. Defaults to the HACKRF_TOOLS_DIR environment variable."
         ),
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default=os.environ.get("HACKRF_MCP_TRANSPORT", "stdio"),
+        help="stdio (default) or http (streamable HTTP; needs a token). Env: HACKRF_MCP_TRANSPORT.",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("HACKRF_MCP_HOST", "127.0.0.1"),
+        help="Address to listen on in http mode (default 127.0.0.1). Env: HACKRF_MCP_HOST.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("HACKRF_MCP_PORT", "8765")),
+        help="Port to listen on in http mode (default 8765). Env: HACKRF_MCP_PORT.",
+    )
+    parser.add_argument(
+        "--path",
+        default=os.environ.get("HACKRF_MCP_PATH", "/mcp"),
+        help="URL path of the MCP endpoint in http mode (default /mcp). Env: HACKRF_MCP_PATH.",
+    )
+    parser.add_argument(
+        "--token-file",
+        default=None,
+        help=(
+            "File holding the bearer token http clients must send. Env: "
+            "HACKRF_MCP_TOKEN_FILE, or the token itself in HACKRF_MCP_TOKEN."
+        ),
+    )
+    parser.add_argument(
+        "--tx-mode",
+        choices=settings.TX_MODES,
+        default=None,
+        help="Transmit mode: off (default), allowed-bands or unrestricted. Env: HACKRF_MCP_TX_MODE.",
+    )
+    parser.add_argument(
+        "--tx-bands",
+        default=None,
+        help='Band sets allowed-bands mode permits, e.g. "ism,amateur" (default ism). Env: HACKRF_MCP_TX_BANDS.',
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Capture directory every file path is confined to (default ~/hackrf-captures). Env: HACKRF_MCP_DATA_DIR.",
+    )
+    args = parser.parse_args(argv)
 
     set_bin_dir(args.bin_dir)
-    mcp.run()
+
+    try:
+        s = settings.Settings.from_env()
+        if args.tx_mode:
+            s = replace(s, tx_mode=args.tx_mode)
+        if args.tx_bands is not None:
+            s = replace(s, tx_band_sets=settings.parse_band_set_names(args.tx_bands))
+        if args.data_dir:
+            s = replace(s, data_dir=Path(args.data_dir).expanduser())
+        if s.tx_mode == "allowed-bands":
+            policy.allowed_bands(s)  # fail at startup on an unknown band set
+    except (ValueError, OSError) as exc:
+        parser.error(f"invalid configuration: {exc}")
+    settings.configure(s)
+
+    if args.transport == "stdio":
+        mcp.run()
+        return
+
+    from starlette.middleware import Middleware
+
+    from hackrf_mcp.auth import BearerTokenMiddleware, load_token
+
+    try:
+        token = load_token(args.token_file)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
+    if not token:
+        parser.error(
+            "http transport needs a bearer token: pass --token-file, or set "
+            "HACKRF_MCP_TOKEN_FILE or HACKRF_MCP_TOKEN"
+        )
+    mcp.run(
+        transport="http",
+        host=args.host,
+        port=args.port,
+        path=args.path,
+        middleware=[Middleware(BearerTokenMiddleware, token=token)],
+    )
 
 
 if __name__ == "__main__":

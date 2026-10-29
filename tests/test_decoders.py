@@ -39,10 +39,12 @@ RSSI: -6.9 dBFS
   ICAO Address:  A2B12D (Mode S / ADS-B)
   Ident:         UAL817  
 
-*8da2b12d2004d4f1c20820000000;
-CRC: 00ff00
+*020583b4244d7c;
+CRC: a2b12d
+DF:0 addr:A2B12D VS:0 CC:1 SL:0 RI:11 AC:948
+ Short Air-Air Surveillance
   ICAO Address:  A2B12D (Mode S / ADS-B)
-  Ident:         BADCRC
+  Altitude:      5100 ft barometric
 
 *8da2b12d99000000000000000000;
 CRC: 000000
@@ -80,7 +82,8 @@ def fake_programs(monkeypatch):
 
 def test_parse_dump1090_aggregates_per_aircraft():
     aircraft, good = decoders.parse_dump1090(DUMP1090_SAMPLE)
-    assert good == 4
+    # The DF0 block's "CRC" is its address, not an error; it still counts.
+    assert good == 5
     assert set(aircraft) == {"AC1B44", "A2B12D"}
     a = aircraft["AC1B44"]
     assert a["messages"] == 2
@@ -89,6 +92,7 @@ def test_parse_dump1090_aggregates_per_aircraft():
     assert a["altitude"] == "24500 ft barometric"
     assert a["rssi"] == -8.7
     assert aircraft["A2B12D"]["callsign"] == "UAL817"
+    assert aircraft["A2B12D"]["altitude"] == "5100 ft barometric"
     assert aircraft["A2B12D"]["positions"] == 0
 
 

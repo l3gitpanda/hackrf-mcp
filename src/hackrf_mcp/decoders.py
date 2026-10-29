@@ -388,14 +388,15 @@ _ADSB_FIELDS = {
 
 def parse_dump1090(text: str) -> tuple[dict[str, dict], int]:
     """Aggregate dump1090's verbose message blocks per ICAO address.
-    Returns (aircraft, messages_with_good_crc)."""
+    Returns (aircraft, messages).
+
+    dump1090 prints only messages it accepted. Its "CRC:" line is not a
+    pass/fail flag: for address/parity replies (DF0/4/5/16/20/21) it is the
+    aircraft's address, and for DF11 the interrogator ID, so it is ignored."""
     aircraft: dict[str, dict] = {}
     good = 0
     for block in re.split(r"\n\s*\n", text):
         if "ICAO Address:" not in block:
-            continue
-        m = re.search(r"CRC:\s*([0-9a-fA-F]+)", block)
-        if m and int(m.group(1), 16) != 0:
             continue
         icao_m = re.search(r"ICAO Address:\s*([0-9A-Fa-f]{6})", block)
         if not icao_m:
@@ -446,7 +447,7 @@ def decode_adsb(cap: Capture, program: str, timeout: float, workdir: Path, recei
             f"this one is {rate} S/s. Recapture at 1090 MHz, 2.4 MS/s."
         )
     if out_rate == 2_000_000:
-        notes.append("2.0 MS/s decodes far fewer messages than 2.4 MS/s.")
+        notes.append("If little decodes at 2.0 MS/s, recapture at 2.4 MS/s, which dump1090 demodulates better.")
     args = [program, "--ifile", "-", "--iformat", fmt, "--stats"]
     if out_rate == 2_400_000:
         args.append("--oversample")

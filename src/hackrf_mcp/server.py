@@ -17,7 +17,7 @@ from fastmcp import FastMCP
 from fastmcp.utilities.types import Audio, Image
 from mcp.types import ToolAnnotations
 
-from hackrf_mcp import __version__, iq, policy, settings, storage
+from hackrf_mcp import __version__, decoders, iq, policy, settings, storage
 from hackrf_mcp.cli import run, set_bin_dir
 
 mcp = FastMCP(
@@ -36,9 +36,16 @@ mcp = FastMCP(
         "hackrf_transfer can run for up to their timeout_seconds, so avoid "
         "issuing another HackRF tool call until one of those returns.\n\n"
         "hackrf_iq_to_wav, hackrf_iq_spectrogram, hackrf_iq_info, "
-        "hackrf_iq_detect_bursts, hackrf_decode_ism, hackrf_list_captures "
-        "and hackrf_server_status do not access the device and can be run "
-        "anytime, including while the device is busy.\n\n"
+        "hackrf_iq_detect_bursts, hackrf_decode, hackrf_decode_ism, "
+        "hackrf_list_captures and hackrf_server_status do not access the "
+        "device and can be run anytime, including while the device is "
+        "busy.\n\n"
+        "DECODING: to find out what is on a frequency (aircraft, ships, "
+        "pagers, ACARS, APRS, RDS, ISM sensors), capture with "
+        "hackrf_transfer at the rate hackrf_decode's description gives for "
+        "the protocol, then run hackrf_decode (or hackrf_decode_ism). The "
+        "burst and spectrum tools measure power only and can miss signals "
+        "much narrower than the capture.\n\n"
         "FILES: every file path is relative to the server's capture "
         "directory (see hackrf_server_status); paths outside it are "
         "refused.\n\n"
@@ -521,10 +528,30 @@ def hackrf_biast(
     return _run_on_device("hackrf_biast", args, timeout=15)
 
 
-# Default cap on samples processed by the offline analysis tools below, to
-# keep memory use and runtime bounded for large captures. 50M complex
-# samples is ~100MB as complex64 (200MB raw int8 file at 8-bit I/Q).
+# Default cap on samples that the in-memory demodulation in hackrf_iq_to_wav
+# holds after decimation. The other file tools stream the capture in chunks
+# (iq.iter_iq_chunks) and need no cap: their memory use doesn't grow with
+# the capture's length.
 MAX_IQ_SAMPLES = 50_000_000
+MAX_DEMOD_SAMPLES = 15_000_000
+
+
+def _sample_cap(sample_rate_hz: int, max_duration_seconds: float | None) -> int | None:
+    if max_duration_seconds is None:
+        return None
+    return max(0, int(max_duration_seconds * sample_rate_hz))
+
+
+def _coverage(path: str | Path, sample_rate_hz: int, samples_read: int) -> str:
+    """'' when the whole capture was read, else a note saying how much."""
+    total = iq.iq_file_samples(path)
+    if samples_read >= total:
+        return ""
+    return (
+        f" NOTE: only the first {samples_read / sample_rate_hz:.2f}s of "
+        f"{total / sample_rate_hz:.2f}s were processed (max_duration_seconds); "
+        "pass max_duration_seconds=None for all of it."
+    )
 
 
 @mcp.tool(annotations=CONFIG)
@@ -577,9 +604,9 @@ def hackrf_iq_to_wav(
             180kHz for wfm).
         audio_rate_hz: Output WAV sample rate, in Hz.
         max_duration_seconds: Only process up to this many seconds of the
-            input capture (from the start), to bound memory/runtime for
-            large files. Set to None to process the whole file (use with
-            caution on large captures).
+            input capture (from the start). None processes the whole file;
+            the channel is decimated as it is read, so a long capture costs
+            time rather than memory.
         denoise: If True, apply STFT spectral-subtraction noise reduction
             (using the first second of audio as the noise profile). Useful
             for marginal-SNR signals; may introduce artifacts on clean audio.
@@ -592,24 +619,32 @@ def hackrf_iq_to_wav(
     except storage.PathNotAllowed as exc:
         return _refused(exc)
 
-    max_samples = None
-    if max_duration_seconds is not None:
-        max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
-    elif MAX_IQ_SAMPLES:
-        max_samples = MAX_IQ_SAMPLES
-
-    samples = iq.read_iq_int8(iq_file_path, max_samples=max_samples)
-    if samples.size == 0:
+    if iq.iq_file_samples(iq_file_path) == 0:
         return f"'{iq_file_path}' contains no IQ samples."
 
     offset_hz = (target_freq_hz - center_freq_hz) if target_freq_hz is not None else 0
-    baseband = iq.mix(samples, sample_rate_hz, offset_hz)
+    bw = bandwidth_hz or iq.MODE_BANDWIDTH_HZ[mode]
+    # Mix and decimate while reading, so only the channel is held in memory.
+    dec = iq.pick_decimation(sample_rate_hz, max(1.25 * bw, audio_rate_hz))
+    work_rate = sample_rate_hz // dec
+    max_samples = _sample_cap(sample_rate_hz, max_duration_seconds)
+    limit = MAX_DEMOD_SAMPLES * dec
+    max_samples = limit if max_samples is None else min(max_samples, limit)
+    baseband = iq.channelize_to_array(
+        iq_file_path,
+        sample_rate_hz,
+        offset_hz,
+        dec,
+        max_samples=max_samples,
+        bandwidth=min(0.95, 1.25 * bw / work_rate),
+    )
 
-    audio = iq.demodulate(baseband, sample_rate_hz, mode, bandwidth_hz=bandwidth_hz, denoise=denoise)
-    audio = iq.resample_to_rate(audio, sample_rate_hz, audio_rate_hz)
+    audio = iq.demodulate(baseband, work_rate, mode, bandwidth_hz=bandwidth_hz, denoise=denoise)
+    audio = iq.resample_to_rate(audio, work_rate, audio_rate_hz)
     iq.write_wav(output_wav_path, audio, audio_rate_hz)
 
-    duration_s = samples.size / sample_rate_hz
+    samples_read = baseband.size * dec
+    duration_s = samples_read / sample_rate_hz
     warning = ""
     if offset_hz == 0 and mode in ("nfm", "wfm"):
         warning = (
@@ -623,7 +658,7 @@ def hackrf_iq_to_wav(
     result = (
         f"Wrote {output_wav_path} ({audio.size / audio_rate_hz:.2f}s @ "
         f"{audio_rate_hz}Hz) demodulated as {mode} from {duration_s:.2f}s of "
-        f"input at {sample_rate_hz}Hz.{warning}"
+        f"input at {sample_rate_hz}Hz.{warning}{_coverage(iq_file_path, sample_rate_hz, samples_read)}"
     )
 
     if return_audio:
@@ -638,13 +673,19 @@ def hackrf_iq_spectrogram(
     output_image_path: str,
     center_freq_hz: int = 0,
     fft_size: int = 1024,
-    max_duration_seconds: float | None = 10.0,
+    max_duration_seconds: float | None = None,
+    reduce: Literal["max", "mean"] = "max",
 ):
     """Render a spectrogram (waterfall) PNG from a raw IQ capture (from
     hackrf_transfer, 8-bit signed interleaved I/Q).
 
     Useful for visually identifying bursts, framing/timing patterns (e.g.
     keyfobs, trunked radio control channels), and occupied bandwidth.
+
+    The capture is read in chunks and drawn as at most ~1200 time columns,
+    each holding the peak (reduce="max", the default, which keeps short
+    bursts visible) or average power of the FFT frames inside it, so the
+    whole file can be drawn in bounded memory.
 
     This is an offline file-processing tool and does not access the HackRF
     device.
@@ -659,10 +700,9 @@ def hackrf_iq_spectrogram(
         center_freq_hz: Center frequency the capture was recorded at, in Hz.
             Used to label the frequency axis in absolute terms.
         fft_size: FFT size (frequency resolution) for the spectrogram.
-        max_duration_seconds: Only process up to this many seconds of the
-            input capture (from the start), to bound memory/runtime for
-            large files. Set to None to process the whole file (use with
-            caution on large captures).
+        max_duration_seconds: Only draw up to this many seconds of the
+            capture (from the start). None (default) draws all of it.
+        reduce: "max" (peak hold per column) or "mean".
     """
     try:
         iq_file_path = str(storage.resolve(iq_file_path, must_exist=True))
@@ -670,36 +710,35 @@ def hackrf_iq_spectrogram(
     except storage.PathNotAllowed as exc:
         return [_refused(exc)]
 
-    max_samples = None
-    if max_duration_seconds is not None:
-        max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
-    elif MAX_IQ_SAMPLES:
-        max_samples = MAX_IQ_SAMPLES
+    fft_size = max(16, min(int(fft_size), 8192))
+    max_samples = _sample_cap(sample_rate_hz, max_duration_seconds)
+    freqs_hz, times_s, power_db = iq.stream_spectrogram(
+        iq_file_path, sample_rate_hz, fft_size=fft_size, max_samples=max_samples, reduce=reduce
+    )
+    if power_db.size == 0:
+        return [f"'{iq_file_path}' contains no IQ samples (or fewer than fft_size)."]
 
-    samples = iq.read_iq_int8(iq_file_path, max_samples=max_samples)
-    if samples.size == 0:
-        return [f"'{iq_file_path}' contains no IQ samples."]
-
-    freqs_hz, times_s, power_db = iq.compute_spectrogram(samples, sample_rate_hz, fft_size=fft_size)
     iq.render_spectrogram_png(
         output_image_path,
         freqs_hz,
         times_s,
         power_db,
         center_freq_hz,
-        title=Path(iq_file_path).name,
+        title=f"{Path(iq_file_path).name} ({reduce} per column)",
     )
 
     peak_idx = np.unravel_index(np.argmax(power_db), power_db.shape)
     peak_freq_hz = freqs_hz[peak_idx[0]] + center_freq_hz
     peak_time_s = times_s[peak_idx[1]]
-    duration_s = samples.size / sample_rate_hz
+    total = iq.iq_file_samples(iq_file_path)
+    samples_read = total if max_samples is None else min(total, max_samples)
+    duration_s = samples_read / sample_rate_hz
 
     summary = (
         f"Wrote {output_image_path} ({duration_s:.2f}s of input at "
-        f"{sample_rate_hz}Hz, fft_size={fft_size}). Peak power "
+        f"{sample_rate_hz}Hz, fft_size={fft_size}, {times_s.size} columns). Peak power "
         f"{power_db[peak_idx]:.1f}dB at {peak_freq_hz / 1e6:.4f}MHz, "
-        f"t={peak_time_s:.3f}s."
+        f"t={peak_time_s:.3f}s.{_coverage(iq_file_path, sample_rate_hz, samples_read)}"
     )
     return [summary, Image(path=output_image_path)]
 
@@ -711,7 +750,7 @@ def hackrf_iq_info(
     center_freq_hz: int = 0,
     fft_size: int = 4096,
     occupied_bw_threshold_db: float = 6.0,
-    max_duration_seconds: float | None = 10.0,
+    max_duration_seconds: float | None = None,
 ) -> str:
     """Summarize a raw IQ capture (from hackrf_transfer, 8-bit signed
     interleaved I/Q): duration, sample count, signal levels, and an estimate
@@ -719,7 +758,7 @@ def hackrf_iq_info(
 
     This is an offline file-processing tool and does not access the HackRF
     device. Useful for a quick look at a capture before rendering a full
-    spectrogram or demodulating it.
+    spectrogram or demodulating it. The file is read in chunks.
 
     Args:
         iq_file_path: Path to the raw IQ capture file (e.g. from
@@ -732,29 +771,21 @@ def hackrf_iq_info(
         occupied_bw_threshold_db: A frequency is considered "occupied" if its
             average power is within this many dB of the peak.
         max_duration_seconds: Only process up to this many seconds of the
-            input capture (from the start), to bound memory/runtime for
-            large files. Set to None to process the whole file (use with
-            caution on large captures).
+            capture (from the start). None (default) reads all of it.
     """
     try:
         iq_file_path = str(storage.resolve(iq_file_path, must_exist=True))
     except storage.PathNotAllowed as exc:
         return _refused(exc)
 
-    max_samples = None
-    if max_duration_seconds is not None:
-        max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
-    elif MAX_IQ_SAMPLES:
-        max_samples = MAX_IQ_SAMPLES
-
-    samples = iq.read_iq_int8(iq_file_path, max_samples=max_samples)
-    if samples.size == 0:
+    fft_size = max(16, min(int(fft_size), 65536))
+    n, mean_power_db, freqs_hz, power_db = iq.stream_stats(
+        iq_file_path, sample_rate_hz, fft_size=fft_size, max_samples=_sample_cap(sample_rate_hz, max_duration_seconds)
+    )
+    if n == 0:
         return f"'{iq_file_path}' contains no IQ samples."
 
-    duration_s = samples.size / sample_rate_hz
-    mean_power_db = float(10 * np.log10(np.mean(np.abs(samples) ** 2) + 1e-12))
-
-    freqs_hz, power_db = iq.compute_spectrum(samples, sample_rate_hz, fft_size=fft_size)
+    duration_s = n / sample_rate_hz
     peak_idx = np.argmax(power_db)
     peak_freq_hz = freqs_hz[peak_idx] + center_freq_hz
     peak_power_db = power_db[peak_idx]
@@ -762,13 +793,13 @@ def hackrf_iq_info(
     low_hz, high_hz, bw_hz = iq.occupied_bandwidth(freqs_hz, power_db, threshold_db=occupied_bw_threshold_db)
 
     return (
-        f"'{iq_file_path}': {duration_s:.3f}s ({samples.size} samples) at "
+        f"'{iq_file_path}': {duration_s:.3f}s ({n} samples) at "
         f"{sample_rate_hz}Hz, center {center_freq_hz / 1e6:.4f}MHz.\n"
         f"Mean power: {mean_power_db:.1f}dB. Peak power: {peak_power_db:.1f}dB "
         f"at {peak_freq_hz / 1e6:.4f}MHz.\n"
         f"Occupied bandwidth (within {occupied_bw_threshold_db:.1f}dB of peak): "
         f"{bw_hz / 1e3:.1f}kHz, from {(low_hz + center_freq_hz) / 1e6:.4f}MHz to "
-        f"{(high_hz + center_freq_hz) / 1e6:.4f}MHz."
+        f"{(high_hz + center_freq_hz) / 1e6:.4f}MHz.{_coverage(iq_file_path, sample_rate_hz, n)}"
     )
 
 
@@ -781,17 +812,27 @@ def hackrf_iq_detect_bursts(
     min_duration_ms: float = 0.5,
     merge_gap_ms: float = 1.0,
     max_bursts: int = 50,
-    max_duration_seconds: float | None = 10.0,
+    max_duration_seconds: float | None = None,
+    channel_freq_hz: int | None = None,
+    channel_bandwidth_hz: float | None = None,
+    smoothing_ms: float | None = None,
 ) -> str:
     """Detect bursts of elevated signal power in a raw IQ capture (from
     hackrf_transfer, 8-bit signed interleaved I/Q), e.g. keyfob transmissions,
     packet preambles, or trunked radio control channel activity.
 
     This is an offline file-processing tool and does not access the HackRF
-    device.
+    device. The file is read in chunks.
+
+    By default the whole capture bandwidth is examined, so a signal much
+    narrower than the capture (e.g. a 25 kHz AIS or pager channel in a 2 MHz
+    capture) may not raise the total power enough to be seen. Pass
+    channel_freq_hz and channel_bandwidth_hz to look at one channel only.
+    To actually decode a known protocol, use hackrf_decode instead.
 
     For each detected burst, reports its start/end time, duration, peak
     power, and dominant frequency (relative to the capture's noise floor).
+    Start and end times are accurate to about the smoothing window.
 
     Args:
         iq_file_path: Path to the raw IQ capture file (e.g. from
@@ -808,53 +849,168 @@ def hackrf_iq_detect_bursts(
             are merged into a single burst.
         max_bursts: Maximum number of bursts to report.
         max_duration_seconds: Only process up to this many seconds of the
-            input capture (from the start), to bound memory/runtime for
-            large files. Set to None to process the whole file (use with
-            caution on large captures).
+            capture (from the start). None (default) reads all of it.
+        channel_freq_hz: Absolute frequency of one channel to examine
+            (needs channel_bandwidth_hz and center_freq_hz).
+        channel_bandwidth_hz: Width of that channel, in Hz.
+        smoothing_ms: Length of the power-smoothing window. Defaults to half
+            of min_duration_ms, at most 0.5 ms.
     """
     try:
         iq_file_path = str(storage.resolve(iq_file_path, must_exist=True))
     except storage.PathNotAllowed as exc:
         return _refused(exc)
 
-    max_samples = None
-    if max_duration_seconds is not None:
-        max_samples = min(int(max_duration_seconds * sample_rate_hz), MAX_IQ_SAMPLES)
-    elif MAX_IQ_SAMPLES:
-        max_samples = MAX_IQ_SAMPLES
+    offset = None
+    if channel_freq_hz is not None or channel_bandwidth_hz is not None:
+        if channel_freq_hz is None or not channel_bandwidth_hz:
+            return "channel_freq_hz and channel_bandwidth_hz must be given together."
+        offset = channel_freq_hz - center_freq_hz
+        if abs(offset) + channel_bandwidth_hz / 2 > sample_rate_hz / 2:
+            return (
+                f"{channel_freq_hz / 1e6:.4f} MHz is outside this capture "
+                f"({(center_freq_hz - sample_rate_hz / 2) / 1e6:.4f}-{(center_freq_hz + sample_rate_hz / 2) / 1e6:.4f} MHz)."
+            )
 
-    samples = iq.read_iq_int8(iq_file_path, max_samples=max_samples)
-    if samples.size == 0:
-        return f"'{iq_file_path}' contains no IQ samples."
-
-    duration_s = samples.size / sample_rate_hz
-    bursts = iq.detect_bursts(
-        samples,
+    bursts, n, rate = iq.detect_bursts_file(
+        iq_file_path,
         sample_rate_hz,
         threshold_db=threshold_db,
         min_duration_s=min_duration_ms / 1000,
         merge_gap_s=merge_gap_ms / 1000,
+        smoothing_s=None if smoothing_ms is None else smoothing_ms / 1000,
         max_bursts=max_bursts,
+        max_samples=_sample_cap(sample_rate_hz, max_duration_seconds),
+        channel_offset_hz=offset,
+        channel_bandwidth_hz=channel_bandwidth_hz,
     )
+    if n == 0:
+        return f"'{iq_file_path}' contains no IQ samples."
+
+    duration_s = n / rate
+    where = (
+        f" in the {channel_bandwidth_hz / 1e3:g} kHz channel at {channel_freq_hz / 1e6:.4f} MHz"
+        if offset is not None
+        else ""
+    )
+    coverage = _coverage(iq_file_path, sample_rate_hz, int(round(duration_s * sample_rate_hz)))
 
     if not bursts:
         return (
-            f"No bursts found in {duration_s:.3f}s of input at "
-            f"{sample_rate_hz}Hz (threshold {threshold_db:.1f}dB above median)."
+            f"No bursts found{where} in {duration_s:.3f}s of input at "
+            f"{sample_rate_hz}Hz (threshold {threshold_db:.1f}dB above median).{coverage}"
         )
 
     lines = [
-        f"Found {len(bursts)} burst(s) in {duration_s:.3f}s of input at "
-        f"{sample_rate_hz}Hz (threshold {threshold_db:.1f}dB above median):"
+        f"Found {len(bursts)} burst(s){where} in {duration_s:.3f}s of input at "
+        f"{sample_rate_hz}Hz (threshold {threshold_db:.1f}dB above median):{coverage}"
     ]
     for b in bursts:
         freq_hz = center_freq_hz + b["peak_freq_offset_hz"]
         lines.append(
             f"  t={b['start_s']:.4f}-{b['end_s']:.4f}s "
-            f"(dur {b['duration_s'] * 1000:.2f}ms), peak {b['peak_db']:.1f}dB, "
+            f"(dur {b['duration_s'] * 1000:.3f}ms), peak {b['peak_db']:.1f}dB, "
             f"freq {freq_hz / 1e6:.4f}MHz"
         )
     return "\n".join(lines)
+
+
+@mcp.tool(annotations=CONFIG)
+def hackrf_decode(
+    decoder: Literal["adsb", "uat", "ais", "acars", "vdl2", "pocsag", "flex", "aprs", "eas", "dtmf", "rds"],
+    iq_file_path: str,
+    sample_rate_hz: int,
+    center_freq_hz: int,
+    frequencies_hz: list[int] | None = None,
+    max_events: int = 100,
+    max_duration_seconds: float | None = None,
+    timeout_seconds: float = 240,
+    output_path: str | None = None,
+    receiver_lat: float | None = None,
+    receiver_lon: float | None = None,
+) -> str:
+    """Decode a protocol in a raw IQ capture (from hackrf_transfer, 8-bit
+    signed interleaved I/Q) with an external decoder program, and summarise
+    what it found. For ISM-band sensors, remotes and meters use
+    hackrf_decode_ism (rtl_433).
+
+    This is an offline file-processing tool and does not access the HackRF
+    device. hackrf_server_status lists which decoders are installed.
+
+    Capture first with hackrf_transfer (direction="rx"); each decoder needs
+    a particular frequency and sample rate:
+      adsb  - aircraft, 1090 MHz at 2,400,000 S/s (2,000,000 works, worse).
+              Optional receiver_lat/receiver_lon resolve more positions.
+      uat   - US general-aviation aircraft, 978 MHz at 2,083,333 S/s.
+      ais   - ships, 162.0 MHz at 2,000,000 S/s (any rate).
+      acars - aircraft datalink, 130.8 MHz at 2,000,000 S/s covers the
+              US channels 130.025-131.550 MHz (4,000,000 S/s at 130.35 MHz
+              adds 129.125).
+      vdl2  - aircraft datalink, 136.8 MHz at 2,100,000 S/s (the rate must
+              be a multiple of 105,000).
+      pocsag, flex - pagers; pass the pager frequency in frequencies_hz and
+              capture 25-50 kHz off it, at 2,000,000 S/s.
+      aprs  - packet radio, US 144.390 MHz; capture at 144.35 MHz.
+      eas   - EAS/SAME headers (NOAA Weather Radio 162.400-162.550 MHz;
+              capture at 162.475 MHz). Headers come only with alerts/tests.
+      dtmf  - DTMF on an FM channel given in frequencies_hz.
+      rds   - FM broadcast RDS; pass the station in frequencies_hz and
+              capture 300-500 kHz off it at 2,000,000 S/s.
+    Capture 30-60 s for intermittent traffic (AIS, ACARS, pagers, APRS).
+    A capture at the wrong rate is refused with what to change.
+
+    Args:
+        decoder: Which protocol to decode (see above).
+        iq_file_path: Path to the raw IQ capture file, relative to the
+            capture directory.
+        sample_rate_hz: Sample rate the capture was recorded at, in Hz.
+        center_freq_hz: Center frequency the capture was recorded at, in Hz.
+        frequencies_hz: Channel frequencies to decode, in Hz, for the
+            channelised decoders (acars, vdl2, pocsag, flex, aprs, eas,
+            dtmf, rds). Defaults to the protocol's usual US channels where
+            it has them; channels outside the capture are skipped.
+        max_events: Maximum number of aircraft/ships/messages listed.
+        max_duration_seconds: Only decode up to this many seconds of the
+            capture (from the start). None (default) decodes all of it.
+        timeout_seconds: Maximum time to let the decoder run.
+        output_path: If given, also save the decoder program's full output
+            to this file in the capture directory.
+        receiver_lat: Receiver latitude, for adsb (optional).
+        receiver_lon: Receiver longitude, for adsb (optional).
+    """
+    try:
+        path = storage.resolve(iq_file_path, must_exist=True)
+        out = storage.resolve(output_path) if output_path else None
+    except storage.PathNotAllowed as exc:
+        return _refused(exc)
+    if iq.iq_file_samples(path) == 0:
+        return f"'{path}' contains no IQ samples."
+    receiver = None
+    if receiver_lat is not None and receiver_lon is not None:
+        receiver = (float(receiver_lat), float(receiver_lon))
+    max_samples = _sample_cap(sample_rate_hz, max_duration_seconds)
+    try:
+        result = decoders.decode(
+            decoder,
+            path,
+            sample_rate_hz,
+            center_freq_hz,
+            frequencies_hz,
+            max_samples,
+            timeout_seconds,
+            storage.data_dir() / ".decode-tmp",
+            receiver,
+        )
+    except decoders.DecodeError as exc:
+        return f"Cannot decode: {exc}"
+    text = result.format(max(1, max_events))
+    total = iq.iq_file_samples(path)
+    read = total if max_samples is None else min(total, max_samples)
+    text += _coverage(path, sample_rate_hz, read)
+    if out is not None:
+        out.write_text(result.raw)
+        text += f"\nFull decoder output saved to {out.relative_to(storage.data_dir())}."
+    return text
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -962,6 +1118,12 @@ def hackrf_server_status() -> str:
         f"Bias-tee power: {'allowed' if s.allow_bias_tee else 'locked'}",
         f"Device: {'busy' if _device_lock.locked() else 'idle'}",
         f"Transmit audit log: {s.tx_log_path}",
+        "Decoders (hackrf_decode): "
+        + ", ".join(
+            f"{name} ({Path(prog).name})" if prog else f"{name} (not installed)"
+            for name, prog in decoders.available().items()
+        ),
+        f"ISM decoder (hackrf_decode_ism): {'rtl_433' if shutil.which('rtl_433') else 'rtl_433 not installed'}",
     ]
     recent = storage.recent_tx()
     if recent:

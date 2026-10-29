@@ -24,6 +24,10 @@ Environment=MPLCONFIGDIR=/var/cache/hackrf-mcp
 ExecStart=/opt/hackrf-mcp/.venv/bin/hackrf-mcp --transport http
 Restart=on-failure
 RestartSec=5
+# A runaway analysis call should fail on its own, not swap the box or let
+# the kernel's OOM killer pick another process.
+MemoryHigh=1536M
+MemoryMax=2G
 
 StateDirectory=hackrf-mcp
 CacheDirectory=hackrf-mcp

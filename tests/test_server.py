@@ -237,7 +237,7 @@ def test_hackrf_biast_reset_and_modes(fake_run, bias_tee_allowed):
 
 @pytest.mark.parametrize(
     "name",
-    ["hackrf_info", "hackrf_sweep", "hackrf_transfer", "hackrf_clock", "hackrf_operacake", "hackrf_biast"],
+    ["hackrf_info", "hackrf_sweep", "hackrf_transfer", "hackrf_clock", "hackrf_operacake", "hackrf_biast", "hackrf_decode"],
 )
 def test_active_tools_are_registered(name):
     import asyncio

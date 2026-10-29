@@ -92,8 +92,8 @@ hackrf_* tools and explains "device busy"/"resource busy" errors.
 that they hold the device for up to `timeout_seconds`. If you add a new tool
 that opens the device, mention this constraint in its docstring too.
 
-`hackrf_iq_to_wav`, `hackrf_iq_spectrogram`, `hackrf_iq_info`, and
-`hackrf_iq_detect_bursts` are the exception: they only read capture files from
+`hackrf_iq_to_wav`, `hackrf_iq_spectrogram`, `hackrf_iq_info`,
+`hackrf_iq_detect_bursts`, `hackrf_decode` and `hackrf_decode_ism` are the exception: they only read capture files from
 disk via `iq.py` and never touch the device, so they can run anytime
 (including while another `hackrf_*` tool holds the device). This is called out
 explicitly in the `FastMCP(... instructions=...)` string.
@@ -115,11 +115,21 @@ explicitly in the `FastMCP(... instructions=...)` string.
   default.
 - `hackrf_sweep` writes CLI output to a temp file (the tool requires `-r
   <file>`), reads it back, truncates to ~50k chars, and deletes the temp file.
-- `hackrf_iq_to_wav`, `hackrf_iq_spectrogram`, `hackrf_iq_info`, and
-  `hackrf_iq_detect_bursts` cap how many IQ samples they read via
-  `MAX_IQ_SAMPLES` (50M, ~100MB as complex64 / ~200MB on disk as raw int8) and
-  a `max_duration_seconds` param, so a huge capture file can't blow up memory
-  or runtime.
+- File tools never load a whole capture. They read it in chunks
+  (`iq.iter_iq_chunks`, `iq.channelize`, `iq.stream_spectrogram`,
+  `iq.stream_stats`, `iq.detect_bursts_file`), so memory stays bounded however
+  long the capture is: a full-capture `scipy.signal.spectrogram` on 25 s at
+  2 MS/s once took the server to 3.4 GB and the OOM killer. Only
+  `hackrf_iq_to_wav` holds an array, after decimating to the channel, capped
+  at `MAX_DEMOD_SAMPLES`. When a `max_duration_seconds` cap stops a tool
+  early, its result says so (`_coverage()`); never truncate silently.
+- `hackrf_decode` runs external decoder programs (`decoders.py`). Each
+  decoder converts the capture with the chunked helpers, streams it to the
+  program's stdin where possible, refuses a capture at a rate the program
+  can't use with a message saying what to recapture at, and summarises the
+  output. Temporary files go under `<capture dir>/.decode-tmp` (the service
+  unit's `ProtectSystem=strict` leaves little else writable). Tests mock
+  `decoders.run_program` and `decoders.find_program`.
 - **Output schema / mixed content gotcha**: do not annotate a tool's return
   type as `-> list`, `-> dict`, etc. if it can return non-JSON-serializable
   content like `Image`/`Audio`/`File`. FastMCP auto-generates an

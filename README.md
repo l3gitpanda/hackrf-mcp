@@ -154,13 +154,39 @@ Add to `claude_desktop_config.json` (see
 | `hackrf_iq_info` | Summarize an IQ capture: duration, power levels, occupied bandwidth. |
 | `hackrf_iq_detect_bursts` | Detect bursts of elevated power (keyfobs, packet preambles, etc.) in an IQ capture. |
 | `hackrf_decode_ism` | Decode ISM-band sensors, remotes and tire-pressure sensors in an IQ capture with rtl_433 (offline; needs `rtl_433`). |
+| `hackrf_decode` | Decode a protocol in an IQ capture with an external decoder and summarise it: ADS-B, UAT, AIS, ACARS, VDL2, POCSAG, FLEX, APRS, EAS/SAME, DTMF, RDS (offline; see [Decoders](#decoders)). |
 | `hackrf_server_status` | Show the transmit mode and allowed bands, capture directory, limits and recent transmit attempts. |
 | `hackrf_list_captures` | List files in the capture directory with sizes and free space. |
 | `hackrf_delete_capture` | Delete one file from the capture directory. |
 
-`hackrf_iq_*` tools are **offline** — they read capture files written by
-`hackrf_transfer` and never touch the device, so they can run while the HackRF
-is busy with another operation.
+`hackrf_iq_*` and `hackrf_decode*` tools are **offline** — they read capture
+files written by `hackrf_transfer` and never touch the device, so they can run
+while the HackRF is busy with another operation. They read the capture in
+fixed-size chunks, so memory use doesn't grow with its length; when a
+`max_duration_seconds` cap stops them early, the result says so.
+
+### Decoders
+
+`hackrf_decode` converts the capture to what each decoder program reads
+(cu8/sc16 IQ, AM or FM audio, FM multiplex), streaming it to the program's
+stdin where it can, and summarises the output per aircraft, ship or message.
+The programs are found on `PATH`; `hackrf_server_status` lists which are
+installed.
+
+| Decoder | Program | Capture |
+|---|---|---|
+| `adsb` | `dump1090-mutability` (or `dump1090`) | 1090 MHz at 2.4 MS/s (2.0 works, worse) |
+| `uat` | `dump978-fa` | 978 MHz at 2,083,333 S/s |
+| `ais` | `AIS-catcher` | 162.0 MHz, any rate (2 MS/s) |
+| `acars` | `acarsdec` | 130.8 MHz at 2 MS/s (a multiple of 12.5 kS/s) |
+| `vdl2` | `dumpvdl2` | 136.8 MHz at 2.1 MS/s (a multiple of 105 kS/s) |
+| `pocsag`, `flex`, `aprs`, `eas`, `dtmf` | `multimon-ng` | the channel ± 25–50 kHz, 2 MS/s |
+| `rds` | `redsea` | the station ± 300–500 kHz, 2 MS/s |
+
+ISM-band devices go through `hackrf_decode_ism` (`rtl_433`).
+[`deploy/build-decoders.sh`](deploy/build-decoders.sh) builds `redsea` and
+`dump978-fa`, which Ubuntu doesn't package; the others come from the
+distribution or their projects' releases.
 
 `hackrf_sweep` accepts an optional `output_image_path` to render the sweep as
 a PNG alongside the CSV text.
@@ -251,8 +277,11 @@ template for running it as a service.
 1. **`hackrf_info`** — confirm the device is connected.
 2. **`hackrf_sweep`** — scan a band to find active signals.
 3. **`hackrf_transfer`** (rx) — capture IQ at a chosen center frequency.
-4. **`hackrf_iq_spectrogram`** / **`hackrf_iq_to_wav`** / **`hackrf_iq_info`** —
-   analyze the capture offline.
+4. **`hackrf_decode`** — decode a known protocol (aircraft, ships, pagers…),
+   or **`hackrf_iq_spectrogram`** / **`hackrf_iq_to_wav`** / **`hackrf_iq_info`** —
+   analyze the capture offline. The burst and spectrum tools measure power
+   only: a signal much narrower than the capture (a 25 kHz AIS channel in
+   2 MHz) may not show up in them while it still decodes.
 
 For NFM/WFM demodulation, capture with a small LO offset (~25–50 kHz) from the
 target signal and pass the real frequency as `target_freq_hz` to avoid the

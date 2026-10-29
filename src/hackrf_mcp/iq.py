@@ -65,8 +65,10 @@ def mix(iq: np.ndarray, sample_rate_hz: float, shift_hz: float) -> np.ndarray:
 def _lowpass(iq: np.ndarray, sample_rate_hz: float, cutoff_hz: float, numtaps: int = 129) -> np.ndarray:
     nyq = sample_rate_hz / 2
     cutoff = max(1.0, min(cutoff_hz, nyq * 0.99))
-    taps = scipy_signal.firwin(numtaps, cutoff / nyq)
-    return scipy_signal.fftconvolve(iq, taps, mode="same")
+    taps = scipy_signal.firwin(numtaps, cutoff / nyq).astype(np.float32)
+    # Overlap-add works block by block, so it needs far less memory than
+    # one FFT across a long capture.
+    return scipy_signal.oaconvolve(iq, taps, mode="same").astype(np.complex64)
 
 
 def demodulate(
@@ -368,18 +370,8 @@ def detect_bursts(
     noise_floor_db = float(np.median(power_db))
     mask = power_db >= (noise_floor_db + threshold_db)
 
-    spans: list[tuple[int, int]] = []
-    start_idx = 0
-    in_burst = False
-    for i, m in enumerate(mask):
-        if m and not in_burst:
-            start_idx = i
-            in_burst = True
-        elif not m and in_burst:
-            spans.append((start_idx, i))
-            in_burst = False
-    if in_burst:
-        spans.append((start_idx, len(mask)))
+    edges = np.diff(np.concatenate([[0], mask.astype(np.int8), [0]]))
+    spans = list(zip(np.flatnonzero(edges == 1).tolist(), np.flatnonzero(edges == -1).tolist()))
 
     merge_samples = int(sample_rate_hz * merge_gap_s)
     merged: list[list[int]] = []
@@ -425,6 +417,13 @@ def render_spectrogram_png(
     center_freq_hz: float,
     title: str | None = None,
 ) -> None:
+    # The figure is about 1000 px tall, so more frequency rows than that
+    # only cost memory; keep each group's peak.
+    if freqs_hz.size > 1024:
+        group = -(-freqs_hz.size // 1024)
+        rows = freqs_hz.size // group
+        freqs_hz = freqs_hz[: rows * group].reshape(rows, group).mean(axis=1)
+        power_db = power_db[: rows * group].reshape(rows, group, -1).max(axis=1)
     fig, ax = plt.subplots(figsize=(10, 6))
     freqs_mhz = (freqs_hz + center_freq_hz) / 1e6
     mesh = ax.pcolormesh(times_s, freqs_mhz, power_db, shading="auto", cmap="viridis")
@@ -436,3 +435,433 @@ def render_spectrogram_png(
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     plt.close(fig)
+
+
+# --- Streaming helpers ------------------------------------------------------
+#
+# Captures can be gigabytes, and the server may run on a small box: a 60 s
+# capture at 2 MS/s is 120M samples, ~1 GB as complex64 and several GB once
+# scipy has made its intermediates. Everything below reads the file in
+# fixed-size chunks through a memmap, so memory stays bounded by the chunk
+# size no matter how long the capture is.
+
+CHUNK_SAMPLES = 1 << 20
+
+
+def iq_file_samples(path: str | Path) -> int:
+    """Number of complex samples in an int8 IQ file."""
+    return Path(path).stat().st_size // 2
+
+
+def iter_iq_chunks(
+    path: str | Path,
+    chunk_samples: int = CHUNK_SAMPLES,
+    max_samples: int | None = None,
+):
+    """Yield successive complex64 chunks (scaled to roughly [-1, 1]) of an
+    int8 IQ file, reading at most `max_samples` samples in total."""
+    total = iq_file_samples(path)
+    if max_samples is not None:
+        total = min(total, max_samples)
+    if total == 0:
+        return
+    raw = np.memmap(path, dtype=np.int8, mode="r", shape=(2 * total,))
+    for start in range(0, total, chunk_samples):
+        seg = np.asarray(raw[2 * start : 2 * min(start + chunk_samples, total)], dtype=np.float32)
+        seg *= 1.0 / 128.0
+        yield seg.view(np.complex64)
+
+
+def iter_cu8_chunks(path: str | Path, chunk_samples: int = CHUNK_SAMPLES, max_samples: int | None = None):
+    """Yield the file's int8 IQ bytes converted to unsigned 8-bit (cu8, as
+    rtl_sdr writes it), the input format of dump1090 and dumpvdl2. The
+    conversion is a flip of each byte's top bit."""
+    total = iq_file_samples(path)
+    if max_samples is not None:
+        total = min(total, max_samples)
+    if total == 0:
+        return
+    raw = np.memmap(path, dtype=np.uint8, mode="r", shape=(2 * total,))
+    for start in range(0, total, chunk_samples):
+        yield np.bitwise_xor(raw[2 * start : 2 * min(start + chunk_samples, total)], 0x80).tobytes()
+
+
+def complex_to_cu8(x: np.ndarray, scale: float = 127.0) -> bytes:
+    """Interleave complex samples (roughly [-1, 1]) as unsigned 8-bit I/Q."""
+    out = np.empty(2 * x.size, dtype=np.float32)
+    out[0::2] = x.real
+    out[1::2] = x.imag
+    return np.clip(np.rint(out * scale + 127.5), 0, 255).astype(np.uint8).tobytes()
+
+
+def complex_to_cs8(x: np.ndarray, scale: float = 127.0) -> bytes:
+    """Interleave complex samples (roughly [-1, 1]) as signed 8-bit I/Q."""
+    out = np.empty(2 * x.size, dtype=np.float32)
+    out[0::2] = x.real
+    out[1::2] = x.imag
+    return np.clip(np.rint(out * scale), -127, 127).astype(np.int8).tobytes()
+
+
+class Mixer:
+    """Frequency shift that keeps its phase from one chunk to the next."""
+
+    def __init__(self, sample_rate_hz: float, shift_hz: float):
+        self.step = -2 * np.pi * shift_hz / sample_rate_hz
+        self.phase = 0.0
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        if self.step == 0 or x.size == 0:
+            return x
+        ph = self.phase + self.step * np.arange(x.size, dtype=np.float64)
+        self.phase = float((self.phase + self.step * x.size) % (2 * np.pi))
+        return (x * np.exp(1j * ph).astype(np.complex64)).astype(np.complex64)
+
+
+def _decimation_stages(factor: int) -> list[int]:
+    """Split an integer decimation factor into stages of at most 10, so no
+    single filter needs thousands of taps."""
+    stages = []
+    remaining = factor
+    while remaining > 1:
+        for d in range(min(10, remaining), 1, -1):
+            if remaining % d == 0:
+                stages.append(d)
+                remaining //= d
+                break
+        else:
+            # A prime factor above 10: take it in one stage.
+            stages.append(remaining)
+            remaining = 1
+    return stages
+
+
+class _DecimatorStage:
+    def __init__(self, factor: int, cutoff: float):
+        self.factor = factor
+        self.taps = scipy_signal.firwin(10 * factor + 1, cutoff / factor).astype(np.float32)
+        self.zi = np.zeros(self.taps.size - 1, dtype=np.complex64)
+        self.offset = 0  # index into the next chunk of the next sample to keep
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        y, self.zi = scipy_signal.lfilter(self.taps, 1.0, x, zi=self.zi)
+        out = y[self.offset :: self.factor].astype(np.complex64)
+        self.offset = (self.offset - x.size) % self.factor
+        return out
+
+
+class Decimator:
+    """Low-pass filter and integer decimation that carries its filter state
+    and sample phase from one chunk to the next, so chunked output matches
+    processing the whole capture at once. `bandwidth` is the fraction of the
+    output Nyquist band kept (0-1)."""
+
+    def __init__(self, factor: int, bandwidth: float = 0.8):
+        if factor < 1:
+            raise ValueError("decimation factor must be at least 1")
+        self.factor = factor
+        stages = _decimation_stages(factor)
+        # Earlier stages only need to protect the final band from aliasing,
+        # so they can be wider; the last stage sets the bandwidth.
+        self.stages = [
+            _DecimatorStage(d, bandwidth if i == len(stages) - 1 else 0.9) for i, d in enumerate(stages)
+        ]
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        for stage in self.stages:
+            x = stage(x)
+        return x
+
+
+def channelize(
+    path: str | Path,
+    sample_rate_hz: int,
+    shift_hz: float,
+    decimation: int,
+    max_samples: int | None = None,
+    bandwidth: float = 0.8,
+    chunk_samples: int = CHUNK_SAMPLES,
+):
+    """Yield chunks of the capture mixed down by `shift_hz` (so a signal at
+    center + shift_hz lands on 0 Hz) and decimated by `decimation`."""
+    mixer = Mixer(sample_rate_hz, shift_hz)
+    decimator = Decimator(decimation, bandwidth) if decimation > 1 else None
+    for chunk in iter_iq_chunks(path, chunk_samples, max_samples):
+        y = mixer(chunk)
+        if decimator is not None:
+            y = decimator(y)
+        if y.size:
+            yield y
+
+
+def channelize_to_array(
+    path: str | Path,
+    sample_rate_hz: int,
+    shift_hz: float,
+    decimation: int,
+    max_samples: int | None = None,
+    bandwidth: float = 0.8,
+) -> np.ndarray:
+    parts = list(channelize(path, sample_rate_hz, shift_hz, decimation, max_samples, bandwidth))
+    return np.concatenate(parts) if parts else np.zeros(0, np.complex64)
+
+
+def pick_decimation(sample_rate_hz: int, min_out_rate_hz: float) -> int:
+    """Largest integer factor that divides the sample rate exactly and
+    leaves at least `min_out_rate_hz`."""
+    best = 1
+    for d in range(1, int(sample_rate_hz // max(min_out_rate_hz, 1)) + 1):
+        if sample_rate_hz % d == 0:
+            best = d
+    return best
+
+
+def fm_discriminate(x: np.ndarray, prev: complex | None = None) -> tuple[np.ndarray, complex]:
+    """Quadrature FM discriminator (phase step per sample, radians). Pass the
+    previous chunk's last sample as `prev` to keep chunks continuous."""
+    if x.size == 0:
+        return np.zeros(0, np.float32), prev if prev is not None else 0j
+    ext = x if prev is None else np.concatenate([[np.complex64(prev)], x])
+    out = np.angle(ext[1:] * np.conj(ext[:-1])).astype(np.float32)
+    if prev is None:
+        out = np.concatenate([[np.float32(0)], out])
+    return out, complex(x[-1])
+
+
+def stream_spectrogram(
+    path: str | Path,
+    sample_rate_hz: float,
+    fft_size: int = 1024,
+    max_samples: int | None = None,
+    max_time_bins: int = 1200,
+    reduce: Literal["max", "mean"] = "max",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Spectrogram of an int8 IQ file in bounded memory: the capture is cut
+    into at most `max_time_bins` columns and each column holds the max (or
+    mean) power of the non-overlapping FFT frames inside it. Max keeps short
+    bursts visible however long the capture is. Returns (freqs_hz, times_s,
+    power_db) with freqs centered on 0 Hz, like compute_spectrogram."""
+    total = iq_file_samples(path)
+    if max_samples is not None:
+        total = min(total, max_samples)
+    n_frames = total // fft_size
+    if n_frames == 0:
+        return np.zeros(0), np.zeros(0), np.zeros((0, 0))
+    n_bins = min(max_time_bins, n_frames)
+    window = scipy_signal.get_window("hann", fft_size).astype(np.float32)
+    window /= window.sum()
+    acc = np.full((n_bins, fft_size), -np.inf if reduce == "max" else 0.0, dtype=np.float64)
+    counts = np.zeros(n_bins, dtype=np.int64)
+    frames_per_chunk = max(1, CHUNK_SAMPLES // fft_size)
+    frame_idx = 0
+    for chunk in iter_iq_chunks(path, frames_per_chunk * fft_size, n_frames * fft_size):
+        nf = chunk.size // fft_size
+        if nf == 0:
+            break
+        frames = chunk[: nf * fft_size].reshape(nf, fft_size) * window
+        power = np.abs(np.fft.fft(frames, axis=1)) ** 2
+        cols = (np.arange(frame_idx, frame_idx + nf) * n_bins) // n_frames
+        if reduce == "max":
+            np.maximum.at(acc, cols, power)
+        else:
+            np.add.at(acc, cols, power)
+        np.add.at(counts, cols, 1)
+        frame_idx += nf
+    if reduce == "mean":
+        acc /= np.maximum(counts, 1)[:, None]
+    freqs = np.fft.fftshift(np.fft.fftfreq(fft_size, 1 / sample_rate_hz))
+    power_db = 10 * np.log10(np.fft.fftshift(acc, axes=1).T + 1e-12)
+    edges = (np.arange(n_bins + 1) * n_frames) // n_bins
+    times = (edges[:-1] + edges[1:]) / 2 * fft_size / sample_rate_hz
+    return freqs, times, power_db
+
+
+def stream_stats(
+    path: str | Path,
+    sample_rate_hz: float,
+    fft_size: int = 4096,
+    max_samples: int | None = None,
+) -> tuple[int, float, np.ndarray, np.ndarray]:
+    """Return (samples_read, mean_power_db, freqs_hz, power_db): the mean
+    power and the average power spectrum over the whole (capped) capture,
+    read in chunks."""
+    window = scipy_signal.get_window("hann", fft_size).astype(np.float32)
+    window /= window.sum()
+    spec = np.zeros(fft_size, dtype=np.float64)
+    frames = 0
+    power_sum = 0.0
+    n = 0
+    tail = np.zeros(0, np.complex64)
+    for chunk in iter_iq_chunks(path, max_samples=max_samples):
+        n += chunk.size
+        power_sum += float(np.sum(chunk.real.astype(np.float64) ** 2 + chunk.imag.astype(np.float64) ** 2))
+        x = np.concatenate([tail, chunk]) if tail.size else chunk
+        nf = x.size // fft_size
+        if nf:
+            f = x[: nf * fft_size].reshape(nf, fft_size) * window
+            spec += np.sum(np.abs(np.fft.fft(f, axis=1)) ** 2, axis=0)
+            frames += nf
+        tail = x[nf * fft_size :].copy()
+    if n == 0:
+        return 0, float("-inf"), np.zeros(0), np.zeros(0)
+    if frames == 0:
+        # Shorter than one FFT: use what there is.
+        f = np.fft.fft(tail * scipy_signal.get_window("hann", tail.size) / max(tail.size, 1))
+        spec, frames, fft_size = np.abs(f) ** 2, 1, tail.size
+    freqs = np.fft.fftshift(np.fft.fftfreq(fft_size, 1 / sample_rate_hz))
+    power_db = 10 * np.log10(np.fft.fftshift(spec / frames) + 1e-12)
+    return n, float(10 * np.log10(power_sum / n + 1e-12)), freqs, power_db
+
+
+def detect_bursts_file(
+    path: str | Path,
+    sample_rate_hz: int,
+    threshold_db: float = 10.0,
+    min_duration_s: float = 0.0005,
+    merge_gap_s: float = 0.001,
+    smoothing_s: float | None = None,
+    max_bursts: int = 200,
+    max_samples: int | None = None,
+    channel_offset_hz: float | None = None,
+    channel_bandwidth_hz: float | None = None,
+) -> tuple[list[dict[str, float]], int, float]:
+    """Burst detection over a whole int8 IQ file in bounded memory.
+
+    With `channel_offset_hz` and `channel_bandwidth_hz`, only that channel is
+    examined (mixed to 0 Hz, filtered and decimated first), so a narrow
+    signal such as a 25 kHz AIS burst stands out from the noise of the whole
+    capture bandwidth.
+
+    The power envelope is smoothed over `smoothing_s` (default: half of
+    `min_duration_s`, at most 0.5 ms), so reported start and end times are
+    accurate to about that much. The threshold is relative to the median
+    smoothed power, estimated as the median of per-chunk medians.
+
+    Returns (bursts, samples_read, analysed_rate_hz). Each burst has
+    start_s, end_s, duration_s, peak_db and peak_freq_offset_hz (relative to
+    center_freq_hz, i.e. including channel_offset_hz)."""
+    if channel_bandwidth_hz:
+        offset = channel_offset_hz or 0.0
+        dec = pick_decimation(sample_rate_hz, 2.5 * channel_bandwidth_hz)
+        bw = min(0.95, channel_bandwidth_hz / (sample_rate_hz / dec))
+        source = channelize(path, sample_rate_hz, offset, dec, max_samples, bandwidth=bw)
+        rate = sample_rate_hz / dec
+    else:
+        offset = 0.0
+        source = iter_iq_chunks(path, max_samples=max_samples)
+        rate = float(sample_rate_hz)
+
+    if smoothing_s is None:
+        smoothing_s = min(0.0005, min_duration_s / 2)
+    window = max(1, int(round(rate * smoothing_s)))
+    delay = (window - 1) // 2
+
+    # Pass 1 keeps the smoothed envelope per chunk only long enough to take
+    # its median; pass 2 (below) recomputes it. Two passes over the file
+    # cost less than holding the envelope of a long capture in memory.
+    def envelopes(chunks):
+        carry = np.zeros(window - 1, dtype=np.float64)
+        pos = 0
+        for x in chunks:
+            p = x.real.astype(np.float64) ** 2 + x.imag.astype(np.float64) ** 2
+            ext = np.concatenate([carry, p])
+            c = np.cumsum(np.concatenate([[0.0], ext]))
+            smooth = (c[window:] - c[:-window]) / window
+            carry = ext[ext.size - (window - 1) :] if window > 1 else carry
+            yield pos, x, 10 * np.log10(smooth + 1e-12)
+            pos += x.size
+
+    medians = []
+    samples_read = 0
+    for _, x, env in envelopes(source):
+        medians.append(float(np.median(env)))
+        samples_read += x.size
+    if not medians:
+        return [], 0, rate
+    floor_db = float(np.median(medians))
+    level = floor_db + threshold_db
+
+    if channel_bandwidth_hz:
+        source = channelize(path, sample_rate_hz, offset, dec, max_samples, bandwidth=bw)
+    else:
+        source = iter_iq_chunks(path, max_samples=max_samples)
+
+    spans: list[list] = []  # [start, end, peak_db, freq_offset]
+    open_start: int | None = None
+    open_peak = -np.inf
+    open_samples: list[np.ndarray] = []
+    max_fft = 1 << 16
+
+    def dominant_freq(parts: list[np.ndarray]) -> float:
+        seg = np.concatenate(parts)[:max_fft] if parts else np.zeros(0)
+        if seg.size < 8:
+            return 0.0
+        spec = np.abs(np.fft.fft(seg))
+        freqs = np.fft.fftfreq(seg.size, 1 / rate)
+        return float(freqs[np.argmax(spec)])
+
+    for pos, x, env in envelopes(source):
+        mask = env >= level
+        d = np.diff(np.concatenate([[0], mask.astype(np.int8), [0]]))
+        starts = np.flatnonzero(d == 1)
+        ends = np.flatnonzero(d == -1)
+        idx = 0
+        # A burst still open from the previous chunk continues if this
+        # chunk starts above the threshold.
+        if open_start is not None:
+            if mask.size and mask[0]:
+                end = ends[0]
+                open_peak = max(open_peak, float(env[:end].max()))
+                if sum(p.size for p in open_samples) < max_fft:
+                    open_samples.append(x[:end])
+                if end < mask.size:
+                    spans.append([open_start, pos + end, open_peak, dominant_freq(open_samples)])
+                    open_start = None
+                    open_samples = []
+                idx = 1
+            else:
+                spans.append([open_start, pos, open_peak, dominant_freq(open_samples)])
+                open_start = None
+                open_samples = []
+        for s, e in zip(starts[idx:], ends[idx:]):
+            if e == mask.size:
+                open_start, open_peak = pos + s, float(env[s:e].max())
+                open_samples = [x[s:e]]
+            else:
+                spans.append([pos + s, pos + e, float(env[s:e].max()), dominant_freq([x[s:e]])])
+        if len(spans) > 50 * max_bursts:
+            break
+    if open_start is not None:
+        spans.append([open_start, samples_read, open_peak, dominant_freq(open_samples)])
+
+    merge = int(rate * merge_gap_s)
+    merged: list[list] = []
+    for span in spans:
+        if merged and span[0] - merged[-1][1] <= merge:
+            last = merged[-1]
+            last[1] = span[1]
+            if span[2] > last[2]:
+                last[2], last[3] = span[2], span[3]
+        else:
+            merged.append(list(span))
+
+    min_samples = rate * min_duration_s
+    results = []
+    for start, end, peak_db, freq in merged:
+        if end - start < min_samples:
+            continue
+        # The envelope is a trailing average; shift by its group delay so
+        # the edges land where the burst starts and ends.
+        start_s = max(0, start - delay) / rate
+        end_s = max(0, end - delay) / rate
+        results.append(
+            {
+                "start_s": start_s,
+                "end_s": end_s,
+                "duration_s": end_s - start_s,
+                "peak_db": peak_db,
+                "peak_freq_offset_hz": freq + offset,
+            }
+        )
+        if len(results) >= max_bursts:
+            break
+    return results, samples_read, rate

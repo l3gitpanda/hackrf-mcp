@@ -334,34 +334,26 @@ def overview(conn: sqlite3.Connection) -> dict:
     }
 
 
-# Summaries group rows by subject over a time range. Each entry: which kinds
-# to read, and how to describe one subject's rows.
-SUMMARY_KINDS = {
-    "adsb": ("aircraft",),
-    "ais": ("vessel", "base-station", "aid-to-navigation", "ais"),
-    "acars": ("acars",),
-    "vdl2": ("vdl2",),
-    "flex": ("page",),
-    "pocsag": ("page",),
-    "aprs": ("aprs",),
-    "eas": ("eas",),
-}
-
-
 def summarise(
-    conn: sqlite3.Connection, profile: str, since: float, until: float | None = None, limit: int = 100
+    conn: sqlite3.Connection,
+    profile: str,
+    kinds: tuple[str, ...],
+    since: float,
+    until: float | None = None,
+    limit: int = 100,
 ) -> list[dict]:
-    """One entry per subject seen in the range, most recently heard first:
-    first and last time, rows, the latest non-empty value of each field,
-    and the strongest level."""
-    kinds = SUMMARY_KINDS.get(profile)
-    if kinds is None:
-        raise ValueError(f"no summary for profile {profile!r}; choose one of {', '.join(SUMMARY_KINDS)}")
+    """One entry per subject a profile logged in the range, most recently
+    heard first: first and last time, rows, the latest non-empty value of
+    each field, and the strongest level. `kinds` is the profile's
+    summary_kinds (live_profiles.Profile); other kinds are left out."""
     args: list = [profile, since - ROW_SPAN_S, since]
     sql = (
         "SELECT ts, coalesce(ts_end, ts) AS last, kind, freq_hz, level_db, subject, label, fields "
         "FROM messages WHERE profile = ? AND ts >= ? AND coalesce(ts_end, ts) >= ?"
     )
+    if kinds:
+        sql += f" AND kind IN ({', '.join('?' * len(kinds))})"
+        args += list(kinds)
     if until is not None:
         sql += " AND ts <= ?"
         args.append(until)

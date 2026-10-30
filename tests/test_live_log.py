@@ -94,7 +94,7 @@ def test_summarise_groups_by_subject(tmp_path):
         ]
     )
     c = live_log.open_reader(tmp_path / "live.db")
-    s = live_log.summarise(c, "adsb", since=0)
+    s = live_log.summarise(c, "adsb", ("aircraft",), since=0)
     assert [e["subject"] for e in s] == ["A1B2C3", "ABCDEF"] or [e["subject"] for e in s] == ["ABCDEF", "A1B2C3"]
     a = next(e for e in s if e["subject"] == "A1B2C3")
     assert a["rows"] == 2 and a["labels"] == ["UAL123"] and a["max_level_db"] == -10

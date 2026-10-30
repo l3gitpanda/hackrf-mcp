@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -20,7 +21,8 @@ from fastmcp.utilities.types import Audio, Image
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from hackrf_mcp import __version__, decoders, iq, live_client, live_log, policy, settings, storage
+from hackrf_mcp import __version__, decoders, iq, live_client, live_log, live_profiles, policy, settings, storage
+from hackrf_mcp import protocols  # noqa: F401  (registers every decoder and live profile)
 from hackrf_mcp.cli import run, set_bin_dir
 
 mcp = FastMCP(
@@ -71,6 +73,33 @@ mcp = FastMCP(
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 CONFIG = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 DANGEROUS = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+
+# The decoders and live profiles the protocol modules registered; the tools'
+# parameter choices and descriptions come from these, so adding a protocol
+# module is enough to add a decoder.
+DecoderName = Literal[decoders.names()]
+ProfileName = Literal[live_profiles.names()]
+
+
+def _fill_doc(**sections: str):
+    """Replace each <<NAME>> line in a tool's docstring with the given text,
+    indented like the placeholder. FastMCP reads the docstring when the tool
+    is registered, so this decorator goes below @mcp.tool."""
+
+    def fill(fn):
+        doc = fn.__doc__
+        for name, text in sections.items():
+            m = re.search(rf"^([ \t]*)<<{name}>>$", doc, re.M)
+            if m is None:
+                raise ValueError(f"{fn.__name__}'s docstring has no <<{name}>>")
+            indent = m.group(1)
+            block = "\n".join(indent + line if line else "" for line in text.splitlines())
+            doc = doc[: m.start()] + block + doc[m.end() :]
+        fn.__doc__ = doc
+        return fn
+
+    return fill
+
 
 # Calls from concurrent clients run in a thread pool, so this lock keeps two
 # of them from opening the HackRF at once.
@@ -951,8 +980,9 @@ def hackrf_iq_detect_bursts(
 
 
 @mcp.tool(annotations=CONFIG)
+@_fill_doc(DECODERS=decoders.tool_help())
 def hackrf_decode(
-    decoder: Literal["adsb", "uat", "ais", "acars", "vdl2", "pocsag", "flex", "aprs", "eas", "dtmf", "rds"],
+    decoder: DecoderName,
     iq_file_path: str,
     sample_rate_hz: int,
     center_freq_hz: int,
@@ -974,23 +1004,7 @@ def hackrf_decode(
 
     Capture first with hackrf_transfer (direction="rx"); each decoder needs
     a particular frequency and sample rate:
-      adsb  - aircraft, 1090 MHz at 2,400,000 S/s (2,000,000 decodes nothing).
-              Optional receiver_lat/receiver_lon resolve more positions.
-      uat   - US general-aviation aircraft, 978 MHz at 2,083,333 S/s.
-      ais   - ships, 162.0 MHz at 2,000,000 S/s (any rate).
-      acars - aircraft datalink, 130.8 MHz at 2,000,000 S/s covers the
-              US channels 130.025-131.550 MHz (4,000,000 S/s at 130.35 MHz
-              adds 129.125).
-      vdl2  - aircraft datalink, 136.8 MHz at 2,100,000 S/s (the rate must
-              be a multiple of 105,000).
-      pocsag, flex - pagers; pass the pager frequency in frequencies_hz and
-              capture 25-50 kHz off it, at 2,000,000 S/s.
-      aprs  - packet radio, US 144.390 MHz; capture at 144.35 MHz.
-      eas   - EAS/SAME headers (NOAA Weather Radio 162.400-162.550 MHz;
-              capture at 162.475 MHz). Headers come only with alerts/tests.
-      dtmf  - DTMF on an FM channel given in frequencies_hz.
-      rds   - FM broadcast RDS; pass the station in frequencies_hz and
-              capture 300-500 kHz off it at 2,000,000 S/s.
+    <<DECODERS>>
     Capture 30-60 s for intermittent traffic (AIS, ACARS, pagers, APRS).
     A capture at the wrong rate is refused with what to change.
 
@@ -1035,6 +1049,7 @@ def hackrf_decode(
             timeout_seconds,
             storage.data_dir() / ".decode-tmp",
             receiver,
+            pager_content=settings.get_live().pager_content,
         )
     except decoders.DecodeError as exc:
         return f"Cannot decode: {exc}"
@@ -1159,6 +1174,12 @@ def hackrf_server_status() -> str:
             for name, prog in decoders.available().items()
         ),
         f"ISM decoder (hackrf_decode_ism): {'rtl_433' if shutil.which('rtl_433') else 'rtl_433 not installed'}",
+        "Live profiles (hackrf_live_start): "
+        + ", ".join(
+            f"{name} ({Path(prog).name})" if prog else f"{name} (not installed)"
+            for name, prog in live_profiles.available().items()
+        ),
+        f"Pager message text (FLEX/POCSAG): {'shown and logged' if settings.get_live().pager_content else 'hidden; only metadata is shown or logged'}",
         f"Live decoding: {_live_one_line()}",
     ]
     recent = storage.recent_tx()
@@ -1337,7 +1358,7 @@ def _format_live_status(st: dict) -> str:
         lines.append(
             f"  Log: {log.get('path')}, {log.get('file_bytes', 0) / storage.MIB:.1f} MiB of {log.get('max_db_mb'):g} MiB, "
             f"rows kept {log.get('max_age_days'):g} days; pager message text "
-            f"{'IS logged' if log.get('pager_content') else 'is not logged (metadata only)'}."
+            f"{'IS logged' if log.get('pager_content') else 'is not logged (metadata only)'} (HACKRF_MCP_PAGER_CONTENT)."
         )
         if log.get("rows_dropped"):
             lines.append(f"  Rows dropped: {log['rows_dropped']}" + (" (free disk below the floor)" if log.get("low_disk") else ""))
@@ -1346,7 +1367,7 @@ def _format_live_status(st: dict) -> str:
 
 
 class LiveScheduleEntry(BaseModel):
-    profile: Literal["adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas"]
+    profile: ProfileName
     minutes: float = Field(description="How long this entry runs each time round, 1-1440.")
     frequencies_hz: list[int] | None = Field(default=None, description="Channels, for flex/pocsag (required) or to narrow the others.")
     lna_gain_db: int | None = None
@@ -1390,8 +1411,9 @@ def hackrf_live_status() -> str:
 
 
 @mcp.tool(annotations=CONFIG)
+@_fill_doc(PROFILES=live_profiles.tool_help())
 def hackrf_live_start(
-    profile: Literal["adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas"] | None = None,
+    profile: ProfileName | None = None,
     frequencies_hz: list[int] | None = None,
     lna_gain_db: int | None = None,
     vga_gain_db: int | None = None,
@@ -1402,27 +1424,8 @@ def hackrf_live_start(
     move the receiver to another band. The live service decodes the profile
     continuously into a rolling log (see hackrf_live_search and
     hackrf_live_summary) until it is stopped or switched, and resumes it
-    after a restart.
-
-    Profiles:
-      adsb   - aircraft, 1090 MHz at 2.4 MS/s (dump1090); one log row per
-               aircraft per minute: callsign, squawk, altitude range, last
-               position, speed, track, messages, strongest RSSI.
-      ais    - ships, base stations and aids to navigation, 161.975 and
-               162.025 MHz (AIS-catcher, which opens the HackRF itself);
-               position reports one row per ship per minute, other AIS
-               messages one row each.
-      acars  - aircraft datalink, the US channels 130.025-131.550 MHz.
-      vdl2   - aircraft datalink, 136.650-136.975 MHz.
-      flex, pocsag - pagers on the channels in frequencies_hz (required,
-               e.g. [931750000]); several channels must fit within about
-               1.7 MHz. Only time, channel, capcode and message type are
-               logged unless the server operator has turned on pager
-               content logging (hackrf_live_status says which).
-      aprs   - APRS packet radio, US 144.390 MHz.
-      eas    - EAS/SAME alert headers on the seven NOAA Weather Radio
-               channels, 162.400-162.550 MHz (they carry headers only
-               during alerts and weekly tests).
+    after a restart. The profiles, and what each logs:
+    <<PROFILES>>
 
     schedule rotates through two or more profiles instead, e.g.
     [{"profile": "adsb", "minutes": 10}, {"profile": "ais", "minutes": 10}],
@@ -1522,7 +1525,7 @@ def _row_line(r) -> str:
 def hackrf_live_search(
     since: str | None = "24h",
     until: str | None = None,
-    profile: Literal["adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas"] | None = None,
+    profile: ProfileName | None = None,
     subject: str | None = None,
     text: str | None = None,
     frequency_hz: int | None = None,
@@ -1588,21 +1591,9 @@ def hackrf_live_search(
     return "\n".join(lines)
 
 
-_SUMMARY_FIELDS = {
-    "adsb": ("callsign", "squawk", "altitude_min", "altitude_max", "lat", "lon", "speed", "messages"),
-    "ais": ("name", "callsign", "shiptype", "aid_type", "destination", "status", "lat", "lon", "speed", "messages"),
-    "acars": ("flight", "label", "mode"),
-    "vdl2": ("src_type", "dst", "dst_type"),
-    "flex": ("type", "mode"),
-    "pocsag": ("type", "function", "protocol"),
-    "aprs": ("dst", "path"),
-    "eas": ("event", "originator", "locations", "duration"),
-}
-
-
 @mcp.tool(annotations=READ_ONLY)
 def hackrf_live_summary(
-    profile: Literal["adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas"],
+    profile: ProfileName,
     since: str | None = "1h",
     until: str | None = None,
     limit: int = 100,
@@ -1634,7 +1625,8 @@ def hackrf_live_summary(
     except live_log.LogNotFound as exc:
         return str(exc)
     try:
-        entries = live_log.summarise(conn, profile, t0, t1, limit=min(max(1, limit), 1000) + 1)
+        spec = live_profiles.PROFILES[profile]
+        entries = live_log.summarise(conn, profile, spec.summary_kinds, t0, t1, limit=min(max(1, limit), 1000) + 1)
     finally:
         conn.close()
     what = f"{profile} from {_utc(t0)} to {_utc(t1) if t1 else 'now'}"
@@ -1655,7 +1647,7 @@ def hackrf_live_summary(
         if e["max_level_db"] is not None:
             parts.append(f"max {e['max_level_db']:.1f} dB")
         f = e["fields"]
-        for key in _SUMMARY_FIELDS.get(profile, ()):
+        for key in spec.summary_fields:
             if key in f:
                 v = f[key]
                 if isinstance(v, list):

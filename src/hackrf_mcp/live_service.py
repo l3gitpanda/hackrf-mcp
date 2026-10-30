@@ -42,6 +42,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from hackrf_mcp import cli, live_log, live_profiles, settings
+from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
 from hackrf_mcp.live_log import LiveLogWriter, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
 
@@ -182,6 +183,9 @@ class LiveService:
         self.rows = Rate()
         self.last_row_at: float | None = None
         self.per_profile_rows: collections.Counter = collections.Counter()
+        # Besides the log, anything that wants every row as it is decoded
+        # (a future web UI's live feed, say) can subscribe with add_sink().
+        self.sinks: list = []
 
     # --- plumbing -----------------------------------------------------
 
@@ -202,6 +206,16 @@ class LiveService:
         self.per_profile_rows[row.profile] += 1
         if self.pump is not None:
             self.pump.row(row)
+        for sink in self.sinks:
+            try:
+                sink(row)
+            except Exception as exc:  # a broken consumer must not stop decoding
+                print(f"hackrf-live: row sink failed: {exc!r}", file=sys.stderr, flush=True)
+
+    def add_sink(self, sink) -> None:
+        """Call sink(row) for every row as it is decoded, from the decoder's
+        thread; it must return quickly."""
+        self.sinks.append(sink)
 
     def _event(self, event: str, profile: str | None = None, detail: str | None = None) -> None:
         print(f"hackrf-live: {event}" + (f" [{profile}]" if profile else "") + (f": {detail}" if detail else ""),
@@ -694,7 +708,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Continuous HackRF decoding into a rolling log.")
     parser.add_argument("--bin-dir", default=os.environ.get("HACKRF_TOOLS_DIR"))
     parser.add_argument("--replay", help="decode this capture file instead of the HackRF, then exit")
-    parser.add_argument("--profile", choices=live_profiles.PROFILE_NAMES)
+    parser.add_argument("--profile", choices=live_profiles.names())
     parser.add_argument("--rate", type=int, help="the capture's sample rate (replay)")
     parser.add_argument("--center", type=int, help="the capture's center frequency (replay)")
     parser.add_argument("--freqs", type=int, nargs="*", help="channels to decode (replay)")

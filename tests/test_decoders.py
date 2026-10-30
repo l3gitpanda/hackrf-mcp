@@ -3,7 +3,8 @@ import json
 import numpy as np
 import pytest
 
-from hackrf_mcp import decoders, server
+from hackrf_mcp import decoders, server, settings
+from hackrf_mcp.protocols import adsb
 
 DUMP1090_SAMPLE = """\
 *8dac1b449915532a50681919b0d7;
@@ -81,7 +82,7 @@ def fake_programs(monkeypatch):
 
 
 def test_parse_dump1090_aggregates_per_aircraft():
-    aircraft, good = decoders.parse_dump1090(DUMP1090_SAMPLE)
+    aircraft, good = adsb.parse_dump1090(DUMP1090_SAMPLE)
     # The DF0 block's "CRC" is its address, not an error; it still counts.
     assert good == 5
     assert set(aircraft) == {"AC1B44", "A2B12D"}
@@ -225,7 +226,35 @@ def test_multimon_demodulates_fm_and_passes_modes(tmp_path, fake_programs):
     spec = np.abs(np.fft.rfft(pcm[2000:]))
     freqs = np.fft.rfftfreq(pcm[2000:].size, 1 / 22_050)
     assert abs(freqs[np.argmax(spec)] - 1_000) < 30
-    assert "TEST" in result
+    # Pager text stays hidden unless the operator allows it.
+    assert "TEST" not in result
+    assert "Address: 123456" in result and "[content not logged]" in result
+
+
+def test_pager_text_follows_the_operator_setting(tmp_path, fake_programs):
+    _, outputs = fake_programs
+    outputs["multimon-ng"] = (
+        "FLEX|2026-10-29 22:56:00|1600/4/F/A|14.102|000499030|ALN|SECRET TEXT\n"
+        "a continuation of it\n"
+        "POCSAG1200: Address:  123456  Function: 0  Numeric: 5551234\n"
+    )
+    rate = 2_000_000
+    path = tmp_path / "p.cs8"
+    _write_iq_file(path, (0.1 * np.ones(rate // 10)).astype(np.complex64))
+    hidden = server.hackrf_decode(
+        "flex", str(path), rate, 931_700_000, frequencies_hz=[931_750_000], output_path="flex.txt"
+    )
+    saved = (tmp_path / "flex.txt").read_text()
+    for text in (hidden, saved):
+        assert "SECRET" not in text and "continuation" not in text and "5551234" not in text
+    assert "000499030|ALN|[content not logged]" in hidden and "HACKRF_MCP_PAGER_CONTENT is off" in hidden
+    settings.configure_live(settings.LiveSettings(live_dir=tmp_path / "live", pager_content=True))
+    shown = server.hackrf_decode("flex", str(path), rate, 931_700_000, frequencies_hz=[931_750_000])
+    assert "SECRET TEXT" in shown
+    # APRS is not pager traffic: it is shown either way.
+    outputs["multimon-ng"] = "APRS: N0CALL>APRS:hello\n"
+    settings.configure_live(settings.LiveSettings(live_dir=tmp_path / "live"))
+    assert "hello" in server.hackrf_decode("aprs", str(path), rate, 144_350_000)
 
 
 def test_multimon_needs_a_frequency(tmp_path, fake_programs):

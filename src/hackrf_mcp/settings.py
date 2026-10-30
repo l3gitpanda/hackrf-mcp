@@ -137,8 +137,10 @@ class LiveSettings:
     max_db_mb: float = 256.0
     # Nothing is written while free disk space is below this.
     min_free_mb: float = 2048.0
-    # Pager (FLEX/POCSAG) message text is logged only if the operator turns
-    # this on; otherwise only time, channel, capcode and message type are.
+    # Pager (FLEX/POCSAG) message text is logged by the live service, and
+    # shown by hackrf_decode, only if the operator turns this on
+    # (HACKRF_MCP_PAGER_CONTENT); otherwise only time, channel, capcode and
+    # message type are.
     pager_content: bool = False
     # Receiver position (lat, lon), which lets dump1090 resolve more positions.
     receiver: tuple[float, float] | None = None
@@ -171,7 +173,9 @@ class LiveSettings:
         ):
             if v := env.get(key):
                 kwargs[name] = float(v)
-        if v := env.get("HACKRF_LIVE_PAGER_CONTENT"):
+        # HACKRF_LIVE_PAGER_CONTENT is the name it had when only the live
+        # log used it.
+        if v := env.get("HACKRF_MCP_PAGER_CONTENT") or env.get("HACKRF_LIVE_PAGER_CONTENT"):
             kwargs["pager_content"] = parse_bool(v)
         if v := env.get("HACKRF_LIVE_RECEIVER"):
             lat, sep, lon = v.partition(",")

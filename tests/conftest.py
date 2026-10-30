@@ -1,5 +1,6 @@
 import pytest
 
+import hackrf_mcp.protocols  # noqa: F401  (fills the decoder and profile registries)
 from hackrf_mcp import settings
 
 

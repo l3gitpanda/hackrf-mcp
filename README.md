@@ -190,6 +190,11 @@ installed.
 | `pocsag`, `flex`, `aprs`, `eas`, `dtmf` | `multimon-ng` | the channel ± 25–50 kHz, 2 MS/s |
 | `rds` | `redsea` | the station ± 300–500 kHz, 2 MS/s |
 
+FLEX and POCSAG message text is not shown, or saved with `output_path`,
+unless the server operator sets `HACKRF_MCP_PAGER_CONTENT=true`: by default a
+page shows only its time, rate, frame, capcode and type (see
+[Live decoding](#live-decoding), which follows the same setting).
+
 ISM-band devices go through `hackrf_decode_ism` (`rtl_433`).
 [`deploy/build-decoders.sh`](deploy/build-decoders.sh) builds `redsea` and
 `dump978-fa`, which Ubuntu doesn't package; the others come from the
@@ -250,8 +255,9 @@ behave exactly as before.
 type of a FLEX or POCSAG page are stored: the message text, and any
 continuation lines it runs onto, are dropped before a row exists, and the
 stored raw line is the header with `[content not logged]`. Storing the text
-takes `HACKRF_LIVE_PAGER_CONTENT=true` in the service's environment; no tool
-can change it.
+takes `HACKRF_MCP_PAGER_CONTENT=true` in the environment both services read
+(the older name `HACKRF_LIVE_PAGER_CONTENT` also works); it applies to
+`hackrf_decode` as well, and no tool can change it.
 
 **The log.** `$HACKRF_LIVE_DIR/live.db` (WAL mode; the MCP server opens it
 read-only). Each row has its time (and end time, for per-minute rows),
@@ -268,7 +274,7 @@ space given back to the disk; nothing is written while free disk is below
 | `HACKRF_LIVE_DIR` | `~/.local/state/hackrf-mcp/live` | log, control socket and saved profile; set it for both services |
 | `HACKRF_LIVE_MAX_AGE_DAYS` | `7` | rows older than this are deleted |
 | `HACKRF_LIVE_MAX_DB_MB` | `256` | the oldest rows beyond this are deleted |
-| `HACKRF_LIVE_PAGER_CONTENT` | `false` | store pager message text |
+| `HACKRF_MCP_PAGER_CONTENT` | `false` | store and show pager message text (live log and `hackrf_decode`) |
 | `HACKRF_LIVE_RECEIVER` | none | `LAT,LON`, so dump1090 can resolve more positions |
 | `HACKRF_LIVE_LNA_GAIN`, `HACKRF_LIVE_VGA_GAIN` | 32, 40 | default gains (a start call can set its own) |
 
@@ -281,6 +287,60 @@ or reboot. To check a profile against a recording instead of the radio:
 python -m hackrf_mcp.live_service --replay capture.cs8 --profile acars \
     --rate 2000000 --center 130800000 --db /tmp/replay.db --fast
 ```
+
+## Adding a decoder
+
+Each protocol lives in one module in
+[`src/hackrf_mcp/protocols/`](src/hackrf_mcp/protocols/), which registers what
+it provides when it is imported: an offline decoder for `hackrf_decode`, a
+live profile for `hackrf_live_start`, or both. The package imports every
+module in it, so a new file there is all it takes; the tools' parameter
+choices and descriptions, `hackrf_server_status` and `hackrf_live_summary`
+come from the registries. `adsb.py` (both kinds, dump1090 on cu8 samples),
+`acars.py` (audio channels for a WAV-reading program) and `multimon.py`
+(several protocols from one program) are the ones to copy from.
+
+A minimal offline decoder:
+
+```python
+# src/hackrf_mcp/protocols/mydecoder.py (an example)
+from hackrf_mcp import decoders, iq
+from hackrf_mcp.decoders import Decoder, Job, Result, nothing
+
+
+def run(job: Job) -> Result:
+    # job.cap is the capture (path, rate, center), job.program the binary,
+    # job.freqs the channels, job.workdir a scratch directory.
+    stdin = iq.iter_cu8_chunks(job.cap.path, max_samples=job.cap.max_samples)
+    out = decoders.run_program([job.program, "-"], stdin, job.timeout, job.workdir)
+    lines = [line for line in out.output.splitlines() if line.startswith("MSG")]
+    if not lines:
+        return nothing(job.name, out, [])
+    return Result(f"{job.name}: {len(lines)} messages.", [], lines, out.output, [])
+
+
+decoders.register(
+    Decoder(
+        "mydecoder",  # the name hackrf_decode takes
+        ("my-decoder-program",),  # found on PATH; the first one present runs
+        "What it decodes",
+        "How to capture for it",
+        run,
+        help="  mydecoder - what it decodes; capture at ... S/s.",
+    )
+)
+```
+
+A live profile registers a `live_profiles.Profile` the same way, with a
+`Pipeline` subclass whose `start()` opens a source (`self.ctx.make_source`,
+which is `hackrf_transfer -r -`, or the decoder's own device input like
+AIS-catcher), feeds the decoder process (`Proc`), and turns its output into
+`live_log.Row`s with `self.ctx.emit`. `ChannelPipeline` already does the
+channelising for programs that take audio per channel: subclass it and
+supply `decoder_args()`, `convert()` and `on_line()`. Give the profile
+`summary_kinds` and `summary_fields` so `hackrf_live_summary` can group
+its rows. Call `decoders.run_program` and `decoders.find_program` through
+the module (not `from ... import`), so the tests' mocks apply.
 
 ## Transmit policy, file limits and network mode
 

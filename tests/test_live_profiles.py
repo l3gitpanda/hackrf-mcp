@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 
 from hackrf_mcp import iq, live_profiles as lp, settings
-from hackrf_mcp.live_profiles import CONTENT_NOT_LOGGED, MultimonParser, Spec, SpecError
+from hackrf_mcp.live_profiles import Spec, SpecError
+from hackrf_mcp.protocols import acars, adsb, ais, multimon, vdl2
+from hackrf_mcp.protocols.multimon import CONTENT_NOT_LOGGED, MultimonParser
 
 
 def _live(**kw):
@@ -112,7 +114,7 @@ def test_byte_converters():
 
 def test_adsb_aggregator_summarises_each_aircraft_per_minute():
     rows = []
-    agg = lp.AdsbAggregator(rows.append, poll_s=5)
+    agg = adsb.AdsbAggregator(rows.append, poll_s=5)
     base = 60 * 1000.0
     snap = lambda total, aircraft: {"messages": total, "aircraft": aircraft}
     a1 = {"hex": "a1b2c3", "flight": "UAL123  ", "squawk": "1200", "altitude": 10000, "messages": 10, "seen": 0.5,
@@ -140,7 +142,7 @@ def _ais(mmsi, mtype, **kw):
 
 def test_ais_aggregator_summarises_positions_and_keeps_other_messages():
     rows = []
-    agg = lp.AisAggregator(rows.append)
+    agg = ais.AisAggregator(rows.append)
     base = 60 * 2000.0
     agg.message(base + 1, _ais(367000001, 5, shipname="KILLEEN@@", callsign="WDA1234"))
     assert len(rows) == 1 and rows[0].kind == "ais" and rows[0].label == "KILLEEN"
@@ -173,11 +175,11 @@ VDL2_LINE = (
 
 
 def test_parse_acars_and_vdl2():
-    r = lp.parse_acars(ACARS_LINE, 131_550_000, 5.0)
+    r = acars.parse_acars(ACARS_LINE, 131_550_000, 5.0)
     assert (r.subject, r.label, r.freq_hz, r.level_db) == ("N215NV", "G40651", 131_550_000, -10.5)
     assert "station_id" not in r.fields and r.fields["text"] == "215500,12753"
-    assert lp.parse_acars("exiting ...", 1, 0) is None
-    v = lp.parse_vdl2(VDL2_LINE, 5.0)
+    assert acars.parse_acars("exiting ...", 1, 0) is None
+    v = vdl2.parse_vdl2(VDL2_LINE, 5.0)
     assert (v.subject, v.label, v.freq_hz, v.level_db) == ("A3C2A9", "AA2465", 136_975_000, -24.1)
     assert v.fields["acars"]["reg"] == ".N341SV" and v.fields["dst_type"] == "Ground station"
 
@@ -273,7 +275,7 @@ def test_multimon_pipeline_end_to_end_with_a_fake_decoder(tmp_path):
         "print('continued text', flush=True)\n"
     )
     fake.chmod(0o755)
-    rate = lp.MULTIMON_INPUT_RATE
+    rate = multimon.MULTIMON_INPUT_RATE
     capture = tmp_path / "c.cs8"
     t = np.arange(rate // 4) / rate
     _write_cs8(capture, (0.2 * np.exp(2j * np.pi * -25_000 * t)).astype(np.complex64))

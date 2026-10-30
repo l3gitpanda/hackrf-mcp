@@ -74,10 +74,23 @@ asyncio.run(main())
   switches, retries (with backoff) and pauses pipelines; a Unix-socket
   control server takes status/start/stop/pause/resume; `LogPump` is the only
   writer of the database. `--replay FILE` runs a profile over a capture.
-- `src/hackrf_mcp/live_profiles.py` — the profiles, their pipelines
-  (`hackrf_transfer -r -` or AIS-catcher's own HackRF input, then decoder
-  processes), the per-minute ADS-B/AIS aggregators and the line parsers,
-  including pager redaction (`MultimonParser`).
+- `src/hackrf_mcp/decoders.py` — the core of `hackrf_decode`: the `Decoder`
+  registry (`register()`), the `Job` a decoder's `run()` gets, `Capture`,
+  `run_program()`, `Result`, and the chunked conversion helpers protocol
+  modules share (`fm_audio`, `sc16`, `s16`, `channels_in_capture`, ...).
+- `src/hackrf_mcp/live_profiles.py` — the core of the live service: the
+  `Profile` registry, `Spec`/`Tuning`/`resolve()`, `Proc`, the sources
+  (`HackrfSource`, `FileSource`), `Pipeline`, `ChannelPipeline` (decoders
+  that take audio channels cut out by `iq.FFTChannelizer`) and
+  `MinuteAggregator`.
+- `src/hackrf_mcp/protocols/` — one module per protocol family (`adsb`,
+  `uat`, `ais`, `acars`, `vdl2`, `multimon`, `rds`). Each registers its
+  offline decoder and/or live profile when imported, and holds that
+  protocol's conversion, output parsing and pipeline. The package imports
+  every module in it (the built-ins in `BUILTIN` order, then any other
+  file), so adding a protocol is adding a module; see the README's
+  "Adding a decoder". `multimon.py` holds `MultimonParser`, which does the
+  pager redaction for both the live log and `hackrf_decode`.
 - `src/hackrf_mcp/live_log.py` — the SQLite log: schema, writer (size/age
   pruning, free-space floor) and the read side the MCP tools use.
 - `src/hackrf_mcp/live_client.py` — the MCP server's side of the socket.
@@ -98,8 +111,22 @@ asyncio.run(main())
   log, with the free-space floor off, and a live-service directory where
   nothing listens.
 - Pager (FLEX/POCSAG) message text is dropped in `MultimonParser` before a
-  row exists unless `LiveSettings.pager_content` is set; nothing else may
-  store, print or log it (decoder stdout never goes to the journal).
+  row exists, and before `hackrf_decode` shows or saves anything, unless
+  `LiveSettings.pager_content` (`HACKRF_MCP_PAGER_CONTENT`) is set; nothing
+  else may store, print or log it (decoder stdout never goes to the
+  journal).
+- Protocol modules call `decoders.run_program`/`decoders.find_program`
+  through the module, never `from hackrf_mcp.decoders import run_program`:
+  the tests mock those attributes. A name registered twice is an error.
+- The tools' decoder and profile choices (`DecoderName`, `ProfileName`) and
+  their lists in `hackrf_decode`/`hackrf_live_start` come from the
+  registries (`_fill_doc` replaces the `<<DECODERS>>`/`<<PROFILES>>` lines).
+  Don't hard-code a list of protocols anywhere else.
+- FastMCP uses only a docstring's first text section as the tool
+  description: a standalone `Title:` line followed by an indented block
+  starts a new section, and everything after it vanishes from what clients
+  see. Introduce lists with a sentence instead;
+  `test_no_tool_description_loses_docstring_text` catches it.
 - The live service never transmits and never turns on bias-tee power.
 - `iq.py` imports matplotlib only inside the PNG renderers, so the live
   service doesn't load it. Keep it that way.
@@ -147,7 +174,7 @@ explicitly in the `FastMCP(... instructions=...)` string.
   `hackrf_iq_to_wav` holds an array, after decimating to the channel, capped
   at `MAX_DEMOD_SAMPLES`. When a `max_duration_seconds` cap stops a tool
   early, its result says so (`_coverage()`); never truncate silently.
-- `hackrf_decode` runs external decoder programs (`decoders.py`). Each
+- `hackrf_decode` runs external decoder programs (`protocols/`). Each
   decoder converts the capture with the chunked helpers, streams it to the
   program's stdin where possible, refuses a capture at a rate the program
   can't use with a message saying what to recapture at, and summarises the

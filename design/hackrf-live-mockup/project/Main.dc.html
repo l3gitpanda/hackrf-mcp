@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Live</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.ctl{display:flex;flex-direction:column}
+.ctl-top{display:flex;align-items:center;gap:12px 22px;padding:10px 12px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.ctl-prof{display:flex;flex-direction:column;gap:4px;min-width:200px}
+.tune{display:flex;gap:4px 18px;margin:0;flex-wrap:wrap}
+.tune div{display:flex;flex-direction:column;gap:2px}
+.tune dt{font-size:11px;color:var(--muted)}
+.tune dd{margin:0;font-family:var(--mono);font-size:14px;font-weight:500;white-space:nowrap}
+.tune dd small{font-size:11px;color:var(--muted);font-weight:400}
+.ctl-act{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
+.ctl-rot{padding:8px 12px 6px;display:flex;flex-direction:column;gap:6px}
+.chl{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11.5px;color:var(--text2)}
+.feedf{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.steprow{display:grid;grid-template-columns:22px minmax(0,1fr) 100px auto;gap:8px;align-items:center}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <dc-import name="AppBar" active="live" state="{{ab.state}}" state-text="{{ab.text}}" profile-text="{{ab.prof}}" profile-color="{{ab.color}}" theme="{{theme}}" hint-size="100%,53px" style="width: 100%"></dc-import>
+  <main class="main">
+    <div class="mock" role="group" aria-label="Mockup controls">
+      <span class="tag">Mockup</span>
+      <label for="demo">Preview service state</label>
+      <select id="demo" class="inp" value="{{demo}}" onChange="{{setDemo}}">
+        <option value="running">Running (AIS slot of rotation)</option>
+        <option value="paused">Paused by a capture (countdown)</option>
+        <option value="idle">Idle (no profile)</option>
+        <option value="error">Waiting to retry after an error</option>
+        <option value="behind">Falling behind (input &lt; 90%)</option>
+        <option value="logcap">Log near its size cap</option>
+        <option value="flat">Nothing heard: flat channel levels</option>
+        <option value="decerr">Nothing heard: decoder error</option>
+        <option value="stopped">Service not running</option>
+      </select>
+      <span>Not part of the product UI.</span>
+    </div>
+
+    <sc-if value="{{isStopped}}">
+      <section class="panel" aria-label="Service not running">
+        <div class="empty center" style="border: 0; padding: 72px 24px; gap: 12px">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="color: var(--muted)"><rect x="3" y="3" width="18" height="18" rx="3"></rect><rect x="9" y="9" width="6" height="6" rx="1"></rect></svg>
+          <b>The hackrf-live service is not running</b>
+          <span style="max-width: 560px">The UI can't reach the service on this machine, so nothing is being decoded or logged. Logged data is still searchable from Log, History and Summaries.</span>
+          <span class="mono muted">Last contact 21:02:55 UTC · retrying every 10 s ({{reconnectIn}})</span>
+          <pre class="raw" style="text-align: left; min-width: min(420px, 100%)">systemctl --user status hackrf-live
+journalctl --user -u hackrf-live -n 50</pre>
+          <div class="row wr" style="justify-content: center">
+            <button type="button" class="btn primary" onClick="{{reconnect}}">Retry connection</button>
+            <a class="btn" href="Log.dc.html">Open log</a>
+          </div>
+        </div>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{isUp}}">
+      <sc-if value="{{hasBanner}}">
+        <div class="{{bn.cls}}" role="status">
+          <span class="bi">
+            <sc-if value="{{bn.iPause}}"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"></rect><rect x="14" y="5" width="4" height="14" rx="1"></rect></svg></sc-if>
+            <sc-if value="{{bn.iWarn}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 L22 20 H2 Z" stroke-linejoin="round"></path><path d="M12 10 v4 M12 17 v.5" stroke-linecap="round"></path></svg></sc-if>
+            <sc-if value="{{bn.iBad}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9 9 l6 6 M15 9 l-6 6" stroke-linecap="round"></path></svg></sc-if>
+            <sc-if value="{{bn.iInfo}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11 v6 M12 7.5 v.5" stroke-linecap="round"></path></svg></sc-if>
+          </span>
+          <div class="bt">
+            <b>{{bn.title}}</b>
+            <span class="t2">{{bn.sub}}</span>
+            <sc-if value="{{bn.err}}"><span class="errtxt">{{bn.err}}</span></sc-if>
+          </div>
+          <div class="row wr">
+            <sc-for list="{{bn.acts}}" as="a"><button type="button" class="btn sm" onClick="{{a.fn}}">{{a.label}}</button></sc-for>
+          </div>
+          <sc-if value="{{bn.hasBar}}"><span class="bar" style="width: {{bn.bar}}%"></span></sc-if>
+        </div>
+      </sc-if>
+
+      <section class="panel ctl" aria-label="Radio control">
+        <div class="ctl-top">
+          <div class="ctl-prof" style="--pc: {{cur.color}}">
+            <span class="cap">Profile</span>
+            <span class="row">
+              <span class="pbadge lg">{{cur.name}}</span>
+              <span class="t2">{{cur.desc}}</span>
+              <sc-if value="{{manual}}"><span class="tag">manual</span></sc-if>
+            </span>
+          </div>
+          <dl class="tune" aria-label="Tuning">
+            <div><dt>Center</dt><dd>{{cur.centerTxt}} <small>MHz</small></dd></div>
+            <div><dt>Sample rate</dt><dd>{{cur.rateTxt}} <small>MS/s</small></dd></div>
+            <div><dt>LNA</dt><dd>{{cur.lna}} <small>dB</small></dd></div>
+            <div><dt>VGA</dt><dd>{{cur.vga}} <small>dB</small></dd></div>
+            <div><dt>Amp</dt><dd>{{cur.amp}}</dd></div>
+            <div><dt>Bias-T</dt><dd>off</dd></div>
+          </dl>
+          <div class="ctl-act">
+            <button type="button" class="btn" onClick="{{start}}" disabled="{{cantStart}}">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5 L19 12 L7 19 Z"></path></svg>Start
+            </button>
+            <label class="sr" for="switchto">Profile to switch to</label>
+            <select id="switchto" class="inp" style="width: auto" value="{{switchTo}}" onChange="{{setSwitch}}">
+              <sc-for list="{{opts}}" as="o"><option value="{{o.id}}" disabled="{{o.dis}}">{{o.label}}</option></sc-for>
+            </select>
+            <button type="button" class="btn" onClick="{{doSwitch}}" disabled="{{cantSwitch}}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8 h14 l-4 -4 M20 16 H6 l4 4"></path></svg>Switch
+            </button>
+            <button type="button" class="btn danger" onClick="{{stop}}" disabled="{{cantStop}}">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"></rect></svg>Stop
+            </button>
+          </div>
+        </div>
+        <div class="ctl-rot">
+          <div class="row wr">
+            <span class="cap">Rotation</span>
+            <span class="t2">{{rotText}}</span>
+            <span class="sp"></span>
+            <sc-if value="{{manual}}"><button type="button" class="btn sm" onClick="{{resumeRot}}">Resume rotation</button></sc-if>
+            <button type="button" class="btn sm" onClick="{{openEditor}}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20 h4 L19 9 l-4 -4 L4 16 Z"></path></svg>Edit rotation
+            </button>
+          </div>
+          <div class="rot" aria-label="{{rotAria}}" role="img" style="opacity: {{rotOpacity}}">
+            <sc-for list="{{segs}}" as="s" hint-placeholder-count="8"><span class="{{s.cls}}" style="width: {{s.w}}%; --pc: {{s.color}}" title="{{s.title}}">{{s.label}}</span></sc-for>
+            <sc-if value="{{showNow}}"><span class="now" style="left: {{nowPct}}%"></span></sc-if>
+          </div>
+          <div class="rotx" aria-hidden="true">
+            <sc-for list="{{rotTicks}}" as="t"><span style="left: {{t.pct}}%">{{t.label}}</span></sc-for>
+          </div>
+        </div>
+      </section>
+
+      <div class="g-live">
+        <section class="panel" aria-label="Spectrum and waterfall">
+          <div class="ph">
+            <span class="pbadge" style="--pc: {{cur.color}}">{{cur.name}}</span>
+            <span class="mono t2">{{cur.centerTxt}} MHz · {{cur.loTxt}}–{{cur.hiTxt}} · {{cur.rateTxt}} MS/s</span>
+            <span class="row wr" style="gap: 4px 10px">
+              <sc-for list="{{cur.chs}}" as="c"><span class="chl" style="--pc: {{cur.color}}"><span class="sw"></span>{{c.txt}}</span></sc-for>
+            </span>
+            <span class="sp"></span>
+            <button type="button" class="btn sm" aria-pressed="{{peakStr}}" onClick="{{togglePeak}}">Peak hold</button>
+            <span class="row" style="gap: 6px" title="Waterfall palette"><span class="mono muted" style="font-size: 11px">−110</span><span class="lut"></span><span class="mono muted" style="font-size: 11px">−30 dBFS</span></span>
+          </div>
+          <dc-import name="Waterfall" band="{{wfBand}}" mode="live" height="{{440}}" spec-height="{{120}}" activity="{{activity}}" peak="{{peak}}" seed="{{3}}" overlay-title="{{ov.title}}" overlay-sub="{{ov.sub}}" overlay-tone="{{ov.tone}}" hint-size="100%,594px" style="width: 100%"></dc-import>
+        </section>
+
+        <section class="panel feedp" aria-label="Live decoded feed">
+          <div class="ph">
+            <h2>Decoded feed</h2>
+            <span class="mono muted">{{mpm}} msg/min</span>
+            <span class="sp"></span>
+            <button type="button" class="btn sm" aria-pressed="{{holdStr}}" onClick="{{toggleHold}}">{{holdLabel}}</button>
+          </div>
+          <div class="feedf" role="group" aria-label="Show profiles">
+            <sc-for list="{{chips}}" as="c" hint-placeholder-count="8">
+              <button type="button" class="tchip" style="--pc: {{c.color}}" aria-pressed="{{c.on}}" onClick="{{c.toggle}}"><span class="sw"></span>{{c.name}}<span class="n">{{c.n}}</span></button>
+            </sc-for>
+            <button type="button" class="tchip" aria-pressed="{{evOn}}" onClick="{{toggleEv}}">Events</button>
+          </div>
+          <sc-if value="{{feedNote.show}}">
+            <div class="{{feedNote.cls}}" style="margin: 10px 12px 2px; border-radius: 6px; padding: 10px 12px">
+              <div class="bt">
+                <b>{{feedNote.title}}</b>
+                <span class="t2" style="font-size: 12.5px">{{feedNote.sub}}</span>
+              </div>
+            </div>
+          </sc-if>
+          <div class="feed" style="flex: 1 1 0">
+            <sc-for list="{{items}}" as="it" hint-placeholder-count="10">
+              <div class="{{it.wcls}}" style="--pc: {{it.color}}">
+                <button type="button" class="fi" onClick="{{it.toggle}}" aria-expanded="{{it.exp}}">
+                  <span class="ft">{{it.t}}</span>
+                  <span class="l1">
+                    <sc-if value="{{it.ev}}"><span>● {{it.txt}}</span></sc-if>
+                    <sc-if value="{{it.msg}}">
+                      <span class="pbadge">{{it.pname}}</span>
+                      <span class="subj">{{it.s}}</span>
+                      <sc-if value="{{it.l}}"><span class="lbl">{{it.l}}</span></sc-if>
+                      <span class="kind">{{it.k}}</span>
+                      <sc-if value="{{it.emerg}}"><span class="tag bad">{{it.emerg}}</span></sc-if>
+                    </sc-if>
+                  </span>
+                  <sc-if value="{{it.msg}}">
+                    <span class="l2">
+                      <sc-for list="{{it.sum}}" as="x"><span class="{{x.cls}}">{{x.v}}</span></sc-for>
+                      <span class="mono muted">{{it.f}} MHz · {{it.db}} dB</span>
+                    </span>
+                  </sc-if>
+                </button>
+                <sc-if value="{{it.open}}">
+                  <div class="fdet">
+                    <dl class="kv">
+                      <sc-for list="{{it.fields}}" as="kv"><dt>{{kv.k}}</dt><dd class="mono">{{kv.v}}</dd></sc-for>
+                    </dl>
+                    <pre class="raw">{{it.raw}}</pre>
+                    <div class="row wr">
+                      <a class="btn sm" href="Log.dc.html">Open in log</a>
+                      <sc-if value="{{it.mapOk}}"><a class="btn sm" href="Map.dc.html">Show on map</a></sc-if>
+                      <a class="btn sm" href="History.dc.html">Show on waterfall</a>
+                    </div>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel" aria-label="Health">
+        <div class="health">
+          <div class="{{h.inCls}}">
+            <span class="cap">Input samples</span>
+            <span class="big">{{h.inPct}}<small>% of rate</small></span>
+            <span class="meter" style="--sc: {{h.inColor}}"><span style="width: {{h.inBar}}%"></span><i class="mk" style="left: 90%"></i></span>
+            <span class="muted" style="font-size: 12px">{{h.inNote}}</span>
+          </div>
+          <div class="hc">
+            <span class="cap">Input power</span>
+            <span class="big">{{h.dbfs}}<small>dBFS</small></span>
+            <span class="meter" style="--sc: var(--text2)"><span style="width: {{h.dbfsBar}}%"></span></span>
+            <span class="muted" style="font-size: 12px">clip at 0 dBFS · ADC peak {{h.peak}}</span>
+          </div>
+          <div class="hc" style="grid-column: span 2; min-width: 0">
+            <span class="cap">Channel levels · noise floor −92 dB</span>
+            <sc-if value="{{h.hasCh}}">
+              <div class="col" style="gap: 6px">
+                <sc-for list="{{h.ch}}" as="c">
+                  <div class="lvl" style="--pc: {{c.color}}">
+                    <span class="ln">{{c.label}}</span>
+                    <span class="trk"><span class="fill" style="width: {{c.w}}%"></span><span class="nf" style="left: {{h.nfPct}}%"></span></span>
+                    <span class="lv">{{c.db}} dB</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+            <sc-if value="{{h.noCh}}"><span class="muted">No channels tuned.</span></sc-if>
+          </div>
+          <div class="hc">
+            <span class="cap">Messages / min</span>
+            <span class="big">{{mpm}}</span>
+            <svg class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true" style="height: 26px; --pc: {{cur.color}}"><polyline points="{{h.spark}}" fill="none" stroke="var(--pc)" stroke-width="1.5" vector-effect="non-scaling-stroke"></polyline></svg>
+          </div>
+          <div class="{{h.cpuCls}}">
+            <span class="cap">CPU · memory</span>
+            <span class="big">{{h.cpu}}<small>%</small> {{h.mem}}<small>MiB</small></span>
+            <span class="meter" style="--sc: var(--text2)"><span style="width: {{h.cpu}}%"></span></span>
+          </div>
+          <div class="{{h.logCls}}">
+            <span class="cap">Log</span>
+            <span class="big">{{h.logMiB}}<small>/ 256 MiB</small></span>
+            <span class="meter" style="--sc: {{h.logColor}}"><span style="width: {{h.logPct}}%"></span><i class="mk" style="left: 90%"></i></span>
+            <span class="muted" style="font-size: 12px">{{h.rows}} rows · kept 7 days</span>
+          </div>
+        </div>
+      </section>
+    </sc-if>
+  </main>
+
+  <sc-if value="{{editRot}}">
+    <div class="backdrop" onClick="{{closeEditor}}"></div>
+    <aside class="drawer" aria-label="Edit rotation">
+      <div class="ph">
+        <h2>Edit rotation</h2>
+        <span class="sp"></span>
+        <button type="button" class="btn sm icon" onClick="{{closeEditor}}" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg>
+        </button>
+      </div>
+      <div class="db">
+        <p class="t2">Profiles run in this order and repeat. A capture from any hackrf_* tool pauses the current step; the rotation clock keeps running. Changes apply at the next step boundary.</p>
+        <div class="col" style="gap: 8px">
+          <sc-for list="{{draft}}" as="s">
+            <div class="steprow" style="--pc: {{s.color}}">
+              <span class="mono muted">{{s.n}}</span>
+              <label class="sr" for="{{s.pid}}">Step {{s.n}} profile</label>
+              <select id="{{s.pid}}" class="inp" value="{{s.p}}" onChange="{{s.setP}}">
+                <sc-for list="{{opts}}" as="o"><option value="{{o.id}}" disabled="{{o.dis}}">{{o.label}}</option></sc-for>
+              </select>
+              <span class="row" style="gap: 4px"><label class="sr" for="{{s.mid}}">Step {{s.n}} minutes</label><input id="{{s.mid}}" class="inp mono" type="number" min="1" max="120" value="{{s.m}}" onChange="{{s.setM}}"><span class="muted">min</span></span>
+              <span class="row" style="gap: 2px">
+                <button type="button" class="btn sm icon ghost" onClick="{{s.up}}" aria-label="Move step up" disabled="{{s.first}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 14 l6 -6 l6 6"></path></svg></button>
+                <button type="button" class="btn sm icon ghost" onClick="{{s.down}}" aria-label="Move step down" disabled="{{s.last}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 10 l6 6 l6 -6"></path></svg></button>
+                <button type="button" class="btn sm icon ghost" onClick="{{s.del}}" aria-label="Remove step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg></button>
+              </span>
+            </div>
+          </sc-for>
+          <button type="button" class="btn sm" style="align-self: flex-start" onClick="{{addStep}}">+ Add step</button>
+        </div>
+        <div class="col" style="gap: 6px">
+          <span class="cap">Preview · one cycle = {{draftTotal}} min</span>
+          <div class="rot">
+            <sc-for list="{{draftSegs}}" as="s"><span class="rs" style="width: {{s.w}}%; --pc: {{s.color}}">{{s.label}}</span></sc-for>
+          </div>
+          <div class="legend">
+            <sc-for list="{{draftShare}}" as="s"><span style="--pc: {{s.color}}"><span class="sw"></span>{{s.name}} {{s.share}}%</span></sc-for>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" checked>Repeat forever</label>
+      </div>
+      <div class="pf" style="justify-content: flex-end">
+        <button type="button" class="btn" onClick="{{closeEditor}}">Cancel</button>
+        <button type="button" class="btn primary" onClick="{{saveRot}}" disabled="{{draftEmpty}}">Save rotation</button>
+      </div>
+    </aside>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1100}}'>
+// Profile registry — in the product this comes from /api/registry (plugin manifests). Nothing below is per-profile UI code.
+const REG = [
+  { id: 'adsb', name: 'ADS-B', desc: 'Aircraft · 1090 MHz', color: '#5cb8ff', center: 1090.0, rate: 2.4, lna: 40, vga: 30, amp: 'on', ch: [{ f: 1090.0, label: '1090', kind: 'pulse' }], map: true },
+  { id: 'ais', name: 'AIS', desc: 'Ships and navigation aids', color: '#3fd0c0', center: 162.0, rate: 2.0, lna: 32, vga: 24, amp: 'off', ch: [{ f: 161.975, label: 'A', kind: 'burst' }, { f: 162.025, label: 'B', kind: 'burst' }], map: true },
+  { id: 'acars', name: 'ACARS', desc: 'Aircraft datalink (VHF)', color: '#a98bff', center: 130.4, rate: 3.0, lna: 32, vga: 28, amp: 'off', ch: [{ f: 129.125, label: '129.125', kind: 'msk' }, { f: 130.025, label: '130.025', kind: 'msk' }, { f: 130.45, label: '130.450', kind: 'msk' }, { f: 131.125, label: '131.125', kind: 'msk' }, { f: 131.55, label: '131.550', kind: 'msk' }] },
+  { id: 'vdl2', name: 'VDL2', desc: 'Aircraft datalink (VDL mode 2)', color: '#e483d6', center: 136.8, rate: 2.0, lna: 32, vga: 28, amp: 'off', ch: [{ f: 136.65, label: '.650', kind: 'burst' }, { f: 136.725, label: '.725', kind: 'burst' }, { f: 136.775, label: '.775', kind: 'burst' }, { f: 136.875, label: '.875', kind: 'burst' }, { f: 136.975, label: '.975', kind: 'burst' }] },
+  { id: 'flex', name: 'FLEX', desc: 'Pagers · metadata only', color: '#8fd46a', center: 931.5, rate: 2.0, lna: 24, vga: 20, amp: 'off', ch: [{ f: 931.0625, label: '931.0625', kind: 'fsk' }, { f: 931.75, label: '931.750', kind: 'fsk' }, { f: 931.9375, label: '931.9375', kind: 'fsk' }] },
+  { id: 'pocsag', name: 'POCSAG', desc: 'Pagers · metadata only', color: '#d8d65a', center: 152.1, rate: 2.0, lna: 24, vga: 20, amp: 'off', ch: [{ f: 152.0075, label: '152.0075', kind: 'fsk' }, { f: 152.24, label: '152.240', kind: 'fsk' }] },
+  { id: 'aprs', name: 'APRS', desc: 'Amateur packet radio', color: '#ff9d5c', center: 144.29, rate: 2.0, lna: 32, vga: 24, amp: 'off', ch: [{ f: 144.39, label: '144.390', kind: 'afsk' }], missing: 'direwolf' },
+  { id: 'eas', name: 'EAS', desc: 'NOAA weather alert headers', color: '#ff6474', center: 162.3, rate: 2.0, lna: 28, vga: 20, amp: 'off', ch: [{ f: 162.4, label: '.400', kind: 'carrier' }, { f: 162.45, label: '.450', kind: 'carrier' }, { f: 162.55, label: '.550', kind: 'carrier' }] }
+];
+const RP = Object.fromEntries(REG.map((p) => [p.id, p]));
+const T0 = 21 * 3600 + 14 * 60 + 7;      // mock "now": 21:14:07 UTC
+const ANCHOR = 20 * 60 + 30;             // rotation started 20:30:00 ("start adsb")
+const pad = (n) => String(n).padStart(2, '0');
+const hms = (s) => { s = ((Math.floor(s) % 86400) + 86400) % 86400; return pad(Math.floor(s / 3600)) + ':' + pad(Math.floor(s / 60) % 60) + ':' + pad(s % 60); };
+const hm = (m) => { m = ((Math.round(m) % 1440) + 1440) % 1440; return pad(Math.floor(m / 60)) + ':' + pad(m % 60); };
+const mmss = (s) => Math.floor(s / 60) + ':' + pad(Math.floor(s % 60));
+
+const F = (pairs) => pairs.map(([k, v]) => ({ k, v }));
+const FEED0 = [
+  { t: '21:14:02', p: 'ais', k: 'vessel', s: '367435980', l: 'KILLEEN', f: '161.975', db: -38.6, sum: ['3.7 kn', 'COG 141°', 'Tug'], fields: F([['MMSI', '367435980'], ['Name', 'KILLEEN'], ['Type', 'Tug (52)'], ['SOG', '3.7 kn'], ['COG', '141.2°'], ['Nav status', 'Under way using engine'], ['Position', '33.7379 N 118.2570 W']]), raw: '!AIVDM,1,1,,A,15MwkT0P00G?ro8E`4UOwvN0R@3W,0*6C' },
+  { t: '21:13:58', p: 'ais', k: 'aid-to-navigation', s: '993692211', l: 'LONG BEACH LT', f: '162.025', db: -44.1, sum: ['Type 21', 'Light, without sectors'], fields: F([['MMSI', '993692211'], ['Name', 'LONG BEACH LT'], ['AtoN type', 'Light, without sectors'], ['Off position', 'no'], ['Virtual', 'no']]), raw: '!AIVDM,1,1,,B,E>jHC=c6:W2h22R`@1:WdP00000Opu?KPv@4000000,4*1D' },
+  { t: '21:13:51', p: 'ais', k: 'vessel', s: '368165820', l: 'V.A. POINT FERMIN', f: '161.975', db: -41.0, sum: ['23.9 kn', 'COG 201°'], fields: F([['MMSI', '368165820'], ['Name', 'V.A. POINT FERMIN'], ['SOG', '23.9 kn'], ['COG', '201.4°'], ['Heading', '199°']]), raw: '!AIVDM,1,1,,A,15N2HV001RG?pj4E`F3B<Ov00@Ev,0*39' },
+  { t: '21:13:40', p: 'ais', k: 'base-station', s: '3669139', l: '', f: '162.025', db: -35.2, sum: ['Type 4', 'UTC 21:13:40'], fields: F([['MMSI', '3669139'], ['Message', 'Base station report (4)'], ['UTC', '2026-10-30 21:13:40'], ['EPFD', 'Surveyed']]), raw: '!AIVDM,1,1,,B,4021tHAvJ2`b9o7aHFE<9Aw00S2w,0*1A' },
+  { t: '21:13:22', p: 'ais', k: 'aid-to-navigation', s: '993692036', l: 'LB', f: '161.975', db: -47.9, sum: ['Type 21'], fields: F([['MMSI', '993692036'], ['Name', 'LB'], ['AtoN type', 'Fixed structure']]), raw: '!AIVDM,1,1,,A,E>jHC=1:W2h0000000000000000Opu=7Pv5@4000000,4*7B' },
+  { ev: true, t: '21:10:00', txt: 'switching to ais' },
+  { t: '21:09:57', p: 'adsb', k: 'aircraft', s: 'A2B12D', l: 'UAL817', f: '1090.000', db: -9.8, sum: ['5,100 ft', '212 kt', 'TRK 255°'], fields: F([['ICAO', 'A2B12D'], ['Flight', 'UAL817'], ['Altitude', '5,100 ft'], ['Ground speed', '212 kt'], ['Track', '255°'], ['Messages this minute', '211']]), raw: '*8DA2B12D58C382D690C8AC2863A7;\n*8DA2B12D99117F9A8838A5C3B9C6;' },
+  { t: '21:09:51', p: 'adsb', k: 'aircraft', s: 'AA9A7A', l: 'SWA3162', f: '1090.000', db: -14.6, sum: ['33,125 ft', '462 kt', 'TRK 112°'], fields: F([['ICAO', 'AA9A7A'], ['Flight', 'SWA3162'], ['Altitude', '33,125 ft (32,800 at first fix)'], ['Ground speed', '462 kt'], ['Track', '112°']]), raw: '*8DAA9A7A5867D1F2B4A79E1B3C2D;' },
+  { t: '21:09:44', p: 'adsb', k: 'aircraft', s: 'A6B790', l: 'N53176', f: '1090.000', db: -7.1, sum: ['5,050 ft', '84 kt', 'SQK 5321'], fields: F([['ICAO', 'A6B790'], ['Flight', 'N53176'], ['Squawk', '5321'], ['Altitude', '5,050 ft'], ['Ground speed', '84 kt']]), raw: '*5DA6B7903F1A2C;\n*28000A3F1C2B9E;' },
+  { t: '21:08:10', p: 'adsb', k: 'aircraft', s: 'A4F2C3', l: 'N4127P', f: '1090.000', db: -6.3, sum: ['2,400 ft', '96 kt', 'SQK 7700'], emerg: '7700 emergency', fields: F([['ICAO', 'A4F2C3'], ['Flight', 'N4127P'], ['Squawk', '7700 (general emergency)'], ['Altitude', '2,400 ft'], ['Ground speed', '96 kt']]), raw: '*28001B3FA4F2C3;' },
+  { ev: true, t: '21:04:12', txt: 'resume' },
+  { ev: true, t: '21:04:12', txt: 'pause adsb for hackrf_info (0 s)' },
+  { ev: true, t: '21:00:00', txt: 'switching to adsb' },
+  { t: '20:58:31', p: 'flex', k: 'page', s: '1234567', l: '', f: '931.750', db: -52.3, sum: ['ALN', '[content not logged]'], fields: F([['Capcode', '1234567'], ['Type', 'ALN (alphanumeric)'], ['Channel', '931.750 MHz · 1600/2'], ['Content', '[content not logged]']]), raw: 'FLEX|2026-10-30 20:58:31|1600/2/K/A|11.074|001234567|ALN|[content not logged]' },
+  { t: '20:57:02', p: 'flex', k: 'page', s: '2345678', l: '', f: '931.750', db: -55.0, sum: ['NUM', '[content not logged]'], fields: F([['Capcode', '2345678'], ['Type', 'NUM (numeric)'], ['Content', '[content not logged]']]), raw: 'FLEX|2026-10-30 20:57:02|1600/2/K/A|11.012|002345678|NUM|[content not logged]' },
+  { t: '20:56:40', p: 'flex', k: 'page', s: '1234567', l: '', f: '931.750', db: -52.8, sum: ['TON', '[content not logged]'], fields: F([['Capcode', '1234567'], ['Type', 'TON (tone only)']]), raw: 'FLEX|2026-10-30 20:56:40|1600/2/K/A|11.010|001234567|TON|' },
+  { ev: true, t: '20:55:00', txt: 'switching to flex' },
+  { t: '20:53:12', p: 'vdl2', k: 'vdl2', s: 'N85370', l: 'OO5351', f: '136.975', db: -41.2, sum: ['ACARS label H1', 'Reg .N85370'], fields: F([['Registration', 'N85370'], ['Flight', 'OO5351'], ['Frequency', '136.975 MHz'], ['ACARS label', 'H1'], ['Block', '7'], ['Msg no.', 'D06A']]), raw: '[2026-10-30 20:53:12 UTC] [136.975 MHz] [-41.2/-63.0 dBFS] [21.8 dB]\nA85A45 (Aircraft, Airborne) -> 11A2E5 (Ground station): Command\nACARS: Reg: .N85370 Flight: OO5351\n Mode: 2 Label: H1 Blk id: 7 Ack: ! Msg no.: D06A' },
+  { ev: true, t: '20:50:00', txt: 'switching to vdl2' },
+  { ev: true, t: '20:30:00', txt: 'start adsb' }
+];
+// Sample generators for the profile on air. Unknown profiles fall back to a generic row.
+const GEN = {
+  ais: [FEED0[0], FEED0[2], FEED0[1], FEED0[3], FEED0[4]],
+  adsb: [FEED0[6], FEED0[7], FEED0[8]],
+  flex: [FEED0[13], FEED0[14], FEED0[15]],
+  vdl2: [FEED0[17]]
+};
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      sec: 0, demo: 'running', profile: 'ais', rotating: true, switchTo: 'adsb',
+      feed: FEED0.map((x, i) => ({ ...x, id: 'f' + i })), off: {}, evOn: true, hold: false, open: null,
+      pause: 30, retry: 12, attempt: 3, reconnect: 10, peak: true, editRot: false, draft: [], nextId: 100,
+      rot: [{ id: 1, p: 'adsb', m: 10 }, { id: 2, p: 'ais', m: 10 }, { id: 3, p: 'vdl2', m: 5 }, { id: 4, p: 'flex', m: 5 }]
+    };
+  }
+  componentDidMount() { this.timer = setInterval(() => this.tick(), 1000); }
+  componentWillUnmount() { clearInterval(this.timer); }
+
+  slotAt(min) {
+    const rot = this.state.rot, total = rot.reduce((a, s) => a + s.m, 0) || 1;
+    const since = min - ANCHOR, cyc = Math.floor(since / total), pos = since - cyc * total;
+    let acc = 0;
+    for (let i = 0; i < rot.length; i++) {
+      if (pos < acc + rot[i].m) return { i, p: rot[i].p, start: ANCHOR + cyc * total + acc, end: ANCHOR + cyc * total + acc + rot[i].m, cycStart: ANCHOR + cyc * total, total };
+      acc += rot[i].m;
+    }
+    return { i: 0, p: rot[0].p, start: min, end: min + 1, cycStart: min, total };
+  }
+  push(item) {
+    const id = 'n' + this.state.nextId;
+    this.setState({ feed: [{ ...item, id, fresh: true }, ...this.state.feed].slice(0, 80), nextId: this.state.nextId + 1 });
+  }
+  ev(txt) { this.push({ ev: true, t: hms(T0 + this.state.sec), txt }); }
+  tick() {
+    const s = this.state, sec = s.sec + 1, upd = { sec };
+    const nowMin = (T0 + sec) / 60;
+    if (s.demo === 'paused') {
+      if (s.pause <= 1) { upd.demo = 'running'; upd.pause = 30; this.setState(upd); this.ev('resume'); return; }
+      upd.pause = s.pause - 1;
+    }
+    if (s.demo === 'error') {
+      if (s.retry <= 1) { upd.retry = 30; upd.attempt = s.attempt + 1; } else upd.retry = s.retry - 1;
+    }
+    if (s.demo === 'stopped') upd.reconnect = s.reconnect <= 1 ? 10 : s.reconnect - 1;
+    this.setState(upd);
+    const live = ['running', 'behind', 'logcap'].includes(s.demo);
+    if (s.rotating && live) {
+      const slot = this.slotAt(nowMin);
+      if (slot.p !== s.profile) { this.setState({ profile: slot.p }); this.ev('switching to ' + slot.p); return; }
+    }
+    if (live && !s.hold && sec % 3 === 0) {
+      const g = GEN[s.profile];
+      if (g) { const tpl = g[(sec / 3) % g.length]; this.push({ ...tpl, t: hms(T0 + sec), db: Math.round((tpl.db + (Math.random() - 0.5) * 4) * 10) / 10 }); }
+    }
+  }
+  setDemo(v) {
+    const s = this.state, upd = { demo: v };
+    if (v === 'paused') { upd.pause = 30; this.setState(upd); this.ev('pause ' + s.profile + ' for hackrf_transfer (30 s)'); return; }
+    if (v === 'error') { upd.retry = 12; upd.attempt = 3; this.setState(upd); this.ev('error: ' + this.prog(s.profile) + ' exited (code 1); retry in 30 s'); return; }
+    if (v === 'idle') { this.setState(upd); this.ev('stop'); return; }
+    if (s.demo === 'idle' || s.demo === 'stopped') { this.setState(upd); this.ev('start ' + s.profile); return; }
+    this.setState(upd);
+  }
+  prog(p) { return { adsb: 'readsb', ais: 'AIS-catcher', acars: 'acarsdec', vdl2: 'dumpvdl2', flex: 'multimon-ng', pocsag: 'multimon-ng', aprs: 'direwolf', eas: 'multimon-ng' }[p] || p; }
+
+  draftFrom(rot) { return rot.map((x) => ({ ...x })); }
+  editDraft(fn) { const d = this.state.draft.map((x) => ({ ...x })); fn(d); this.setState({ draft: d }); }
+
+  banner(s, cur, nowSec) {
+    const prog = this.prog(s.profile);
+    switch (s.demo) {
+      case 'paused': return { cls: 'banner warn', iPause: true, title: 'Paused by hackrf_transfer — resumes automatically in ' + mmss(s.pause), sub: 'A 30 s IQ capture on ' + cur.centerTxt + ' MHz holds the radio. Live decoding of ' + cur.name + ' stops for that long; the gap is logged.', hasBar: true, bar: ((30 - s.pause) / 30 * 100).toFixed(1), acts: [{ label: 'View events', fn: () => {} }] };
+      case 'idle': return { cls: 'banner idle', iInfo: true, title: 'Idle — no profile is running', sub: 'The service is up and the radio is free. Start the rotation or switch to one profile.', acts: [{ label: 'Start rotation', fn: () => this.doStart() }] };
+      case 'error': return { cls: 'banner bad', iBad: true, title: prog + ' exited — waiting to retry in ' + mmss(s.retry), sub: 'Attempt ' + s.attempt + '. Retries back off to every 30 s. Nothing is decoded until the radio opens again.', err: prog + ': hackrf_open() failed: HACKRF_ERROR_BUSY (-6)\nAnother process holds the HackRF (exclusive USB access).', acts: [{ label: 'Retry now', fn: () => this.setState({ retry: 1 }) }, { label: 'Events', fn: () => {} }] };
+      case 'behind': return { cls: 'banner warn', iWarn: true, title: 'Falling behind — samples arriving at 84% of rate', sub: 'Below 90% the decoder misses messages. Likely causes: a shared USB hub, or CPU at 91%. Lower the sample rate or close other load.', acts: [{ label: 'Diagnostics', fn: () => {} }] };
+      case 'logcap': return { cls: 'banner warn', iWarn: true, title: 'Log is near its size cap — 243 of 256 MiB (95%)', sub: 'Oldest rows are pruned first. At today’s rate you will keep about 5 days instead of 7.', acts: [{ label: 'Prune now', fn: () => {} }, { label: 'Log settings', fn: () => {} }] };
+      case 'flat': return { cls: 'banner idle', iInfo: true, title: 'Nothing heard on ' + cur.name + ' yet — channel levels are flat', sub: 'Running for 3 min 20 s. Every channel sits at the noise floor (−92 dB): nothing is on the air, the decoder is fine.', acts: [] };
+      case 'decerr': return { cls: 'banner bad', iBad: true, title: 'Decoder error — ' + prog + ' is silent while channels show signals', sub: 'No messages for 3 min although channel A peaks at −58 dB. The decoder is probably stuck or misconfigured.', err: prog + ': no output on stdout for 180 s (watchdog)', acts: [{ label: 'Restart decoder', fn: () => this.setDemo('running') }] };
+      default: return null;
+    }
+  }
+  doStart() { const s = this.state; this.setState({ demo: 'running', rotating: true }); this.ev('start ' + this.slotAt((T0 + s.sec) / 60).p); }
+
+  renderVals() {
+    const s = this.state, p = this.props;
+    const theme = p.theme ?? 'dark';
+    const nowSec = T0 + s.sec, nowMin = nowSec / 60;
+    const prof = RP[s.profile] || REG[0];
+    const lo = prof.center - prof.rate / 2, hi = prof.center + prof.rate / 2;
+    const cur = {
+      name: prof.name, desc: prof.desc, color: prof.color,
+      centerTxt: prof.center.toFixed(3), rateTxt: prof.rate.toFixed(3), loTxt: lo.toFixed(3), hiTxt: hi.toFixed(3),
+      lna: prof.lna, vga: prof.vga, amp: prof.amp,
+      chs: prof.ch.map((c) => ({ txt: (c.label && c.label.length <= 2 ? c.label + ' ' : '') + (c.f.toFixed(4).endsWith('0') ? c.f.toFixed(3) : c.f.toFixed(4)) }))
+    };
+    const demo = s.demo;
+    const up = demo !== 'stopped';
+    const decoding = ['running', 'behind', 'logcap', 'flat', 'decerr'].includes(demo);
+    const manual = !s.rotating && decoding;
+
+    // App bar status
+    const abState = { running: 'running', logcap: 'running', flat: 'running', paused: 'paused', idle: 'idle', error: 'error', behind: 'behind', stopped: 'stopped', decerr: 'silent' }[demo];
+    const abText = demo === 'paused' ? 'Paused · hackrf_transfer · ' + mmss(s.pause) : demo === 'error' ? 'Retry in ' + mmss(s.retry) : demo === 'behind' ? 'Falling behind · 84%' : undefined;
+
+    // Rotation strip: one hour from the start of the current cycle
+    const slot = this.slotAt(nowMin);
+    const W0 = slot.cycStart, WIN = 60;
+    const segs = [];
+    if (manual) {
+      segs.push({ cls: 'rs manual cur', w: 100, color: prof.color, label: prof.name + ' · manual — rotation suspended', title: 'Manual' });
+    } else {
+      let t = W0, guard = 0;
+      while (t < W0 + WIN && guard++ < 200) {
+        const sl = this.slotAt(t + 0.001), a = Math.max(sl.start, W0), b = Math.min(sl.end, W0 + WIN);
+        const rp = RP[sl.p] || REG[0];
+        const w = (b - a) / WIN * 100;
+        const isCur = nowMin >= sl.start && nowMin < sl.end;
+        segs.push({ cls: 'rs' + (sl.end <= nowMin ? ' past' : '') + (isCur ? ' cur' : ''), w: w.toFixed(3), color: rp.color, label: w > 5 ? rp.name : '', title: rp.name + ' ' + hm(sl.start) + '–' + hm(sl.end) });
+        t = sl.end;
+      }
+    }
+    const next = this.slotAt(slot.end + 0.001);
+    const remain = slot.end * 60 - nowSec;
+    let rotText;
+    if (!up) rotText = '';
+    else if (demo === 'idle') rotText = 'Not running. Start resumes the rotation at the current step.';
+    else if (manual) rotText = 'Suspended — ' + prof.name + ' runs until you resume the rotation or switch.';
+    else rotText = 'Now ' + (RP[slot.p] || REG[0]).name + ' until ' + hm(slot.end) + ' · next ' + (RP[next.p] || REG[0]).name + ' at ' + hm(slot.end) + ':00 (in ' + mmss(remain) + ')' + (demo === 'paused' ? ' · paused steps keep their end time' : '');
+    const rotTicks = [];
+    for (let m = 0; m <= WIN; m += 10) rotTicks.push({ pct: (m / WIN * 100).toFixed(2), label: hm(W0 + m) });
+
+    // Feed
+    const counts = {};
+    s.feed.forEach((x) => { if (!x.ev) counts[x.p] = (counts[x.p] || 0) + 1; });
+    const chips = REG.map((r) => ({ name: r.name, color: r.color, n: counts[r.id] || 0, on: s.off[r.id] ? 'false' : 'true', toggle: () => this.setState({ off: { ...s.off, [r.id]: !s.off[r.id] } }) }));
+    const hideLive = demo === 'flat' || demo === 'decerr';
+    const items = s.feed
+      .filter((x) => (x.ev ? s.evOn : !s.off[x.p]))
+      .filter((x) => !(hideLive && x.p === s.profile))
+      .map((x) => {
+        const rp = RP[x.p] || { name: (x.p || '').toUpperCase(), color: '#8a96a6' };
+        const open = s.open === x.id;
+        return {
+          ...x, ev: !!x.ev, msg: !x.ev, pname: rp.name, color: rp.color || '#8a96a6', open, exp: open ? 'true' : 'false',
+          wcls: 'fiw' + (x.ev ? ' ev' : '') + (x.emerg ? ' emerg' : '') + (open ? ' open' : '') + (x.fresh ? ' new' : ''),
+          sum: (x.sum || []).map((v) => ({ v, cls: v === '[content not logged]' ? 'nc' : '' })),
+          db: x.db != null ? x.db.toFixed(1) : '', fields: x.fields || [], raw: x.raw || '(no raw text)',
+          mapOk: x.p === 'adsb' || x.p === 'ais',
+          toggle: x.ev ? () => {} : () => this.setState({ open: open ? null : x.id })
+        };
+      });
+    const mpm = { running: 46, behind: 31, logcap: 46, flat: 0, decerr: 0 }[demo] ?? 0;
+    let feedNote = { show: false, cls: '', title: '', sub: '' };
+    if (demo === 'flat') feedNote = { show: true, cls: 'banner idle', title: 'Nothing heard on ' + prof.name + ' yet', sub: 'Channel levels are flat: nothing on the air. Earlier messages from other profiles are below.' };
+    if (demo === 'decerr') feedNote = { show: true, cls: 'banner bad', title: 'Decoder error — no ' + prof.name + ' messages', sub: 'Levels show traffic but ' + this.prog(s.profile) + ' has produced nothing for 3 min.' };
+    if (demo === 'idle') feedNote = { show: true, cls: 'banner idle', title: 'Not decoding', sub: 'The feed shows what was decoded before the service went idle.' };
+
+    // Waterfall
+    const wfBand = { id: prof.id, name: prof.name, center: prof.center, rate: prof.rate, color: prof.color, channels: prof.ch };
+    let ov = { title: '', sub: '', tone: '' };
+    if (demo === 'paused') ov = { title: 'Paused by hackrf_transfer', sub: 'Live decoding resumes automatically in ' + mmss(s.pause) + '.', tone: 'warn' };
+    if (demo === 'idle') ov = { title: 'Idle', sub: 'No profile is running, so the radio is not tuned. Start a profile or the rotation.', tone: '' };
+    if (demo === 'error') ov = { title: 'No samples — waiting to retry', sub: this.prog(s.profile) + ' could not open the HackRF. Next attempt in ' + mmss(s.retry) + '.', tone: 'bad' };
+    const activity = demo === 'flat' ? 0 : 1;
+
+    // Health
+    const j = (a) => Math.sin(s.sec * 1.7 + a) * 0.8 + Math.sin(s.sec * 0.37 + a * 2) * 1.2;
+    const noSamples = ['paused', 'idle', 'error'].includes(demo);
+    const inPct = noSamples ? 0 : demo === 'behind' ? 84.2 + j(1) * 0.3 : 99.6 + j(2) * 0.05;
+    const nf = -92;
+    const toPct = (db) => Math.max(0, Math.min(100, (db + 110) / 80 * 100));
+    const baseLv = [-58, -66, -71, -63, -69];
+    const ch = noSamples ? [] : prof.ch.map((c, i) => {
+      const db = demo === 'flat' ? nf + j(i) * 0.25 : baseLv[i % baseLv.length] + j(i) * 1.5;
+      return { label: c.label && c.label.length <= 4 ? c.label + ' ' + c.f.toFixed(3) : c.f.toFixed(3), color: prof.color, w: toPct(db).toFixed(1), db: db.toFixed(1) };
+    });
+    const sparkVals = [38, 41, 44, 40, 47, 52, 49, 45, 43, 46, 50, 48, 44, 46];
+    const spark = sparkVals.map((v, i) => (i / (sparkVals.length - 1) * 120).toFixed(1) + ',' + (26 - (demo === 'flat' || demo === 'decerr' ? 1 : v / 60 * 24)).toFixed(1)).join(' ');
+    const logMiB = demo === 'logcap' ? 243 : 157;
+    const h = {
+      inPct: inPct.toFixed(1), inBar: inPct.toFixed(1),
+      inColor: demo === 'behind' ? 'var(--warn)' : noSamples ? 'var(--idle)' : 'var(--ok)',
+      inCls: 'hc' + (demo === 'behind' ? ' warn' : ''),
+      inNote: noSamples ? 'no samples while ' + (demo === 'paused' ? 'paused' : demo === 'idle' ? 'idle' : 'retrying') : demo === 'behind' ? 'falling behind (below 90%)' : 'of ' + prof.rate.toFixed(3) + ' MS/s',
+      dbfs: noSamples ? '—' : (-38.2 + j(3) * 0.4).toFixed(1), dbfsBar: noSamples ? 0 : 52, peak: noSamples ? '—' : '−11.4 dBFS',
+      hasCh: ch.length > 0, noCh: ch.length === 0, ch, nfPct: toPct(nf).toFixed(1),
+      spark,
+      cpu: demo === 'behind' ? 91 : noSamples ? 4 : 23, mem: 312, cpuCls: 'hc' + (demo === 'behind' ? ' warn' : ''),
+      logMiB, logPct: (logMiB / 256 * 100).toFixed(1), logColor: demo === 'logcap' ? 'var(--warn)' : 'var(--text2)',
+      logCls: 'hc' + (demo === 'logcap' ? ' warn' : ''), rows: demo === 'logcap' ? '611,902' : '412,388'
+    };
+
+    // Rotation editor
+    const opts = REG.map((r) => ({ id: r.id, label: r.name + (r.missing ? ' — missing ' + r.missing : ''), dis: !!r.missing }));
+    const d = s.draft, total = d.reduce((a, x) => a + (Number(x.m) || 0), 0) || 1;
+    const draft = d.map((x, i) => ({
+      n: i + 1, p: x.p, m: x.m, color: (RP[x.p] || REG[0]).color, pid: 'rp' + x.id, mid: 'rm' + x.id, first: i === 0, last: i === d.length - 1,
+      setP: (e) => { const v = e.target.value; this.editDraft((a) => { a[i].p = v; }); },
+      setM: (e) => { const v = Math.max(1, Math.min(120, parseInt(e.target.value, 10) || 1)); this.editDraft((a) => { a[i].m = v; }); },
+      up: () => this.editDraft((a) => { if (i > 0) { const t = a[i - 1]; a[i - 1] = a[i]; a[i] = t; } }),
+      down: () => this.editDraft((a) => { if (i < a.length - 1) { const t = a[i + 1]; a[i + 1] = a[i]; a[i] = t; } }),
+      del: () => this.editDraft((a) => { a.splice(i, 1); })
+    }));
+    const share = {};
+    d.forEach((x) => { share[x.p] = (share[x.p] || 0) + (Number(x.m) || 0); });
+
+    return {
+      theme, themeCls: theme === 'light' ? 'light' : '',
+      ab: { state: abState, text: abText, prof: up && decoding || demo === 'paused' ? prof.name + ' · ' + cur.centerTxt + ' MHz' : '', color: prof.color },
+      demo, setDemo: (e) => this.setDemo(e.target.value),
+      isStopped: !up, isUp: up, reconnectIn: 'next in ' + s.reconnect + ' s',
+      reconnect: () => this.setState({ reconnect: 10 }),
+      hasBanner: !!this.banner(s, cur, nowSec), bn: this.banner(s, cur, nowSec) || { acts: [] },
+      cur, manual,
+      cantStart: decoding || demo === 'paused', cantStop: demo === 'idle', cantSwitch: demo === 'error',
+      start: () => this.doStart(),
+      stop: () => { this.setState({ demo: 'idle' }); this.ev('stop'); },
+      switchTo: s.switchTo, setSwitch: (e) => this.setState({ switchTo: e.target.value }),
+      doSwitch: () => { const to = s.switchTo; this.setState({ profile: to, rotating: false, demo: decoding ? demo : 'running', open: null }); this.ev('switching to ' + to + ' (manual)'); },
+      resumeRot: () => { this.setState({ rotating: true }); this.ev('resume rotation'); },
+      opts,
+      rotText, segs, rotTicks, nowPct: ((nowMin - W0) / WIN * 100).toFixed(2), showNow: !manual && demo !== 'idle',
+      rotOpacity: demo === 'idle' || demo === 'error' ? '0.55' : '1',
+      rotAria: 'Rotation timeline from ' + hm(W0) + ' to ' + hm(W0 + WIN),
+      openEditor: () => this.setState({ editRot: true, draft: this.draftFrom(s.rot) }),
+      closeEditor: () => this.setState({ editRot: false }),
+      saveRot: () => { this.setState({ rot: s.draft.map((x) => ({ ...x, m: Number(x.m) || 1 })), editRot: false }); this.ev('rotation updated'); },
+      addStep: () => this.setState({ draft: [...s.draft, { id: s.nextId, p: 'ais', m: 10 }], nextId: s.nextId + 1 }),
+      editRot: s.editRot, draft, draftTotal: d.reduce((a, x) => a + (Number(x.m) || 0), 0), draftEmpty: d.length === 0,
+      draftSegs: d.map((x) => ({ w: ((Number(x.m) || 0) / total * 100).toFixed(2), color: (RP[x.p] || REG[0]).color, label: (Number(x.m) || 0) / total > 0.08 ? (RP[x.p] || REG[0]).name : '' })),
+      draftShare: Object.keys(share).map((k) => ({ name: (RP[k] || REG[0]).name, color: (RP[k] || REG[0]).color, share: Math.round(share[k] / total * 100) })),
+      noop: () => {},
+      wfBand, ov, activity, peak: s.peak, peakStr: s.peak ? 'true' : 'false', togglePeak: () => this.setState({ peak: !s.peak }),
+      mpm, chips, evOn: s.evOn ? 'true' : 'false', toggleEv: () => this.setState({ evOn: !s.evOn }),
+      holdStr: s.hold ? 'true' : 'false', holdLabel: s.hold ? 'Held — resume' : 'Hold', toggleHold: () => this.setState({ hold: !s.hold }),
+      items, feedNote, h
+    };
+  }
+}
+</script>
+</body>
+</html>

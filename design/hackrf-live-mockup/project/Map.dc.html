@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Map</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.mtool{display:flex;align-items:center;gap:10px 16px;padding:8px 12px;flex-wrap:wrap}
+.scrub{flex:1 1 420px;min-width:260px;display:flex;flex-direction:column;gap:3px}
+.sbands{position:relative;height:14px;border-radius:2px;overflow:hidden;background:var(--panel2)}
+.sbands span{position:absolute;top:0;bottom:0;background:color-mix(in oklab,var(--pc) 35%,var(--panel));border-right:1px solid var(--bg);font:600 9.5px/14px var(--mono);color:var(--text);padding-left:3px;overflow:hidden;white-space:nowrap}
+.sbands span.stopped{background:repeating-linear-gradient(135deg,var(--raised) 0 3px,transparent 3px 6px);color:var(--muted)}
+.range{width:100%;accent-color:var(--text);margin:0;height:22px}
+.layers{display:flex;flex-wrap:wrap;gap:6px}
+.tlist{display:flex;flex-direction:column}
+.tli{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:7px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;color:inherit;font:inherit;text-align:left;width:100%;cursor:pointer}
+.tli:hover{background:var(--hover)}
+.tli.emerg{background:color-mix(in oklab,var(--bad) 12%,transparent)}
+.tli .nm{font-family:var(--mono);font-weight:600}
+.tli .ds{grid-column:2;color:var(--text2);font-size:12px}
+.tli .ag{font-family:var(--mono);font-size:11.5px;color:var(--muted);grid-row:1 / span 2;grid-column:3}
+.emerbar{position:absolute;top:10px;left:56px;right:10px;z-index:4;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:7px 10px;border-radius:5px;background:color-mix(in oklab,var(--bad) 20%,var(--panel));border:1px solid var(--bad);color:var(--text)}
+.emerbar b{color:var(--bad);font-family:var(--mono)}
+.kv dd.em{color:var(--bad);font-weight:600}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <dc-import name="AppBar" active="map" state="running" profile-text="AIS · 162.000 MHz" profile-color="#3fd0c0" theme="{{theme}}" hint-size="100%,53px" style="width: 100%"></dc-import>
+  <main class="main">
+    <section class="panel" aria-label="Map controls">
+      <div class="mtool">
+        <div class="seg" role="group" aria-label="Map mode">
+          <button type="button" aria-pressed="{{liveOn}}" onClick="{{goLive}}">Live</button>
+          <button type="button" aria-pressed="{{histOn}}" onClick="{{goHist}}">History</button>
+        </div>
+        <div class="col" style="gap: 0; min-width: 132px">
+          <span class="mono" style="font-size: 15px; font-weight: 500">{{timeLabel}} UTC</span>
+          <span class="muted" style="font-size: 12px">{{timeSub}}</span>
+        </div>
+        <button type="button" class="btn sm" onClick="{{togglePlay}}" disabled="{{liveMode}}" aria-pressed="{{playStr}}">{{playLabel}}</button>
+        <div class="scrub">
+          <div class="sbands" aria-hidden="true">
+            <sc-for list="{{bands}}" as="b"><span class="{{b.cls}}" style="left: {{b.l}}%; width: {{b.w}}%; --pc: {{b.color}}">{{b.label}}</span></sc-for>
+          </div>
+          <input class="range" type="range" min="0" max="601" step="1" value="{{scrubV}}" onInput="{{onScrub}}" aria-label="Map time, 20:14 to 21:14 UTC">
+          <div class="rotx" aria-hidden="true"><sc-for list="{{sticks}}" as="t"><span style="left: {{t.pct}}%">{{t.label}}</span></sc-for></div>
+        </div>
+      </div>
+      <div class="mtool" style="border-top: 1px solid var(--line); padding-top: 6px; padding-bottom: 6px">
+        <span class="cap">Layers</span>
+        <div class="layers" role="group" aria-label="Layers">
+          <sc-for list="{{layers}}" as="l"><button type="button" class="tchip" style="--pc: {{l.color}}" aria-pressed="{{l.on}}" onClick="{{l.toggle}}"><span class="sw"></span>{{l.label}}<span class="n">{{l.n}}</span></button></sc-for>
+        </div>
+        <span class="sp"></span>
+        <label class="check"><input type="checkbox" checked="{{tracks}}" onChange="{{toggleTracks}}">Tracks</label>
+        <label class="check"><input type="checkbox" checked="{{rings}}" onChange="{{toggleRings}}">Range rings</label>
+      </div>
+    </section>
+
+    <div class="g-map">
+      <section class="panel" aria-label="Map" style="overflow: hidden">
+        <div class="mapbox">
+          <svg class="base" viewBox="{{vb}}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+            <rect x="-100" y="-100" width="1100" height="800" fill="var(--sea)"></rect>
+            <path d="M-50,84 L100,78 L180,85 L203,110 L225,139 L245,151 L255,175 L265,205 L285,260 L300,290 L307,314 L307,344 L295,374 L275,398 L289,433 L340,441 L385,464 L407,476 L420,471 L425,441 L440,422 L490,416 L510,404 L560,416 L585,429 L600,437 L630,465 L695,537 L740,567 L770,595 L790,602 L960,602 L960,-60 L-50,-60 Z" fill="var(--land)" stroke="var(--shore)" stroke-width="1.2" vector-effect="non-scaling-stroke"></path>
+            <g stroke="var(--grid)" stroke-width="1" vector-effect="non-scaling-stroke">
+              <path d="M100,0 V602 M200,0 V602 M300,0 V602 M400,0 V602 M500,0 V602 M600,0 V602 M700,0 V602 M800,0 V602 M0,120 H900 M0,241 H900 M0,361 H900 M0,482 H900" fill="none" vector-effect="non-scaling-stroke"></path>
+            </g>
+            <g fill="none" stroke="var(--road)" stroke-width="2" stroke-linejoin="round">
+              <path d="M230,0 L270,84 L330,181 L400,289 L480,325 L570,337 L630,397 L750,470 L850,506 L900,520" vector-effect="non-scaling-stroke"></path>
+              <path d="M460,0 L480,48 L530,120 L620,205 L730,289 L790,337 L840,421 L900,500" vector-effect="non-scaling-stroke"></path>
+              <path d="M450,48 L420,181 L415,289 L420,373 L420,433" vector-effect="non-scaling-stroke"></path>
+              <path d="M210,96 L330,84 L450,60 L600,36 L900,24" vector-effect="non-scaling-stroke"></path>
+              <path d="M530,84 L520,241 L500,385" vector-effect="non-scaling-stroke"></path>
+            </g>
+            <path d="M430,476 L580,452" stroke="var(--shore)" stroke-width="2.5" fill="none" vector-effect="non-scaling-stroke"></path>
+            <g stroke="var(--maplbl)" stroke-width="2" fill="none" opacity="0.7">
+              <path d="M268,184 L312,184 M268,189 L312,189 M270,197 L314,197 M270,202 L314,202" vector-effect="non-scaling-stroke"></path>
+              <path d="M536,333 L560,349 M540,348 L556,334" vector-effect="non-scaling-stroke"></path>
+              <path d="M350,362 L370,354" vector-effect="non-scaling-stroke"></path>
+            </g>
+            <text class="ml g" x="104" y="12">118.6°W</text>
+            <text class="ml g" x="304" y="12">118.4°W</text>
+            <text class="ml g" x="504" y="12">118.2°W</text>
+            <text class="ml g" x="704" y="12">118.0°W</text>
+            <text class="ml g" x="4" y="116">34.0°N</text>
+            <text class="ml g" x="4" y="237">33.9°N</text>
+            <text class="ml g" x="4" y="357">33.8°N</text>
+            <text class="ml g" x="4" y="478">33.7°N</text>
+            <text class="ml sea" x="96" y="236">Santa Monica Bay</text>
+            <text class="ml sea" x="120" y="470">Pacific Ocean</text>
+            <text class="ml sea" x="580" y="520">San Pedro Bay</text>
+            <text class="ml" x="214" y="74">Santa Monica</text>
+            <text class="ml" x="468" y="64">Downtown LA</text>
+            <text class="ml" x="318" y="216">LAX</text>
+            <text class="ml" x="486" y="250">Compton</text>
+            <text class="ml" x="566" y="356">LGB</text>
+            <text class="ml" x="512" y="392">Long Beach</text>
+            <text class="ml" x="318" y="384">Torrance</text>
+            <text class="ml" x="384" y="452">San Pedro</text>
+            <text class="ml" x="796" y="322">Anaheim</text>
+            <text class="ml" x="610" y="506">Huntington Beach</text>
+            <text class="ml" x="700" y="556">Newport Beach</text>
+            <sc-if value="{{rings}}">
+              <g fill="none" stroke="var(--maplbl)" stroke-dasharray="4 5" opacity="0.6">
+                <circle cx="330" cy="300" r="201" vector-effect="non-scaling-stroke"></circle>
+                <circle cx="330" cy="300" r="502" vector-effect="non-scaling-stroke"></circle>
+              </g>
+              <text class="ml g" x="334" y="94">10 NM</text>
+              <text class="ml g" x="770" y="44">25 NM</text>
+            </sc-if>
+            <g>
+              <circle cx="330" cy="300" r="5" fill="var(--text)" stroke="var(--sea)" stroke-width="2"></circle>
+              <path d="M330,295 V282 M324,284 L330,278 L336,284" stroke="var(--text)" stroke-width="1.5" fill="none" vector-effect="non-scaling-stroke"></path>
+            </g>
+            <text class="ml" x="340" y="314">station</text>
+            <sc-if value="{{tracks}}">
+              <sc-for list="{{trails}}" as="tr">
+                <polyline points="{{tr.pts}}" fill="none" stroke="{{tr.color}}" stroke-width="1.6" stroke-opacity="{{tr.op}}" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline>
+              </sc-for>
+            </sc-if>
+          </svg>
+
+          <sc-for list="{{tg}}" as="t">
+            <button type="button" class="{{t.cls}}" style="left: {{t.left}}%; top: {{t.top}}%; --pc: {{t.color}}" onClick="{{t.pick}}" aria-label="{{t.aria}}">
+              <span class="ico" style="transform: rotate({{t.rot}}deg)">
+                <sc-if value="{{t.isAir}}"><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d="M0,-9 L1.5,-3 L8.5,1.5 L8.5,3.2 L1.5,1.4 L1,6 L3.6,8 L3.6,9.2 L0,8.3 L-3.6,9.2 L-3.6,8 L-1,6 L-1.5,1.4 L-8.5,3.2 L-8.5,1.5 L-1.5,-3 Z" fill="currentColor" stroke="var(--sea)" stroke-width="0.8"></path></svg></sc-if>
+                <sc-if value="{{t.isShip}}"><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d="M0,-18 V-9" stroke="currentColor" stroke-width="1.4"></path><path d="M0,-8 L4,-2 L4,7 L-4,7 L-4,-2 Z" fill="currentColor" stroke="var(--sea)" stroke-width="0.8"></path></svg></sc-if>
+                <sc-if value="{{t.isAton}}"><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d="M0,-6.5 L6.5,0 L0,6.5 L-6.5,0 Z" fill="var(--sea)" stroke="currentColor" stroke-width="1.8"></path><path d="M0,-3 V3 M-3,0 H3" stroke="currentColor" stroke-width="1.4"></path></svg></sc-if>
+                <sc-if value="{{t.isBase}}"><svg viewBox="-10 -10 20 20" aria-hidden="true"><rect x="-5.5" y="-5.5" width="11" height="11" fill="var(--sea)" stroke="currentColor" stroke-width="1.8"></rect><path d="M0,3 V-3 M-3,-1 L0,-4 L3,-1" stroke="currentColor" stroke-width="1.3" fill="none"></path></svg></sc-if>
+              </span>
+              <span class="tlbl">{{t.ident}}<small>{{t.sub}}</small></span>
+            </button>
+          </sc-for>
+
+          <div class="mapctl">
+            <button type="button" onClick="{{zoomIn}}" aria-label="Zoom in">+</button>
+            <button type="button" onClick="{{zoomOut}}" aria-label="Zoom out">−</button>
+            <button type="button" onClick="{{zoomReset}}" aria-label="Reset view">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="7"></circle><path d="M12 2 v4 M12 18 v4 M2 12 h4 M18 12 h4"></path></svg>
+            </button>
+          </div>
+          <sc-if value="{{emer.show}}">
+            <div class="emerbar" role="alert">
+              <b>SQUAWK {{emer.sq}}</b>
+              <span>{{emer.meaning}} · <span class="mono">{{emer.ident}} · {{emer.icao}}</span> · {{emer.alt}} · last heard {{emer.last}}</span>
+              <span class="sp"></span>
+              <button type="button" class="btn sm" onClick="{{emer.pick}}">Select</button>
+            </div>
+          </sc-if>
+          <div class="mapnote" style="right: 10px; bottom: 10px">{{coverNote}}</div>
+          <div class="scale"><span>{{scale.label}}</span><i style="width: {{scale.w}}%"></i></div>
+        </div>
+      </section>
+
+      <aside class="col" style="gap: 12px" aria-label="Target details">
+        <sc-if value="{{hasSel}}">
+          <section class="panel" style="--pc: {{sel.color}}">
+            <div class="ph">
+              <span class="pbadge">{{sel.pname}}</span>
+              <span class="kind">{{sel.kind}}</span>
+              <span class="sp"></span>
+              <button type="button" class="btn sm icon ghost" onClick="{{clearSel}}" aria-label="Close details"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg></button>
+            </div>
+            <div class="pb col" style="gap: 12px">
+              <div class="row wr" style="gap: 6px 10px">
+                <span class="mono" style="font-size: 20px; font-weight: 600">{{sel.ident}}</span>
+                <sc-if value="{{sel.emerg}}"><span class="tag bad">{{sel.emerg}}</span></sc-if>
+                <sc-if value="{{sel.stale}}"><span class="tag">stale · {{sel.age}}</span></sc-if>
+              </div>
+              <sc-if value="{{sel.staleNote}}"><span class="t2" style="font-size: 12.5px">{{sel.staleNote}}</span></sc-if>
+              <sc-if value="{{sel.isAir}}">
+                <div class="col" style="gap: 4px">
+                  <span class="cap">Altitude over time</span>
+                  <svg class="spark" viewBox="0 0 300 64" aria-label="{{sel.sparkAria}}" role="img" style="height: 64px">
+                    <path d="M0,63.5 H300" stroke="var(--line2)" stroke-width="1" fill="none"></path>
+                    <polyline points="{{sel.spark}}" fill="none" stroke="var(--pc)" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline>
+                  </svg>
+                  <div class="row mono muted" style="font-size: 11px; justify-content: space-between"><span>{{sel.sparkT0}} · {{sel.altMin}}</span><span>{{sel.altMax}} · {{sel.sparkT1}}</span></div>
+                </div>
+              </sc-if>
+              <dl class="kv">
+                <sc-for list="{{sel.rows}}" as="r"><dt>{{r.k}}</dt><dd class="{{r.cls}}">{{r.v}}</dd></sc-for>
+              </dl>
+              <div class="row wr">
+                <a class="btn sm" href="Log.dc.html">Open in log</a>
+                <a class="btn sm" href="History.dc.html">History</a>
+                <a class="btn sm" href="Alerts.dc.html">Add to watchlist</a>
+              </div>
+            </div>
+          </section>
+        </sc-if>
+        <section class="panel">
+          <div class="ph"><h2>In view</h2><span class="mono muted">{{tlist.length}}</span></div>
+          <div class="tlist">
+            <sc-for list="{{tlist}}" as="t">
+              <button type="button" class="{{t.lcls}}" style="--pc: {{t.color}}" onClick="{{t.pick}}">
+                <span class="sw"></span>
+                <span class="nm">{{t.ident}}</span>
+                <span class="ag">{{t.ageTxt}}</span>
+                <span class="ds">{{t.desc}}</span>
+              </button>
+            </sc-for>
+            <sc-if value="{{noTargets}}"><div class="empty" style="margin: 12px">Nothing to show for this time and these layers.</div></sc-if>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":940}}'>
+// Map layers come from registry kinds that declare the "map" view.
+const PROF = { adsb: { name: 'ADS-B', color: '#5cb8ff' }, ais: { name: 'AIS', color: '#3fd0c0' } };
+const LAYERS = [
+  { kind: 'aircraft', label: 'Aircraft', p: 'adsb' },
+  { kind: 'vessel', label: 'Ships', p: 'ais' },
+  { kind: 'aid-to-navigation', label: 'Aids to navigation', p: 'ais' },
+  { kind: 'base-station', label: 'Base stations', p: 'ais' }
+];
+const SQ = { '7500': 'Unlawful interference', '7600': 'Radio failure', '7700': 'General emergency' };
+// Minutes since 20:14 (0..60.1). null splits a track where the profile was off the air.
+const TG = [
+  { id: 'A2B12D', kind: 'aircraft', p: 'adsb', ident: 'UAL817', sq: '2215', gs: 212, msgs: 1284, rssi: -4.2, first: '21:03:30', last: '21:09:57', path: [[49.5, 950, 19, 8900], [51, 850, 47, 7800], [53, 713, 83, 6600], [55, 575, 119, 5500], [55.95, 510, 137, 5100]] },
+  { id: 'AA9A7A', kind: 'aircraft', p: 'adsb', ident: 'SWA3162', sq: '3341', gs: 462, msgs: 412, rssi: -11.6, first: '21:06:54', last: '21:09:51', path: [[52.9, 70, 119, 32800], [54, 228, 183, 32900], [55, 372, 241, 33025], [55.85, 495, 290, 33125]] },
+  { id: 'A6B790', kind: 'aircraft', p: 'adsb', ident: 'N53176', sq: '5321', gs: 84, msgs: 2210, rssi: -3.1, first: '20:31:02', last: '21:09:44', path: [[16, 510, 249, 4500], [20, 590, 289, 4700], [24, 670, 331, 4900], [26, 710, 351, 5000], null, [46, 810, 441, 4800], [49, 740, 399, 4950], [52, 670, 357, 5000], [55.7, 580, 303, 5050]] },
+  { id: 'A4F2C3', kind: 'aircraft', p: 'adsb', ident: 'N4127P', sq: '7700', gs: 96, msgs: 388, rssi: -2.4, first: '21:05:00', last: '21:08:10', path: [[51, 510, 307, 3100], [52.5, 465, 324, 2800], [54.17, 415, 341, 2400]] },
+  { id: '367435980', kind: 'vessel', p: 'ais', ident: 'KILLEEN', vtype: 'Tug (52)', sog: 3.7, cog: 141, hdg: 140, nav: 'Under way using engine', msgs: 146, first: '20:40:12', last: '21:14:02', path: [[26, 420, 419], [36, 428, 425], null, [56, 438, 431], [60.1, 443, 436]] },
+  { id: '368165820', kind: 'vessel', p: 'ais', ident: 'V.A. POINT FERMIN', vtype: 'High-speed craft (40)', sog: 23.9, cog: 201, hdg: 199, nav: 'Under way using engine', msgs: 98, first: '20:41:30', last: '21:13:51', path: [[26, 420, 479], [31, 450, 459], [36, 510, 419], null, [56, 525, 422], [58, 519, 437], [60.1, 513, 452]] },
+  { id: '993692211', kind: 'aid-to-navigation', p: 'ais', ident: 'LONG BEACH LT', atype: 'Light, without sectors', msgs: 24, first: '20:40:31', last: '21:13:58', path: [[26, 578, 452], [36, 578, 452], null, [56, 578, 452], [60.1, 578, 452]] },
+  { id: '993692036', kind: 'aid-to-navigation', p: 'ais', ident: 'LB', atype: 'Fixed structure', msgs: 22, first: '20:40:44', last: '21:13:22', path: [[26, 620, 486], [36, 620, 486], null, [56, 620, 486], [60.1, 620, 486]] },
+  { id: '3669139', kind: 'base-station', p: 'ais', ident: '3669139', atype: 'Base station (msg 4)', msgs: 60, first: '20:40:00', last: '21:13:40', path: [[26, 370, 429], [36, 370, 429], null, [56, 370, 429], [60.1, 370, 429]] }
+];
+// What the radio was doing, minutes since 20:14: stopped until 20:30, then a 30-minute rotation.
+const ROT = [['adsb', 10], ['ais', 10], ['vdl2', 5], ['flex', 5]];
+const RCOL = { adsb: '#5cb8ff', ais: '#3fd0c0', vdl2: '#e483d6', flex: '#8fd46a' };
+const RNAME = { adsb: 'ADS-B', ais: 'AIS', vdl2: 'VDL2', flex: 'FLEX' };
+function onAir(m) {
+  if (m < 16) return null;
+  let pos = (m - 16) % 30, acc = 0;
+  for (const [p, d] of ROT) { if (pos < acc + d) return p; acc += d; }
+  return null;
+}
+const pad = (n) => String(n).padStart(2, '0');
+const clock = (m) => { const s = Math.round((20 * 60 + 14) * 60 + 7 + m * 60); return pad(Math.floor(s / 3600) % 24) + ':' + pad(Math.floor(s / 60) % 60) + ':' + pad(s % 60); };
+const fmtAlt = (a) => Math.round(a / 25) * 25;
+const comma = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+function segsOf(path) {
+  const out = []; let cur = [];
+  for (const p of path) { if (p === null) { if (cur.length) out.push(cur); cur = []; } else cur.push(p); }
+  if (cur.length) out.push(cur);
+  return out;
+}
+function hdgOf(a, b) { const d = Math.atan2(b[1] - a[1], -(b[2] - a[2])) * 180 / Math.PI; return (d + 360) % 360; }
+// Position at minute m: interpolated inside a segment, else the last fix with its age.
+function posAt(path, m) {
+  const segs = segsOf(path);
+  const trails = [];
+  let last = null;
+  for (const sg of segs) {
+    if (m < sg[0][0]) break;
+    if (m <= sg[sg.length - 1][0]) {
+      for (let i = 0; i < sg.length - 1; i++) {
+        const a = sg[i], b = sg[i + 1];
+        if (m >= a[0] && m <= b[0]) {
+          const u = (m - a[0]) / ((b[0] - a[0]) || 1);
+          const pt = [m, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u, a[3] != null ? a[3] + (b[3] - a[3]) * u : null];
+          trails.push([...sg.slice(0, i + 1), pt]);
+          return { x: pt[1], y: pt[2], alt: pt[3], hdg: hdgOf(a, b), age: 0, trails };
+        }
+      }
+    }
+    trails.push(sg);
+    last = sg;
+  }
+  if (!last) return null;
+  const e = last[last.length - 1], pv = last.length > 1 ? last[last.length - 2] : e;
+  return { x: e[1], y: e[2], alt: e[3], hdg: hdgOf(pv, e), age: m - e[0], trails };
+}
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { live: true, m: 60.1, sel: 'A2B12D', off: {}, tracks: true, rings: true, z: 1, playing: false };
+  }
+  componentWillUnmount() { clearInterval(this.play); }
+  togglePlay() {
+    if (this.state.playing) { clearInterval(this.play); this.setState({ playing: false }); return; }
+    const start = this.state.m >= 59.9 ? 0 : this.state.m;
+    this.setState({ playing: true, m: start, live: false });
+    this.play = setInterval(() => {
+      const m = Math.min(60.1, this.state.m + 0.2);
+      this.setState({ m });
+      if (m >= 60.1) { clearInterval(this.play); this.setState({ playing: false }); }
+    }, 100);
+  }
+  renderVals() {
+    const s = this.state, theme = this.props.theme ?? 'dark';
+    const m = s.live ? 60.1 : s.m;
+    const air = onAir(m);
+    const z = s.z;
+    const selT = TG.find((t) => t.id === s.sel);
+    const items = [];
+    for (const t of TG) {
+      const ps = posAt(t.path, m);
+      if (!ps || ps.age > 20) continue;
+      items.push({ t, ps });
+    }
+    const selPos = items.find((x) => x.t.id === s.sel);
+    const cx = z > 1 && selPos ? selPos.ps.x : 450, cy = z > 1 && selPos ? selPos.ps.y : 301;
+    const vw = 900 / z, vh = 602 / z;
+    const vx = Math.max(0, Math.min(900 - vw, cx - vw / 2)), vy = Math.max(0, Math.min(602 - vh, cy - vh / 2));
+    const counts = {};
+    items.forEach((x) => { counts[x.t.kind] = (counts[x.t.kind] || 0) + 1; });
+    const visible = items.filter((x) => !s.off[x.t.kind]);
+    const ageTxt = (a) => a < 1 ? 'now' : Math.round(a) + ' min ago';
+    const tg = visible.map(({ t, ps }) => {
+      const emerg = SQ[t.sq] ? t.sq : '';
+      const stale = ps.age >= 1;
+      let sub;
+      if (t.kind === 'aircraft') sub = (ps.alt >= 18000 ? 'FL' + Math.round(ps.alt / 100) : comma(fmtAlt(ps.alt)) + ' ft') + ' · ' + t.gs + ' kt' + (emerg ? ' · ' + emerg : '');
+      else if (t.kind === 'vessel') sub = t.sog + ' kn · ' + t.cog + '°';
+      else sub = t.kind === 'base-station' ? 'base station' : 'AtoN';
+      if (stale) sub += ' · ' + ageTxt(ps.age);
+      return {
+        id: t.id, ident: t.ident, sub, color: PROF[t.p].color,
+        left: ((ps.x - vx) / vw * 100).toFixed(2), top: ((ps.y - vy) / vh * 100).toFixed(2),
+        rot: t.kind === 'vessel' || t.kind === 'aircraft' ? Math.round(ps.hdg) : 0,
+        isAir: t.kind === 'aircraft', isShip: t.kind === 'vessel', isAton: t.kind === 'aid-to-navigation', isBase: t.kind === 'base-station',
+        cls: 'tg' + (stale ? ' stale' : '') + (emerg ? ' emerg' : '') + (s.sel === t.id ? ' sel' : ''),
+        aria: t.ident + ', ' + t.kind + (emerg ? ', squawk ' + emerg : '') + (stale ? ', last heard ' + ageTxt(ps.age) : ''),
+        pick: () => this.setState({ sel: t.id }),
+        lcls: 'tli' + (emerg ? ' emerg' : ''), ageTxt: ageTxt(ps.age),
+        desc: (t.kind === 'aircraft' ? t.id + ' · ' : t.kind === 'vessel' ? t.id + ' · ' : '') + sub
+      };
+    });
+    const trails = [];
+    visible.forEach(({ t, ps }) => ps.trails.forEach((sg) => {
+      if (sg.length < 2) return;
+      trails.push({ pts: sg.map((p) => p[1].toFixed(1) + ',' + p[2].toFixed(1)).join(' '), color: PROF[t.p].color, op: ps.age >= 1 ? 0.4 : 0.8 });
+    }));
+    const layers = LAYERS.map((l) => ({ label: l.label, color: PROF[l.p].color, n: counts[l.kind] || 0, on: s.off[l.kind] ? 'false' : 'true', toggle: () => this.setState({ off: { ...s.off, [l.kind]: !s.off[l.kind] } }) }));
+
+    // Selected target panel
+    let sel = { rows: [] };
+    if (selT) {
+      const ps = posAt(selT.path, m);
+      const age = ps ? ps.age : null;
+      const lat = ps ? (34.10 - ps.y / 1204) : null, lon = ps ? (ps.x / 1000 - 118.70) : null;
+      const posTxt = ps ? lat.toFixed(4) + ' N, ' + Math.abs(lon).toFixed(4) + ' W' : '—';
+      const emerg = SQ[selT.sq] ? selT.sq + ' ' + SQ[selT.sq].toLowerCase() : '';
+      const rows = [];
+      if (selT.kind === 'aircraft') {
+        rows.push({ k: 'Callsign', v: selT.ident, cls: 'mono' }, { k: 'ICAO', v: selT.id, cls: 'mono' }, { k: 'Squawk', v: selT.sq + (SQ[selT.sq] ? ' — ' + SQ[selT.sq] : ''), cls: 'mono' + (SQ[selT.sq] ? ' em' : '') });
+        rows.push({ k: 'Altitude', v: ps ? comma(fmtAlt(ps.alt)) + ' ft' : '—', cls: 'mono' }, { k: 'Speed', v: selT.gs + ' kt', cls: 'mono' }, { k: 'Track', v: ps ? Math.round(ps.hdg) + '°' : '—', cls: 'mono' });
+        rows.push({ k: 'Messages', v: comma(selT.msgs), cls: 'mono' }, { k: 'Strongest RSSI', v: selT.rssi.toFixed(1) + ' dBFS', cls: 'mono' });
+      } else if (selT.kind === 'vessel') {
+        rows.push({ k: 'Name', v: selT.ident, cls: 'mono' }, { k: 'MMSI', v: selT.id, cls: 'mono' }, { k: 'Type', v: selT.vtype, cls: '' }, { k: 'Speed', v: selT.sog + ' kn', cls: 'mono' }, { k: 'Course', v: selT.cog + '° (heading ' + selT.hdg + '°)', cls: 'mono' }, { k: 'Nav status', v: selT.nav, cls: '' }, { k: 'Last position', v: posTxt, cls: 'mono' }, { k: 'Messages', v: comma(selT.msgs), cls: 'mono' });
+      } else {
+        rows.push({ k: 'Name', v: selT.ident, cls: 'mono' }, { k: 'MMSI', v: selT.id, cls: 'mono' }, { k: 'Type', v: selT.atype, cls: '' }, { k: 'Position', v: posTxt, cls: 'mono' }, { k: 'Messages', v: comma(selT.msgs), cls: 'mono' });
+      }
+      rows.push({ k: 'First seen', v: selT.first, cls: 'mono' }, { k: 'Last seen', v: selT.last + (age != null && age >= 1 ? ' (' + ageTxt(age) + ')' : ''), cls: 'mono' });
+      const pts = segsOf(selT.path).flat().filter((p) => p[3] != null);
+      let spark = '', altMin = '', altMax = '', t0 = '', t1 = '';
+      if (pts.length > 1) {
+        const ta = pts[0][0], tb = pts[pts.length - 1][0];
+        const amin = Math.min(...pts.map((p) => p[3])), amax = Math.max(...pts.map((p) => p[3]));
+        const span = Math.max(200, amax - amin);
+        spark = pts.map((p) => ((p[0] - ta) / ((tb - ta) || 1) * 300).toFixed(1) + ',' + (60 - (p[3] - amin) / span * 54).toFixed(1)).join(' ');
+        altMin = comma(amin) + ' ft'; altMax = comma(amax) + ' ft'; t0 = clock(ta).slice(0, 5); t1 = clock(tb).slice(0, 5);
+      }
+      const stale = age != null && age >= 1;
+      const otherOnAir = air && air !== selT.p;
+      sel = {
+        ident: selT.ident, pname: PROF[selT.p].name, color: PROF[selT.p].color,
+        kind: selT.kind, emerg, stale, age: age != null ? ageTxt(age) : '',
+        staleNote: stale ? (otherOnAir ? PROF[selT.p].name + ' is not on the air right now (' + RNAME[air] + ' slot), so this is the last known position.' : 'No messages since ' + selT.last + '; shown at its last known position.') : '',
+        isAir: selT.kind === 'aircraft', spark, altMin, altMax, sparkT0: t0, sparkT1: t1,
+        sparkAria: 'Altitude from ' + altMin + ' to ' + altMax,
+        rows
+      };
+    }
+    const emT = visible.find((x) => SQ[x.t.sq]);
+    const emer = emT ? { show: true, sq: emT.t.sq, meaning: SQ[emT.t.sq], ident: emT.t.ident, icao: emT.t.id, alt: comma(fmtAlt(emT.ps.alt)) + ' ft', last: emT.t.last, pick: () => this.setState({ sel: emT.t.id }) } : { show: false };
+
+    // Scrubber bands and labels
+    const bands = [{ cls: 'stopped', l: 0, w: (16 / 60.1 * 100).toFixed(2), label: 'stopped', color: '#8a96a6' }];
+    for (let st = 16, i = 0; st < 60.1; i++) {
+      const [p, d] = ROT[i % ROT.length];
+      const en = Math.min(60.1, st + d);
+      bands.push({ cls: '', l: (st / 60.1 * 100).toFixed(2), w: ((en - st) / 60.1 * 100).toFixed(2), label: (en - st) >= 5 ? RNAME[p] : '', color: RCOL[p] });
+      st = en;
+    }
+    const sticks = [1, 16, 31, 46, 60].map((x) => ({ pct: (x / 60.1 * 100).toFixed(2), label: clock(x).slice(0, 5) }));
+    const kmPerUnit = 1 / 10.85, km = z >= 2 ? 5 : 10;
+    const coverNote = s.live
+      ? (air === 'adsb' ? 'ADS-B on the air' : 'Now on air: ' + (RNAME[air] || '—') + ' · aircraft show last known positions until the next ADS-B slot (21:30)')
+      : (air ? RNAME[air] + ' was on the air at ' + clock(m).slice(0, 5) : 'Service stopped at ' + clock(m).slice(0, 5) + ' — no coverage');
+    return {
+      themeCls: theme === 'light' ? 'light' : '', theme,
+      liveOn: s.live ? 'true' : 'false', histOn: s.live ? 'false' : 'true', liveMode: s.live,
+      goLive: () => { clearInterval(this.play); this.setState({ live: true, m: 60.1, playing: false }); },
+      goHist: () => this.setState({ live: false, m: s.m >= 60 ? 52 : s.m }),
+      togglePlay: () => this.togglePlay(), playStr: s.playing ? 'true' : 'false', playLabel: s.playing ? 'Pause replay' : 'Replay',
+      timeLabel: clock(m), timeSub: s.live ? 'live' : 'history · ' + (air ? RNAME[air] + ' on air' : 'stopped'),
+      scrubV: Math.round(m * 10), onScrub: (e) => { clearInterval(this.play); this.setState({ live: false, playing: false, m: Math.min(60.1, Number(e.target.value) / 10) }); },
+      bands, sticks, layers,
+      tracks: s.tracks, rings: s.rings,
+      toggleTracks: () => this.setState({ tracks: !s.tracks }), toggleRings: () => this.setState({ rings: !s.rings }),
+      vb: vx.toFixed(1) + ' ' + vy.toFixed(1) + ' ' + vw.toFixed(1) + ' ' + vh.toFixed(1),
+      trails, tg,
+      zoomIn: () => this.setState({ z: Math.min(4, s.z * 1.5) }), zoomOut: () => this.setState({ z: Math.max(1, s.z / 1.5) }), zoomReset: () => this.setState({ z: 1 }),
+      emer, coverNote,
+      scale: { label: km + ' km', w: (km / kmPerUnit / vw * 100).toFixed(2) },
+      hasSel: !!selT, sel, clearSel: () => this.setState({ sel: null }),
+      tlist: tg, noTargets: tg.length === 0
+    };
+  }
+}
+</script>
+</body>
+</html>

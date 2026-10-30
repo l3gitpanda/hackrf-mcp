@@ -54,6 +54,8 @@ asyncio.run(main())
   functions, no device/subprocess access. Used by the `hackrf_iq_to_wav`,
   `hackrf_iq_spectrogram`, `hackrf_iq_info`, `hackrf_iq_detect_bursts`, and
   `hackrf_sweep` (for `output_image_path`) tools in `server.py`.
+- `design/hackrf-live-mockup/` — clickable UI mockup (Claude design canvas source)
+  for the planned hackrf-live web UI. Not used by the server; see its README.
 
 ### Single-device constraint
 

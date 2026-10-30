@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Waterfall and spectrum</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0;background:#06090f}</style>
+</helmet>
+<div class="hl wfp" style="--g: {{gut}}px">
+  <div class="spec" style="height: {{spH}}px">
+    <div class="gut">
+      <sc-if value="{{showDb}}">
+        <sc-for list="{{dbs}}" as="d" hint-placeholder-count="3"><span class="db" style="top: {{d.top}}%">{{d.label}}</span></sc-for>
+      </sc-if>
+    </div>
+    <div class="plot">
+      <canvas ref="{{spRef}}" role="img" aria-label="{{specAria}}"></canvas>
+      <sc-for list="{{chans}}" as="c"><span class="chg" style="left: {{c.pct}}%; --pc: {{c.color}}"></span></sc-for>
+    </div>
+  </div>
+  <div class="fax">
+    <span class="fu">MHz</span>
+    <div class="ticks">
+      <sc-for list="{{ticks}}" as="t" hint-placeholder-count="7"><span class="tick" style="left: {{t.pct}}%">{{t.label}}</span></sc-for>
+      <sc-for list="{{chans}}" as="c"><span class="chm" style="left: {{c.pct}}%; --pc: {{c.color}}" title="{{c.title}}">{{c.label}}</span></sc-for>
+    </div>
+  </div>
+  <div class="wf" style="height: {{wfH}}px">
+    <div class="gut">
+      <sc-for list="{{times}}" as="t"><span class="tlab" style="top: {{t.top}}%">{{t.label}}</span></sc-for>
+      <sc-for list="{{marks}}" as="m"><button type="button" class="{{m.cls}}" style="top: {{m.top}}%; --pc: {{m.color}}" onClick="{{m.pick}}" aria-label="{{m.label}}" title="{{m.label}}"><i></i></button></sc-for>
+    </div>
+    <div class="plot">
+      <canvas ref="{{wfRef}}" role="img" aria-label="{{wfAria}}"></canvas>
+      <sc-for list="{{gaps}}" as="g"><div class="{{g.cls}}" style="top: {{g.top}}%; height: {{g.h}}%"><span>{{g.label}}</span></div></sc-for>
+      <sc-if value="{{hasRing}}"><span class="ring" style="left: {{ring.left}}%; top: {{ring.top}}%"></span></sc-if>
+      <sc-if value="{{hasOv}}"><div class="{{ovCls}}"><b>{{ovT}}</b><span>{{ovS}}</span></div></sc-if>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"band":{"editor":null},"marks":{"editor":null},"gaps":{"editor":null},"times":{"editor":null},"overlayTitle":{"editor":null},"overlaySub":{"editor":null},"overlayTone":{"editor":null},"compact":{"editor":null},"mode":{"editor":"enum","options":["live","static"],"default":"live"},"height":{"editor":"int","default":360,"min":80,"max":1000},"specHeight":{"editor":"int","default":110,"min":40,"max":300},"activity":{"editor":"range","default":1,"min":0,"max":2,"step":0.1},"peak":{"editor":"boolean","default":true},"seed":{"editor":"int","default":7},"$preview":{"width":1000,"height":540}}'>
+// Waterfall palette: dark low end so the noise floor stays calm at night.
+const STOPS = [[0, '#05080f'], [0.15, '#0a1530'], [0.3, '#102a5c'], [0.45, '#12508a'], [0.58, '#11809a'], [0.7, '#27a88f'], [0.8, '#8cc46a'], [0.9, '#f0d264'], [1, '#fff4d6']];
+// Emission shapes are generic hints a decoder manifest declares per channel; no profile names here.
+const SHAPES = {
+  burst: { bw: 0.016, len: [1, 3], p: 0.045, amp: [0.3, 0.55] },
+  pulse: { bw: 1.1, len: [1, 1], p: 0.85, amp: [0.12, 0.42], gauss: true },
+  fsk: { bw: 0.0096, len: [30, 110], p: 0.006, amp: [0.34, 0.5], twotone: true },
+  afsk: { bw: 0.012, len: [6, 14], p: 0.008, amp: [0.32, 0.5] },
+  msk: { bw: 0.007, len: [5, 22], p: 0.01, amp: [0.3, 0.48] },
+  carrier: { bw: 0.011, len: [1, 1], p: 1, amp: [0.34, 0.42], cont: true }
+};
+const DEF_BAND = { id: 'ais', name: 'AIS', center: 162.0, rate: 2.0, color: '#3fd0c0', channels: [{ f: 161.975, label: 'A', kind: 'burst' }, { f: 162.025, label: 'B', kind: 'burst' }] };
+function rng(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function h2r(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+function makeLut() {
+  const out = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const v = i / 255;
+    let k = 0;
+    while (k < STOPS.length - 2 && v > STOPS[k + 1][0]) k++;
+    const a = STOPS[k], b = STOPS[k + 1];
+    const u = Math.min(1, Math.max(0, (v - a[0]) / (b[0] - a[0])));
+    const ca = h2r(a[1]), cb = h2r(b[1]);
+    for (let j = 0; j < 3; j++) out[i * 3 + j] = Math.round(ca[j] + (cb[j] - ca[j]) * u);
+  }
+  return out;
+}
+const LUT = makeLut();
+
+class Component extends DCLogic {
+  band() { return this.props.band || DEF_BAND; }
+  mode() { return this.props.mode || 'live'; }
+  key() {
+    const b = this.band();
+    return [b.center, b.rate, (b.channels || []).map((c) => c.f).join(','), this.mode(), this.props.seed || 7, (this.props.marks || []).length, (this.props.gaps || []).length, this.props.height || 360].join('|');
+  }
+  refWf() {
+    if (!this._rw) this._rw = (el) => { this.wfEl = el; if (el) this.bind(); };
+    return this._rw;
+  }
+  refSp() {
+    if (!this._rs) this._rs = (el) => { this.spEl = el; if (el) this.bind(); };
+    return this._rs;
+  }
+  componentDidMount() {
+    this.bind();
+    this.timer = setInterval(() => this.step(), 100);
+  }
+  componentWillUnmount() {
+    clearInterval(this.timer);
+    if (this.ro) this.ro.disconnect();
+    this.ro = null;
+  }
+  componentDidUpdate() {
+    if (this.wfEl && this.k !== undefined && this.key() !== this.k) this.reset();
+  }
+  bind() {
+    if (!this.wfEl || !this.spEl) return;
+    if (!this.ro && typeof ResizeObserver !== 'undefined') {
+      this.ro = new ResizeObserver(() => {
+        if (!this.wfEl) return;
+        const w = Math.round(this.wfEl.clientWidth), h = Math.round(this.wfEl.clientHeight);
+        if (w !== this.W || h !== this.H) this.reset();
+      });
+    }
+    if (this.ro && this.obs !== this.wfEl) {
+      this.ro.disconnect();
+      this.ro.observe(this.wfEl);
+      this.obs = this.wfEl;
+    }
+    this.reset();
+  }
+  reset() {
+    const wf = this.wfEl, sp = this.spEl;
+    if (!wf || !sp) return;
+    const W = Math.round(wf.clientWidth), H = Math.round(wf.clientHeight);
+    if (W < 8 || H < 8) return;
+    this.k = this.key();
+    this.W = W; this.H = H;
+    wf.width = W; wf.height = H;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.dpr = dpr;
+    sp.width = Math.max(1, Math.round(sp.clientWidth * dpr));
+    sp.height = Math.max(1, Math.round(sp.clientHeight * dpr));
+    const b = this.band();
+    const lo = b.center - b.rate / 2;
+    const r = rng((this.props.seed || 7) * 9973 + Math.round(b.center * 1000));
+    this.r = r;
+    this.ripple = new Float32Array(W);
+    let acc = 0;
+    for (let x = 0; x < W; x++) { acc = acc * 0.92 + (r() - 0.5) * 0.03; this.ripple[x] = acc; }
+    this.birdies = [];
+    const nb = 2 + Math.floor(r() * 3);
+    for (let i = 0; i < nb; i++) this.birdies.push({ x: Math.floor(r() * W), a: 0.05 + r() * 0.08 });
+    this.chans = (b.channels || []).map((c) => {
+      const sh = SHAPES[c.kind] || SHAPES.burst;
+      return { f: c.f, x: (c.f - lo) / b.rate * W, hw: Math.max(1, sh.bw / b.rate * W / 2), sh, on: 0, amp: 0, ph: r() * 6 };
+    });
+    this.avg = new Float32Array(W).fill(0.2);
+    this.peak = new Float32Array(W).fill(0.2);
+    this.buf = new Float32Array(W);
+    const g = wf.getContext('2d');
+    this.img = g.createImageData(W, 1);
+    this.fillAll();
+    this.drawSpec();
+  }
+  nearest(f) {
+    let best = null, d = 1e9;
+    for (const c of this.chans || []) { const e = Math.abs(c.f - f); if (e < d) { d = e; best = c; } }
+    return best;
+  }
+  synth() {
+    const W = this.W, r = this.r, buf = this.buf;
+    const act = this.props.activity == null ? 1 : this.props.activity;
+    for (let x = 0; x < W; x++) {
+      const e = x / W, edge = Math.min(e, 1 - e);
+      const roll = edge < 0.05 ? 0.35 + 0.65 * (edge / 0.05) : 1;
+      buf[x] = (0.17 + this.ripple[x] + r() * 0.09) * roll;
+    }
+    const dc = W >> 1;
+    buf[dc] += 0.1;
+    if (dc > 0) buf[dc - 1] += 0.04;
+    if (dc < W - 1) buf[dc + 1] += 0.04;
+    for (const bd of this.birdies) buf[bd.x] += bd.a * (0.7 + r() * 0.3);
+    for (const c of this.chans) {
+      const sh = c.sh;
+      if (c.on <= 0 && act > 0 && (sh.cont || r() < sh.p * act)) {
+        c.on = sh.len[0] + Math.floor(r() * (sh.len[1] - sh.len[0] + 1));
+        c.amp = (sh.amp[0] + r() * (sh.amp[1] - sh.amp[0])) * Math.min(1.3, 0.6 + 0.4 * act);
+      }
+      if (c.on > 0) { this.paint(c, c.amp); c.on--; }
+    }
+    return buf;
+  }
+  paint(c, amp) {
+    const buf = this.buf, W = this.W, r = this.r, sh = c.sh;
+    if (sh.gauss) {
+      const s = c.hw / 2.2;
+      const x0 = Math.max(0, Math.floor(c.x - 3 * s)), x1 = Math.min(W - 1, Math.ceil(c.x + 3 * s));
+      for (let x = x0; x <= x1; x++) { const d = (x - c.x) / s; buf[x] += amp * Math.exp(-d * d / 2) * (0.45 + r() * 0.8); }
+      return;
+    }
+    if (sh.twotone) {
+      const off = Math.max(1.5, c.hw * 0.75);
+      for (const cx of [c.x - off, c.x + off]) {
+        const xi = Math.round(cx);
+        for (let x = xi - 1; x <= xi + 1; x++) if (x >= 0 && x < W) buf[x] += amp * (x === xi ? 1 : 0.45) * (0.85 + r() * 0.3);
+      }
+      const a = Math.max(0, Math.round(c.x - off)), b = Math.min(W - 1, Math.round(c.x + off));
+      for (let x = a; x <= b; x++) buf[x] += amp * 0.18;
+      return;
+    }
+    let hw = c.hw;
+    if (sh.cont) { c.ph += 0.07; hw = c.hw * (0.55 + 0.45 * Math.abs(Math.sin(c.ph))); }
+    const x0 = Math.max(0, Math.floor(c.x - hw - 2)), x1 = Math.min(W - 1, Math.ceil(c.x + hw + 2));
+    for (let x = x0; x <= x1; x++) {
+      const d = Math.abs(x - c.x);
+      const f = d <= hw ? 1 : Math.max(0, 1 - (d - hw) / 2);
+      buf[x] += amp * f * (0.8 + r() * 0.35);
+    }
+    if (sh.cont) { const xi = Math.round(c.x); if (xi >= 0 && xi < W) buf[xi] += amp * 0.25; }
+  }
+  toImg(buf, data, off) {
+    for (let x = 0; x < this.W; x++) {
+      let v = buf[x];
+      v = v < 0 ? 0 : (v > 1 ? 1 : v);
+      const i = (v * 255) | 0, o = off + x * 4;
+      data[o] = LUT[i * 3]; data[o + 1] = LUT[i * 3 + 1]; data[o + 2] = LUT[i * 3 + 2]; data[o + 3] = 255;
+    }
+  }
+  acc(buf) {
+    const a = this.avg, p = this.peak;
+    for (let x = 0; x < this.W; x++) { a[x] = a[x] * 0.82 + buf[x] * 0.18; p[x] = Math.max(p[x] * 0.996, a[x]); }
+  }
+  // Fills every row at once. Row 0 is the newest moment in both live and static mode.
+  fillAll() {
+    const W = this.W, H = this.H, g = this.wfEl.getContext('2d');
+    const im = g.createImageData(W, H);
+    const stat = this.mode() === 'static';
+    const byRow = {};
+    if (stat) {
+      for (const m of this.props.marks || []) {
+        const ch = this.nearest(m.f);
+        if (!ch) continue;
+        const row = Math.round((m.t || 0) * (H - 1));
+        const len = Math.min(ch.sh.len[1], 4);
+        for (let j = 0; j < Math.max(1, len); j++) (byRow[row - j] = byRow[row - j] || []).push(ch);
+      }
+    }
+    const gaps = stat ? (this.props.gaps || []) : [];
+    for (let k = 0; k < H; k++) {
+      const row = H - 1 - k;
+      const inGap = gaps.some((gp) => row >= gp.t0 * (H - 1) && row <= gp.t1 * (H - 1));
+      if (inGap) {
+        this.buf.fill(0.03);
+      } else {
+        this.synth();
+        const extra = byRow[row];
+        if (extra) for (const c of extra) this.paint(c, c.sh.amp[1] + 0.06);
+      }
+      this.acc(this.buf);
+      this.toImg(this.buf, im.data, row * W * 4);
+    }
+    g.putImageData(im, 0, 0);
+  }
+  step() {
+    if (!this.wfEl || !this.W || this.mode() !== 'live') return;
+    if (this.props.overlayTitle) return;
+    if (this.key() !== this.k) { this.reset(); return; }
+    const g = this.wfEl.getContext('2d'), W = this.W, H = this.H;
+    g.drawImage(this.wfEl, 0, 0, W, H - 1, 0, 1, W, H - 1);
+    this.synth();
+    this.acc(this.buf);
+    this.toImg(this.buf, this.img.data, 0);
+    g.putImageData(this.img, 0, 0);
+    this.drawSpec();
+  }
+  drawSpec() {
+    const c = this.spEl;
+    if (!c || !this.avg) return;
+    const g = c.getContext('2d'), W = c.width, H = c.height;
+    if (!W || !H) return;
+    g.clearRect(0, 0, W, H);
+    g.strokeStyle = 'rgba(133,147,163,0.16)';
+    g.lineWidth = 1;
+    for (let i = 1; i < 4; i++) { const y = Math.round(H * i / 4) + 0.5; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+    const n = this.avg.length;
+    const yv = (v) => H - Math.max(0, Math.min(1, (v - 0.05) / 0.85)) * H;
+    const path = (arr) => { g.beginPath(); for (let i = 0; i < n; i++) { const x = i / (n - 1) * W, y = yv(arr[i]); if (i === 0) g.moveTo(x, y); else g.lineTo(x, y); } };
+    path(this.avg);
+    g.lineTo(W, H); g.lineTo(0, H); g.closePath();
+    const gr = g.createLinearGradient(0, 0, 0, H);
+    gr.addColorStop(0, 'rgba(120,190,255,0.32)');
+    gr.addColorStop(1, 'rgba(120,190,255,0.02)');
+    g.fillStyle = gr;
+    g.fill();
+    if (this.props.peak !== false) { path(this.peak); g.strokeStyle = 'rgba(240,210,100,0.5)'; g.lineWidth = this.dpr; g.stroke(); }
+    path(this.avg);
+    g.strokeStyle = '#cfe6ff';
+    g.lineWidth = 1.2 * this.dpr;
+    g.stroke();
+  }
+  renderVals() {
+    const p = this.props, b = this.band(), mode = this.mode();
+    const wfH = p.height || 360, spH = p.specHeight || 110;
+    const gut = mode === 'static' ? 70 : 52;
+    const lo = b.center - b.rate / 2, span = b.rate;
+    const pct = (f) => (f - lo) / span * 100;
+    const steps = [0.025, 0.05, 0.1, 0.25, 0.5, 1, 2];
+    const step = steps.find((s) => span / s <= (p.compact ? 5 : 9)) || 2;
+    const ticks = [];
+    for (let f = Math.ceil(lo / step - 1e-9) * step; f <= lo + span + 1e-9; f += step) {
+      const q = pct(f);
+      if (q > 4 && q < 96) ticks.push({ pct: q.toFixed(3), label: f.toFixed(3) });
+    }
+    let prev = -99;
+    const chans = (b.channels || []).map((c) => {
+      const q = pct(c.f), show = q - prev >= 3.2;
+      if (show) prev = q;
+      return { pct: q.toFixed(3), label: show ? (c.label || '') : '', color: c.color || b.color || '#8a96a6', title: c.f.toFixed(4) + ' MHz' };
+    });
+    const times = mode === 'live'
+      ? [100, 200, 300, 400, 500, 600, 700].filter((y) => y < wfH - 10).map((y) => ({ top: (y / wfH * 100).toFixed(2), label: '−' + (y / 10) + ' s' }))
+      : (p.times || []).map((t) => ({ top: (t.t * 100).toFixed(2), label: t.label }));
+    const marks = (p.marks || []).map((m) => ({ top: (m.t * 100).toFixed(2), color: m.color || b.color, label: m.label || '', pick: m.pick, cls: 'tm' + (m.active ? ' on' : '') }));
+    const act = (p.marks || []).find((m) => m.active);
+    const gaps = (p.gaps || []).map((gp) => ({ top: (gp.t0 * 100).toFixed(2), h: Math.max(0.4, (gp.t1 - gp.t0) * 100).toFixed(2), label: gp.label || '', cls: 'wgap ' + (gp.tone || '') }));
+    return {
+      wfRef: this.refWf(),
+      spRef: this.refSp(),
+      wfH, spH, gut, ticks, chans, times, marks, gaps,
+      showDb: !p.compact,
+      dbs: [{ top: '25', label: '−50' }, { top: '50', label: '−70' }, { top: '75', label: '−90' }],
+      hasRing: !!act,
+      ring: act ? { left: pct(act.f).toFixed(2), top: (act.t * 100).toFixed(2) } : { left: '0', top: '0' },
+      hasOv: !!p.overlayTitle,
+      ovT: p.overlayTitle || '',
+      ovS: p.overlaySub || '',
+      ovCls: 'ovl ' + (p.overlayTone || ''),
+      specAria: 'Spectrum, ' + (b.name || '') + ' ' + b.center.toFixed(3) + ' MHz',
+      wfAria: (mode === 'live' ? 'Live waterfall' : 'Recorded waterfall') + ', ' + lo.toFixed(3) + ' to ' + (lo + span).toFixed(3) + ' MHz'
+    };
+  }
+}
+</script>
+</body>
+</html>

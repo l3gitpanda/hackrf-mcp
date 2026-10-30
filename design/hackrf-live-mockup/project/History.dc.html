@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>History</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.slots{display:flex;flex-wrap:wrap;gap:6px}
+.slot{appearance:none;font:inherit;display:inline-flex;align-items:center;gap:8px;min-height:32px;padding:0 10px;border-radius:5px;border:1px solid var(--line2);background:var(--btn);color:var(--text2);cursor:pointer;white-space:nowrap}
+.slot:hover{background:var(--btn-h)}
+.slot[aria-pressed="true"]{border-color:var(--pc);background:color-mix(in oklab,var(--pc) 16%,var(--panel));color:var(--text)}
+.slot .mono{font-size:12px}
+.dl{display:flex;flex-direction:column;overflow:auto;max-height:560px}
+.di{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:2px 10px;align-items:baseline;padding:7px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;color:inherit;font:inherit;text-align:left;width:100%;cursor:pointer}
+.di:hover{background:var(--hover)}
+.di.on{background:color-mix(in oklab,var(--pc) 14%,var(--panel));box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--pc) 45%,transparent)}
+.di.emerg .nm{color:var(--bad)}
+.di .tt{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.di .nm{font-family:var(--mono);font-weight:600}
+.di .lb2{font-weight:600;margin-left:6px}
+.di .ch{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.di .ds{grid-column:2 / span 2;font-size:12px;color:var(--text2)}
+.chart{position:relative;height:150px;margin:8px 12px 4px 52px}
+.chart svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.ylab{position:absolute;left:-46px;transform:translateY(-50%);font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.bars{position:relative;display:flex;align-items:flex-end;gap:2px;height:130px;margin:8px 12px 4px}
+.bars span{flex:1 1 0;background:var(--pc);border-radius:1px 1px 0 0;min-height:1px}
+.xax{position:relative;height:16px;margin:0 12px 8px 52px;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.xax span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+.xax.nb{margin-left:12px}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <dc-import name="AppBar" active="history" state="running" profile-text="AIS · 162.000 MHz" profile-color="#3fd0c0" theme="{{theme}}" hint-size="100%,53px" style="width: 100%"></dc-import>
+  <main class="main">
+    <section class="panel" aria-label="Period">
+      <div class="ph">
+        <h2>Period</h2>
+        <span class="sp"></span>
+        <div class="row" style="gap: 6px">
+          <label class="sr" for="day">Day</label>
+          <input id="day" class="inp mono" type="date" value="2026-10-30" style="width: 150px">
+          <button type="button" class="btn sm" onClick="{{prev}}" disabled="{{isFirst}}" aria-label="Previous slot">←</button>
+          <button type="button" class="btn sm" onClick="{{next}}" disabled="{{isLast}}" aria-label="Next slot">→</button>
+        </div>
+      </div>
+      <div class="pb col" style="gap: 10px">
+        <div class="slots" role="group" aria-label="Recorded tunings on 2026-10-30">
+          <sc-for list="{{slots}}" as="s">
+            <button type="button" class="slot" style="--pc: {{s.color}}" aria-pressed="{{s.on}}" onClick="{{s.pick}}">
+              <span class="pbadge">{{s.name}}</span><span class="mono">{{s.range}}</span><sc-if value="{{s.live}}"><span class="tag ok">live</span></sc-if><sc-if value="{{s.gapTag}}"><span class="{{s.gapCls}}">{{s.gapTag}}</span></sc-if>
+            </button>
+          </sc-for>
+        </div>
+        <div class="row wr" style="gap: 8px 16px">
+          <span class="muted" style="font-size: 12px">The waterfall is recorded per tuning, so a period is one rotation step. Earlier today: 06:30–20:00 (45 more steps).</span>
+          <span class="sp"></span>
+          <span class="cap">Views</span>
+          <sc-for list="{{views}}" as="v"><label class="check"><input type="checkbox" checked="{{v.on}}" onChange="{{v.toggle}}">{{v.label}}</label></sc-for>
+          <div class="seg" role="group" aria-label="Layout">
+            <button type="button" aria-pressed="{{sideOn}}" onClick="{{goSide}}">Side by side</button>
+            <button type="button" aria-pressed="{{stackOn}}" onClick="{{goStack}}">Stacked</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="{{topCls}}">
+      <sc-if value="{{v.wf}}">
+        <section class="panel" aria-label="Recorded waterfall" style="--pc: {{slot.color}}">
+          <div class="ph">
+            <span class="pbadge">{{slot.name}}</span>
+            <span class="mono t2">{{slot.range}} UTC · {{slot.centerTxt}} MHz · {{slot.rateTxt}} MS/s</span>
+            <span class="sp"></span>
+            <span class="muted" style="font-size: 12px">newest at top · markers on the time axis are decoded messages</span>
+          </div>
+          <dc-import name="Waterfall" band="{{band}}" mode="static" height="{{560}}" spec-height="{{90}}" seed="{{slot.seed}}" marks="{{marks}}" gaps="{{gaps}}" times="{{times}}" peak="{{false}}" hint-size="100%,682px" style="width: 100%"></dc-import>
+        </section>
+      </sc-if>
+
+      <sc-if value="{{v.list}}">
+        <section class="panel" aria-label="Decoded messages" style="--pc: {{slot.color}}">
+          <div class="ph"><h2>Decoded</h2><span class="mono muted">{{dets.length}} messages</span><span class="sp"></span><a class="btn sm" href="Log.dc.html">Open period in log</a></div>
+          <sc-if value="{{hasSel}}">
+            <div class="pb col" style="gap: 8px; border-bottom: 1px solid var(--line); --pc: {{sel.color}}">
+              <div class="row wr" style="gap: 6px 10px">
+                <span class="pbadge">{{sel.pname}}</span>
+                <span class="mono" style="font-size: 16px; font-weight: 600">{{sel.s}}</span>
+                <span style="font-weight: 600">{{sel.l}}</span>
+                <sc-if value="{{sel.emerg}}"><span class="tag bad">{{sel.emerg}}</span></sc-if>
+                <span class="sp"></span>
+                <button type="button" class="btn sm icon ghost" onClick="{{clearSel}}" aria-label="Close message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg></button>
+              </div>
+              <dl class="kv">
+                <dt>Time</dt><dd class="mono">{{sel.time}} UTC</dd>
+                <dt>Kind</dt><dd>{{sel.k}}</dd>
+                <dt>Frequency</dt><dd class="mono">{{sel.f}} MHz</dd>
+                <dt>Level</dt><dd class="mono">{{sel.db}} dB</dd>
+                <dt>Decoded</dt><dd class="{{sel.sumCls}}">{{sel.sum}}</dd>
+              </dl>
+              <div class="row wr"><a class="btn sm" href="Log.dc.html">Open in log</a><sc-if value="{{sel.mapOk}}"><a class="btn sm" href="Map.dc.html">Show on map</a></sc-if></div>
+            </div>
+          </sc-if>
+          <div class="dl">
+            <sc-for list="{{dets}}" as="d">
+              <button type="button" class="{{d.cls}}" style="--pc: {{d.color}}" onClick="{{d.pick}}">
+                <span class="tt">{{d.time}}</span>
+                <span><span class="nm">{{d.s}}</span><sc-if value="{{d.l}}"><span class="lb2">{{d.l}}</span></sc-if></span>
+                <span class="ch">{{d.ch}}</span>
+                <span class="ds">{{d.k}} · <span class="{{d.sumCls}}">{{d.sum}}</span></span>
+              </button>
+            </sc-for>
+          </div>
+        </section>
+      </sc-if>
+    </div>
+
+    <div class="{{botCls}}">
+      <sc-if value="{{v.lvl}}">
+        <section class="panel" aria-label="Channel level over time">
+          <div class="ph">
+            <h2>Channel level</h2>
+            <span class="sp"></span>
+            <div class="legend">
+              <sc-for list="{{lvl.legend}}" as="l"><span><svg width="22" height="8" aria-hidden="true"><path d="M1 4 H21" stroke="{{l.color}}" stroke-width="2" stroke-dasharray="{{l.dash}}"></path></svg>{{l.label}}</span></sc-for>
+              <span><svg width="22" height="8" aria-hidden="true"><path d="M1 4 H21" stroke="#8a96a6" stroke-width="1.5" stroke-dasharray="2 3"></path></svg>noise floor</span>
+            </div>
+          </div>
+          <div class="chart" role="img" aria-label="{{lvl.aria}}">
+            <svg viewBox="0 0 600 150" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M0,0 H600 M0,37.5 H600 M0,75 H600 M0,112.5 H600 M0,150 H600" stroke="var(--line)" stroke-width="1" fill="none" vector-effect="non-scaling-stroke"></path>
+              <sc-for list="{{gapRects}}" as="g"><rect x="{{g.x}}" y="0" width="{{g.w}}" height="150" fill="{{g.fill}}"></rect></sc-for>
+              <path d="{{lvl.nf}}" stroke="#8a96a6" stroke-width="1.2" stroke-dasharray="2 3" fill="none" vector-effect="non-scaling-stroke"></path>
+              <sc-for list="{{lvl.lines}}" as="l"><path d="{{l.d}}" stroke="{{l.color}}" stroke-width="1.6" stroke-dasharray="{{l.dash}}" fill="none" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path></sc-for>
+            </svg>
+            <span class="ylab" style="top: 0%">−40</span>
+            <span class="ylab" style="top: 25%">−55</span>
+            <span class="ylab" style="top: 50%">−70</span>
+            <span class="ylab" style="top: 75%">−85</span>
+            <span class="ylab" style="top: 100%">−100</span>
+          </div>
+          <div class="xax"><sc-for list="{{xt}}" as="t"><span style="left: {{t.pct}}%">{{t.label}}</span></sc-for></div>
+        </section>
+      </sc-if>
+      <sc-if value="{{v.rate}}">
+        <section class="panel" aria-label="Message rate" style="--pc: {{slot.color}}">
+          <div class="ph"><h2>Message rate</h2><span class="mono muted">per 30 s · peak {{ratePeak}}</span></div>
+          <div class="bars" role="img" aria-label="{{rateAria}}">
+            <sc-for list="{{rate}}" as="r"><span style="height: {{r.h}}%; opacity: {{r.op}}" title="{{r.title}}"></span></sc-for>
+          </div>
+          <div class="xax nb"><sc-for list="{{xt}}" as="t"><span style="left: {{t.pct}}%">{{t.label}}</span></sc-for></div>
+        </section>
+      </sc-if>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1260}}'>
+const REG = {
+  adsb: { name: 'ADS-B', color: '#5cb8ff', center: 1090.0, rate: 2.4, ch: [{ f: 1090.0, label: '1090', kind: 'pulse' }] },
+  ais: { name: 'AIS', color: '#3fd0c0', center: 162.0, rate: 2.0, ch: [{ f: 161.975, label: 'A', kind: 'burst' }, { f: 162.025, label: 'B', kind: 'burst' }] },
+  vdl2: { name: 'VDL2', color: '#e483d6', center: 136.8, rate: 2.0, ch: [{ f: 136.65, label: '.650', kind: 'burst' }, { f: 136.725, label: '.725', kind: 'burst' }, { f: 136.775, label: '.775', kind: 'burst' }, { f: 136.875, label: '.875', kind: 'burst' }, { f: 136.975, label: '.975', kind: 'burst' }] },
+  flex: { name: 'FLEX', color: '#8fd46a', center: 931.5, rate: 2.0, ch: [{ f: 931.0625, label: '931.0625', kind: 'fsk' }, { f: 931.75, label: '931.750', kind: 'fsk' }, { f: 931.9375, label: '931.9375', kind: 'fsk' }] }
+};
+const ENT = {
+  kil: { s: '367435980', l: 'KILLEEN', k: 'vessel', sum: '3.7 kn · COG 141° · Tug', db: -39 },
+  fer: { s: '368165820', l: 'V.A. POINT FERMIN', k: 'vessel', sum: '23.9 kn · COG 201°', db: -41 },
+  lt: { s: '993692211', l: 'LONG BEACH LT', k: 'aid-to-navigation', sum: 'Type 21 · light', db: -44 },
+  lb: { s: '993692036', l: 'LB', k: 'aid-to-navigation', sum: 'Type 21 · fixed structure', db: -48 },
+  bs: { s: '3669139', l: '', k: 'base-station', sum: 'Type 4 · UTC report', db: -35 },
+  ual: { s: 'A2B12D', l: 'UAL817', k: 'aircraft', sum: 'descending to 5,100 ft · 212 kt', db: -10 },
+  swa: { s: 'AA9A7A', l: 'SWA3162', k: 'aircraft', sum: '32,800–33,125 ft · 462 kt', db: -15 },
+  n53: { s: 'A6B790', l: 'N53176', k: 'aircraft', sum: '5,050 ft · 84 kt · squawk 5321', db: -7 },
+  n41: { s: 'A4F2C3', l: 'N4127P', k: 'aircraft', sum: '2,400 ft · 96 kt · squawk 7700', db: -6, emerg: '7700 emergency' },
+  oo: { s: 'N85370', l: 'OO5351', k: 'vdl2', sum: 'ACARS label H1 · reg .N85370', db: -41 },
+  c1: { s: '1234567', l: '', k: 'page', sum: '[content not logged]', db: -52 },
+  c2: { s: '2345678', l: '', k: 'page', sum: '[content not logged]', db: -55 }
+};
+function perMin(key, from, to, off) { const out = []; for (let m = from; m <= to; m++) out.push([m + off, key, 0]); return out; }
+// Minutes of the day. det: [minute, entity, channel index].
+const SLOTS = [
+  { id: 's1', p: 'adsb', a: 1230, b: 1240, det: perMin('n53', 1230, 1239, 0.55) },
+  { id: 's2', p: 'ais', a: 1240, b: 1250, gaps: [{ a: 1244.5, b: 1245, label: 'paused 30 s · hackrf_transfer', tone: '' }],
+    det: [[1240.05, 'bs', 1], [1240.3, 'kil', 0], [1240.8, 'fer', 0], [1241.0, 'lt', 1], [1241.3, 'bs', 1], [1241.5, 'kil', 1], [1242.2, 'lb', 0], [1242.9, 'fer', 1], [1243.2, 'kil', 0], [1243.9, 'lt', 1], [1245.6, 'fer', 0], [1246.1, 'kil', 1], [1246.3, 'bs', 1], [1247.0, 'lt', 0], [1248.0, 'lb', 1], [1248.7, 'kil', 0], [1249.3, 'fer', 1], [1249.6, 'bs', 0]] },
+  { id: 's3', p: 'vdl2', a: 1250, b: 1255, gaps: [{ a: 1252.17, b: 1252.67, label: 'error · dumpvdl2 exited (1) · retried after 30 s', tone: 'error' }],
+    det: [[1250.6, 'oo', 4], [1251.33, 'oo', 4], [1253.2, 'oo', 4], [1254.1, 'oo', 4]] },
+  { id: 's4', p: 'flex', a: 1255, b: 1260, det: [[1255.4, 'c1', 1], [1256.08, 'c2', 1], [1256.67, 'c1', 1], [1257.03, 'c2', 1], [1258.52, 'c1', 1], [1259.1, 'c2', 1]] },
+  { id: 's5', p: 'adsb', a: 1260, b: 1270, gaps: [{ a: 1264.2, b: 1264.2, label: 'paused 0 s · hackrf_info', tone: '' }],
+    det: [...perMin('n53', 1260, 1269, 0.5), ...perMin('ual', 1263, 1269, 0.6), ...perMin('swa', 1266, 1269, 0.7), ...perMin('n41', 1265, 1268, 0.4)] },
+  { id: 's6', p: 'ais', a: 1270, b: 1274.12, live: true,
+    det: [[1270.1, 'bs', 1], [1270.4, 'kil', 0], [1271.2, 'fer', 0], [1271.8, 'lt', 1], [1272.1, 'kil', 1], [1273.37, 'lb', 0], [1273.67, 'bs', 1], [1273.85, 'fer', 0], [1273.97, 'lt', 1], [1274.03, 'kil', 0]] }
+];
+const pad = (n) => String(n).padStart(2, '0');
+const hm = (m) => pad(Math.floor(m / 60)) + ':' + pad(Math.floor(m % 60));
+const hms = (m) => { const s = Math.round(m * 60); return pad(Math.floor(s / 3600)) + ':' + pad(Math.floor(s / 60) % 60) + ':' + pad(s % 60); };
+function noise(i) { const v = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return v - Math.floor(v); }
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { slot: 1, sel: null, v: { wf: true, list: true, lvl: true, rate: true }, layout: 'side' };
+  }
+  renderVals() {
+    const st = this.state, theme = this.props.theme ?? 'dark';
+    const sl = SLOTS[st.slot], pr = REG[sl.p], dur = sl.b - sl.a;
+    const tFrac = (m) => (sl.b - m) / dur;
+    const dets = sl.det.map(([m, key, ci], i) => {
+      const e = ENT[key], ch = pr.ch[Math.min(ci, pr.ch.length - 1)];
+      return { i, m, e, ch, id: sl.id + i };
+    }).sort((x, y) => y.m - x.m);
+    const selD = dets.find((d) => d.id === st.sel);
+    const marks = dets.map((d) => ({ t: tFrac(d.m), f: d.ch.f, color: pr.color, label: hms(d.m) + ' ' + d.e.s + (d.e.l ? ' ' + d.e.l : ''), active: st.sel === d.id, pick: () => this.setState({ sel: st.sel === d.id ? null : d.id }) }));
+    const gaps = (sl.gaps || []).map((g) => ({ t0: tFrac(g.b), t1: tFrac(g.a), label: g.label, tone: g.tone }));
+    const tstep = dur > 6 ? 1 : 0.5;
+    const times = [];
+    for (let m = Math.ceil(sl.a / tstep) * tstep; m <= sl.b + 1e-6; m += tstep) {
+      const t = tFrac(m);
+      if (t > 0.015 && t < 0.985) times.push({ t, label: tstep < 1 ? hms(m).slice(0, 8) : hm(m) });
+    }
+    const slots = SLOTS.map((x, i) => {
+      const g = (x.gaps || [])[0];
+      return {
+        name: REG[x.p].name, color: REG[x.p].color, range: hm(x.a) + '–' + (x.live ? 'now' : hm(x.b)), on: i === st.slot ? 'true' : 'false', live: !!x.live,
+        gapTag: g ? (g.tone === 'error' ? 'error' : 'paused') : '', gapCls: g ? (g.tone === 'error' ? 'tag bad' : 'tag warn') : '',
+        pick: () => this.setState({ slot: i, sel: null })
+      };
+    });
+    // Channel level over time: 120 samples, broken during gaps.
+    const N = 120, yOf = (db) => ((-40 - db) / 60 * 150);
+    const inGap = (m) => (sl.gaps || []).some((g) => m >= g.a && m <= g.b + (g.b === g.a ? 0.02 : 0));
+    const lines = pr.ch.slice(0, 3).map((c, ci) => {
+      let d = '', pen = false;
+      for (let k = 0; k <= N; k++) {
+        const m = sl.a + dur * k / N;
+        if (inGap(m)) { pen = false; continue; }
+        let db = -90 + (noise(k * 7 + ci * 131 + st.slot * 17) - 0.5) * 3;
+        for (const x of dets) if (x.ch === c && Math.abs(x.m - m) < dur / N * 1.2) db = Math.max(db, x.e.db - 4 - noise(k + ci) * 6);
+        const pt = (k / N * 600).toFixed(1) + ',' + yOf(db).toFixed(1);
+        d += (pen ? ' L' : ' M') + pt;
+        pen = true;
+      }
+      return { d, color: pr.color, dash: ci === 0 ? 'none' : ci === 1 ? '6 4' : '2 3', label: (c.label && c.label.length <= 2 ? c.label + ' ' : '') + c.f.toFixed(3) + ' MHz' };
+    });
+    const gapRects = (sl.gaps || []).map((g) => ({ x: ((g.a - sl.a) / dur * 600).toFixed(1), w: Math.max(2, (g.b - g.a) / dur * 600).toFixed(1), fill: g.tone === 'error' ? 'rgba(255,107,107,0.18)' : 'rgba(255,181,71,0.18)' }));
+    const nb = Math.round(dur * 2), counts = new Array(nb).fill(0);
+    dets.forEach((x) => { const k = Math.min(nb - 1, Math.floor((x.m - sl.a) * 2)); counts[k]++; });
+    const peak = Math.max(1, ...counts);
+    const rate = counts.map((n, k) => ({ h: (n / peak * 100).toFixed(1), op: n ? 1 : 0.3, title: hms(sl.a + k / 2) + ' · ' + n + ' messages' }));
+    const xt = [];
+    const xs = dur > 6 ? 2 : 1;
+    for (let m = Math.ceil(sl.a / xs) * xs; m <= sl.b; m += xs) xt.push({ pct: ((m - sl.a) / dur * 100).toFixed(2), label: hm(m) });
+    const side = st.layout === 'side';
+    const v = st.v;
+    const views = [['wf', 'Waterfall'], ['list', 'Decoded list'], ['lvl', 'Channel levels'], ['rate', 'Message rate']].map(([k, label]) => ({ label, on: !!v[k], toggle: () => this.setState({ v: { ...v, [k]: !v[k] } }) }));
+    return {
+      themeCls: theme === 'light' ? 'light' : '', theme,
+      slots, views, v, sideOn: side ? 'true' : 'false', stackOn: side ? 'false' : 'true',
+      goSide: () => this.setState({ layout: 'side' }), goStack: () => this.setState({ layout: 'stack' }),
+      topCls: side && v.wf && v.list ? 'g-hist' : 'col',
+      botCls: side && v.lvl && v.rate ? 'g-2' : 'col',
+      prev: () => this.setState({ slot: Math.max(0, st.slot - 1), sel: null }), next: () => this.setState({ slot: Math.min(SLOTS.length - 1, st.slot + 1), sel: null }),
+      isFirst: st.slot === 0, isLast: st.slot === SLOTS.length - 1,
+      slot: { name: pr.name, color: pr.color, range: hm(sl.a) + '–' + (sl.live ? hms(sl.b).slice(0, 8) : hm(sl.b)), centerTxt: pr.center.toFixed(3), rateTxt: pr.rate.toFixed(3), seed: st.slot + 11 },
+      band: { id: sl.p, name: pr.name, center: pr.center, rate: pr.rate, color: pr.color, channels: pr.ch },
+      marks, gaps, times,
+      dets: dets.map((d) => ({
+        time: hms(d.m), s: d.e.s, l: d.e.l, k: d.e.k, sum: d.e.sum, sumCls: d.e.sum === '[content not logged]' ? 'nc' : '',
+        ch: d.ch.f.toFixed(3), color: pr.color,
+        cls: 'di' + (st.sel === d.id ? ' on' : '') + (d.e.emerg ? ' emerg' : ''),
+        pick: () => this.setState({ sel: st.sel === d.id ? null : d.id })
+      })),
+      hasSel: !!selD,
+      sel: selD ? { pname: pr.name, color: pr.color, s: selD.e.s, l: selD.e.l, emerg: selD.e.emerg || '', time: hms(selD.m), k: selD.e.k, f: selD.ch.f.toFixed(3), db: (selD.e.db - 2).toFixed(1), sum: selD.e.sum, sumCls: selD.e.sum === '[content not logged]' ? 'nc' : '', mapOk: sl.p === 'adsb' || sl.p === 'ais' } : {},
+      clearSel: () => this.setState({ sel: null }),
+      lvl: { lines, legend: lines.map((l) => ({ color: l.color, dash: l.dash, label: l.label })), nf: 'M0,' + yOf(-92).toFixed(1) + ' H600', aria: 'Channel level from ' + hm(sl.a) + ' to ' + hm(sl.b) + ', peaks at decoded messages' },
+      gapRects, rate, ratePeak: peak, rateAria: 'Messages per 30 seconds, peak ' + peak, xt
+    };
+  }
+}
+</script>
+</body>
+</html>

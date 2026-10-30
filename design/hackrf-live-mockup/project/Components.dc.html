@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Component sheet</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.sec{display:flex;flex-direction:column;gap:10px}
+.sec>h2{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text2)}
+.note{font-size:12px;color:var(--muted);max-width:760px}
+.sw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.tok{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--line);border-radius:5px;background:var(--panel)}
+.tok i{display:block;height:28px;border-radius:3px;background:var(--pc);border:1px solid var(--line2)}
+.tok span{font-size:12px}
+.tok .mono{font-size:11px;color:var(--muted)}
+.lutbig{height:18px;border-radius:3px;background:linear-gradient(90deg,#05080f 0%,#0a1530 15%,#102a5c 30%,#12508a 45%,#11809a 58%,#27a88f 70%,#8cc46a 80%,#f0d264 90%,#fff4d6 100%)}
+.tile{position:relative;height:150px;background:var(--sea);border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.g3{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:12px;align-items:start}
+.specimen{display:flex;flex-direction:column;gap:6px}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <main class="main" style="gap: 28px">
+    <div class="col" style="gap: 4px">
+      <h1 class="h1">hackrf-live · component sheet</h1>
+      <span class="t2">Chrome is greyscale; colour is data. A profile’s colour comes from its manifest (or the next palette slot) and is the same in the feed, map, timelines and charts.</span>
+    </div>
+
+    <section class="sec" aria-label="Colour tokens">
+      <h2>Profile colours · from the registry</h2>
+      <div class="sw-grid">
+        <sc-for list="{{reg}}" as="p">
+          <div class="tok" style="--pc: {{p.color}}"><i></i><span class="row" style="gap: 6px"><span class="pbadge">{{p.name}}</span></span><span class="mono">{{p.color}} · {{p.src}}</span></div>
+        </sc-for>
+      </div>
+      <span class="note">All nine pass 4.5:1 as text on the dark panel. Because hue alone separates them, colour is never the only cue: badges carry the profile name, map icons differ in shape, and charts have legends.</span>
+      <h2 style="margin-top: 8px">Status and surface</h2>
+      <div class="sw-grid">
+        <div class="tok" style="--pc: var(--ok)"><i></i><span>ok · running</span><span class="mono">--ok #4fd18b</span></div>
+        <div class="tok" style="--pc: var(--warn)"><i></i><span>warn · paused, behind, cap</span><span class="mono">--warn #ffb547</span></div>
+        <div class="tok" style="--pc: var(--bad)"><i></i><span>bad · error, emergency</span><span class="mono">--bad #ff6b6b</span></div>
+        <div class="tok" style="--pc: var(--idle)"><i></i><span>idle · stopped</span><span class="mono">--idle #8a96a6</span></div>
+        <div class="tok" style="--pc: var(--bg)"><i></i><span>background</span><span class="mono">--bg #0a0e13</span></div>
+        <div class="tok" style="--pc: var(--panel)"><i></i><span>panel</span><span class="mono">--panel #11161e</span></div>
+        <div class="tok" style="--pc: var(--line2)"><i></i><span>line</span><span class="mono">--line2 #2e3a4a</span></div>
+        <div class="tok" style="--pc: var(--muted)"><i></i><span>muted text</span><span class="mono">--muted #8a96a6</span></div>
+      </div>
+      <h2 style="margin-top: 8px">Waterfall palette</h2>
+      <div class="col" style="gap: 4px; max-width: 760px">
+        <div class="lutbig" role="img" aria-label="Waterfall palette from near-black navy through blue, teal and green to yellow and warm white"></div>
+        <div class="row mono muted" style="font-size: 11px; justify-content: space-between"><span>−110 dBFS</span><span>−90</span><span>−70</span><span>−50</span><span>−30 dBFS</span></div>
+        <span class="note">The low end stays near black so the noise floor is calm in a dark room; warm white is kept for the strongest signals only. It stays dark in the light theme too: it’s an instrument.</span>
+      </div>
+    </section>
+
+    <section class="sec" aria-label="Type">
+      <h2>Type</h2>
+      <div class="g3">
+        <div class="specimen"><span class="cap">IBM Plex Sans · UI</span><span style="font-size: 18px; font-weight: 600">Screen title 18</span><span>Body 13 · labels, descriptions, table text</span><span class="cap">Caps label 11</span></div>
+        <div class="specimen"><span class="cap">IBM Plex Mono · identifiers</span><span class="mono" style="font-size: 14px">161.975 MHz · 2.000 MS/s</span><span class="mono">A2B12D · 367435980 · 1234567</span><span class="mono">UAL817 · OO5351 · N85370</span></div>
+        <div class="specimen"><span class="cap">Rule</span><span class="t2">Frequencies, ICAO addresses, MMSIs, capcodes, callsigns, times and numbers are always mono with tabular figures, so columns line up.</span></div>
+      </div>
+    </section>
+
+    <section class="sec" aria-label="Status chips and badges">
+      <h2>Status chips</h2>
+      <div class="row wr">
+        <span class="chip st st-running"><span class="dot"></span>Running</span>
+        <span class="chip st st-paused"><span class="dot"></span>Paused · hackrf_transfer · 0:23</span>
+        <span class="chip st st-idle"><span class="dot"></span>Idle</span>
+        <span class="chip st st-error"><span class="dot"></span>Retry in 0:12</span>
+        <span class="chip st st-behind"><span class="dot"></span>Falling behind · 84%</span>
+        <span class="chip st st-stopped"><span class="dot"></span>Service not running</span>
+        <span class="chip st st-error"><span class="dot"></span>Decoder silent</span>
+        <span class="chip" style="--pc: #3fd0c0"><span class="sw"></span><span class="mono">AIS · 162.000 MHz</span></span>
+      </div>
+      <h2 style="margin-top: 8px">Profile badges, filter chips, tags</h2>
+      <div class="row wr">
+        <sc-for list="{{reg}}" as="p"><span class="pbadge" style="--pc: {{p.color}}">{{p.name}}</span></sc-for>
+      </div>
+      <div class="row wr">
+        <button type="button" class="tchip" style="--pc: #3fd0c0" aria-pressed="true"><span class="sw"></span>AIS<span class="n">46</span></button>
+        <button type="button" class="tchip" style="--pc: #5cb8ff" aria-pressed="false"><span class="sw"></span>ADS-B<span class="n">4</span></button>
+        <button type="button" class="tchip" style="--pc: #ff9d5c" disabled><span class="sw"></span>APRS<span class="n">0</span></button>
+        <span class="tag">manual</span><span class="tag bad">7700 emergency</span><span class="tag warn">paused</span><span class="tag ok">live</span><span class="tag new">new</span><span class="tag">metadata only</span>
+      </div>
+    </section>
+
+    <section class="sec" aria-label="Buttons and inputs">
+      <h2>Buttons and inputs</h2>
+      <div class="row wr">
+        <button type="button" class="btn primary">Save rotation</button>
+        <button type="button" class="btn"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5 L19 12 L7 19 Z"></path></svg>Start</button>
+        <button type="button" class="btn danger"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"></rect></svg>Stop</button>
+        <button type="button" class="btn" aria-pressed="true">Peak hold</button>
+        <button type="button" class="btn ghost">Ghost</button>
+        <button type="button" class="btn sm">Small</button>
+        <button type="button" class="btn icon" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg></button>
+        <button type="button" class="btn" disabled>Disabled</button>
+        <div class="seg" role="group" aria-label="Mode example"><button type="button" aria-pressed="true">Live</button><button type="button" aria-pressed="false">History</button></div>
+        <label class="check"><input type="checkbox" class="switch" checked>Rule on</label>
+        <label class="check"><input type="checkbox" checked>Tracks</label>
+        <span style="width: 220px"><label class="sr" for="cx">Subject</label><input id="cx" class="inp mono" placeholder="ICAO, MMSI, capcode"></span>
+      </div>
+    </section>
+
+    <section class="sec" aria-label="Waterfall panel">
+      <h2>Waterfall panel · spectrum + axis with decoded channels</h2>
+      <div class="panel" style="max-width: 1100px">
+        <div class="ph"><span class="pbadge" style="--pc: #3fd0c0">AIS</span><span class="mono t2">162.000 MHz · 161.000–163.000 · 2.000 MS/s</span><span class="sp"></span><span class="row" style="gap: 6px"><span class="mono muted" style="font-size: 11px">−110</span><span class="lut"></span><span class="mono muted" style="font-size: 11px">−30 dBFS</span></span></div>
+        <dc-import name="Waterfall" mode="live" height="{{200}}" spec-height="{{90}}" seed="{{5}}" hint-size="100%,322px" style="width: 100%"></dc-import>
+      </div>
+      <span class="note">One component for Live (scrolling), History (static, time axis with clickable message markers and hatched gaps) and the Log drawer thumbnail (compact). Channel guides and axis markers come from the profile’s tuning; the signal look comes from each channel’s emission hint (burst, pulse, fsk, afsk, msk, carrier).</span>
+    </section>
+
+    <div class="g3">
+      <section class="sec" aria-label="Feed items">
+        <h2>Feed items</h2>
+        <div class="panel">
+          <div class="fiw" style="--pc: #3fd0c0"><button type="button" class="fi"><span class="ft">21:14:02</span><span class="l1"><span class="pbadge">AIS</span><span class="subj">367435980</span><span class="lbl">KILLEEN</span><span class="kind">vessel</span></span><span class="l2"><span>3.7 kn</span><span>COG 141°</span><span>Tug</span><span class="mono muted">161.975 MHz · −38.6 dB</span></span></button></div>
+          <div class="fiw emerg" style="--pc: #5cb8ff"><button type="button" class="fi"><span class="ft">21:08:10</span><span class="l1"><span class="pbadge">ADS-B</span><span class="subj">A4F2C3</span><span class="lbl">N4127P</span><span class="kind">aircraft</span><span class="tag bad">7700 emergency</span></span><span class="l2"><span>2,400 ft</span><span>96 kt</span><span>SQK 7700</span></span></button></div>
+          <div class="fiw" style="--pc: #8fd46a"><button type="button" class="fi"><span class="ft">20:58:31</span><span class="l1"><span class="pbadge">FLEX</span><span class="subj">1234567</span><span class="kind">page</span></span><span class="l2"><span>ALN</span><span class="nc">[content not logged]</span><span class="mono muted">931.750 MHz</span></span></button></div>
+          <div class="fiw ev"><button type="button" class="fi"><span class="ft">21:04:12</span><span class="l1"><span>● pause adsb for hackrf_info (0 s)</span></span></button></div>
+          <div class="fiw open" style="--pc: #e483d6">
+            <button type="button" class="fi" aria-expanded="true"><span class="ft">20:53:12</span><span class="l1"><span class="pbadge">VDL2</span><span class="subj">N85370</span><span class="lbl">OO5351</span><span class="kind">vdl2</span></span><span class="l2"><span>ACARS label H1</span><span class="mono muted">136.975 MHz</span></span></button>
+            <div class="fdet"><dl class="kv"><dt>Registration</dt><dd class="mono">N85370</dd><dt>Flight</dt><dd class="mono">OO5351</dd><dt>Label</dt><dd class="mono">H1</dd></dl><pre class="raw">ACARS: Reg: .N85370 Flight: OO5351
+ Mode: 2 Label: H1 Blk id: 7</pre></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="sec" aria-label="Map targets">
+        <h2>Map targets and target card</h2>
+        <div class="tile" aria-label="Map icon states">
+          <span class="tg" style="left: 14%; top: 30%; --pc: #5cb8ff"><span class="ico" style="transform: rotate(255deg)"><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d="M0,-9 L1.5,-3 L8.5,1.5 L8.5,3.2 L1.5,1.4 L1,6 L3.6,8 L3.6,9.2 L0,8.3 L-3.6,9.2 L-3.6,8 L-1,6 L-1.5,1.4 L-8.5,3.2 L-8.5,1.5 L-1.5,-3 Z" fill="currentColor" stroke="var(--sea)" stroke-width="0.8"></path></svg></span><span class="tlbl">UAL817<small>5,100 ft</small></span></span>
+          <span class="tg stale" style="left: 14%; top: 74%; --pc: #5cb8ff"><span class="ico" style="transform: rotate(112deg)"><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d="M0,-9 L1.5,-3 L8.5,1.5 L8.5,3.2 L1.5,1.4 L1,6 L3.6,8 L3.6,9.2 L0,8.3 L-3.6,9.2 L-3.6,8 L-1,6 L-1.5,1.4 L-8.5,3.2 L-8.5,1.5 L-1.5,-3 Z" fill="currentColor" stroke="var(--sea)" stroke-width="0.8"></path></svg></span><span class="tlbl">stale<small>4 min ago</small></span></span>
+          <span class="tg emerg" style="left: 48%; top: 30%; --pc: #5cb8ff"><span class="ico" style="transform: rotate(250deg)"><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d="M0,-9 L1.5,-3 L8.5,1.5 L8.5,3.2 L1.5,1.4 L1,6 L3.6,8 L3.6,9.2 L0,8.3 L-3.6,9.2 L-3.6,8 L-1,6 L-1.5,1.4 L-8.5,3.2 L-8.5,1.5 L-1.5,-3 Z" fill="currentColor" stroke="var(--sea)" stroke-width="0.8"></path></svg></span><span class="tlbl">N4127P<small>7700</small></span></span>
+          <span class="tg sel" style="left: 48%; top: 74%; --pc: #3fd0c0"><span class="ico" style="transform: rotate(201deg)"><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d="M0,-18 V-9" stroke="currentColor" stroke-width="1.4"></path><path d="M0,-8 L4,-2 L4,7 L-4,7 L-4,-2 Z" fill="currentColor" stroke="var(--sea)" stroke-width="0.8"></path></svg></span><span class="tlbl">selected<small>23.9 kn</small></span></span>
+          <span class="tg" style="left: 78%; top: 30%; --pc: #3fd0c0"><span class="ico"><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d="M0,-6.5 L6.5,0 L0,6.5 L-6.5,0 Z" fill="var(--sea)" stroke="currentColor" stroke-width="1.8"></path><path d="M0,-3 V3 M-3,0 H3" stroke="currentColor" stroke-width="1.4"></path></svg></span><span class="tlbl">AtoN</span></span>
+          <span class="tg" style="left: 78%; top: 74%; --pc: #3fd0c0"><span class="ico"><svg viewBox="-10 -10 20 20" aria-hidden="true"><rect x="-5.5" y="-5.5" width="11" height="11" fill="var(--sea)" stroke="currentColor" stroke-width="1.8"></rect><path d="M0,3 V-3 M-3,-1 L0,-4 L3,-1" stroke="currentColor" stroke-width="1.3" fill="none"></path></svg></span><span class="tlbl">base</span></span>
+        </div>
+        <span class="note">Aircraft rotate to track, ships to course with a course stick. Stale = profile off the air or silent: 50% opacity plus age. Emergency squawks 7500/7600/7700 pulse red regardless of age.</span>
+        <div class="panel" style="--pc: #5cb8ff">
+          <div class="ph"><span class="pbadge">ADS-B</span><span class="kind">aircraft</span></div>
+          <div class="pb col" style="gap: 10px">
+            <span class="row" style="gap: 10px"><span class="mono" style="font-size: 20px; font-weight: 600">UAL817</span><span class="tag">stale · 4 min ago</span></span>
+            <svg class="spark" viewBox="0 0 300 64" role="img" aria-label="Altitude 8,900 to 5,100 ft" style="height: 64px"><path d="M0,63.5 H300" stroke="var(--line2)" stroke-width="1" fill="none"></path><polyline points="0,6 69.8,21.6 162.8,38.7 255.8,54.3 300,60" fill="none" stroke="var(--pc)" stroke-width="2" vector-effect="non-scaling-stroke"></polyline></svg>
+            <dl class="kv"><dt>ICAO</dt><dd class="mono">A2B12D</dd><dt>Squawk</dt><dd class="mono">2215</dd><dt>Altitude</dt><dd class="mono">5,100 ft</dd><dt>Speed</dt><dd class="mono">212 kt</dd><dt>Messages</dt><dd class="mono">1,284</dd><dt>Strongest RSSI</dt><dd class="mono">−4.2 dBFS</dd><dt>First / last</dt><dd class="mono">21:03:30 / 21:09:57</dd></dl>
+          </div>
+        </div>
+        <div class="panel" style="--pc: #3fd0c0">
+          <div class="ph"><span class="pbadge">AIS</span><span class="kind">vessel</span></div>
+          <div class="pb col" style="gap: 10px">
+            <span class="mono" style="font-size: 20px; font-weight: 600">KILLEEN</span>
+            <dl class="kv"><dt>MMSI</dt><dd class="mono">367435980</dd><dt>Type</dt><dd>Tug (52)</dd><dt>Speed · course</dt><dd class="mono">3.7 kn · 141°</dd><dt>Last position</dt><dd class="mono">33.7379 N, 118.2570 W</dd></dl>
+          </div>
+        </div>
+      </section>
+
+      <section class="sec" aria-label="Timeline, rotation and levels">
+        <h2>Detection timeline</h2>
+        <div class="panel">
+          <div class="tlw" style="padding-top: 8px">
+            <div class="tl" style="height: 110px">
+              <sc-for list="{{cols}}" as="c"><span class="c" style="cursor: default"><sc-for list="{{c.segs}}" as="g"><span class="s" style="height: {{g.h}}%; --pc: {{g.color}}"></span></sc-for></span></sc-for>
+              <div class="gap stopped" style="left: 0%; width: 16%"><span class="gl">stopped</span></div>
+              <div class="gap paused" style="left: 50%; width: 3.3%"><span class="gl">paused</span></div>
+              <div class="gap error" style="left: 73%; width: 3.3%"><span class="gl">error</span></div>
+            </div>
+            <div class="legend" style="margin-top: 6px"><span style="--pc: #5cb8ff"><span class="sw"></span>ADS-B</span><span style="--pc: #3fd0c0"><span class="sw"></span>AIS</span><span style="--pc: #e483d6"><span class="sw"></span>VDL2</span><span><i class="hatch"></i>stopped</span><span><i class="hatch paused"></i>paused</span><span><i class="hatch error"></i>error</span></div>
+          </div>
+        </div>
+        <h2 style="margin-top: 6px">Rotation strip</h2>
+        <div class="col" style="gap: 4px">
+          <div class="rot"><span class="rs past" style="width: 33.3%; --pc: #5cb8ff">ADS-B</span><span class="rs cur" style="width: 33.3%; --pc: #3fd0c0">AIS</span><span class="rs" style="width: 16.7%; --pc: #e483d6">VDL2</span><span class="rs" style="width: 16.7%; --pc: #8fd46a">FLEX</span><span class="now" style="left: 47%"></span></div>
+          <div class="rotx"><span style="left: 0%; transform: none">21:00</span><span style="left: 33.3%">21:10</span><span style="left: 66.7%">21:20</span><span style="left: 100%; transform: translateX(-100%)">21:30</span></div>
+        </div>
+        <h2 style="margin-top: 6px">Per-channel level bar</h2>
+        <div class="panel pb col" style="gap: 8px; --pc: #3fd0c0">
+          <div class="lvl"><span class="ln">A 161.975</span><span class="trk"><span class="fill" style="width: 65%"></span><span class="nf" style="left: 22.5%"></span></span><span class="lv">−58.0 dB</span></div>
+          <div class="lvl"><span class="ln">B 162.025</span><span class="trk"><span class="fill" style="width: 55%"></span><span class="nf" style="left: 22.5%"></span></span><span class="lv">−66.0 dB</span></div>
+          <div class="lvl"><span class="ln">flat</span><span class="trk"><span class="fill" style="width: 22.5%"></span><span class="nf" style="left: 22.5%"></span></span><span class="lv">−92.0 dB</span></div>
+          <span class="note">Segmented fill in the profile colour; the light tick is the noise floor. Scale −110 to −30 dB.</span>
+          <span class="cap" style="margin-top: 4px">Threshold meter</span>
+          <span class="meter" style="--sc: var(--warn)"><span style="width: 84%"></span><i class="mk" style="left: 90%"></i></span>
+        </div>
+        <h2 style="margin-top: 6px">Banners</h2>
+        <div class="banner warn"><div class="bt"><b>Paused by hackrf_transfer — resumes automatically in 0:23</b><span class="t2">The gap is logged.</span></div><span class="bar" style="width: 23%"></span></div>
+        <div class="banner bad"><div class="bt"><b>dumpvdl2 exited — waiting to retry in 0:12</b><span class="errtxt">hackrf_open() failed: HACKRF_ERROR_BUSY (-6)</span></div></div>
+        <div class="banner idle"><div class="bt"><b>Idle — no profile is running</b></div></div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1900}}'>
+const REG = [
+  { name: 'ADS-B', color: '#5cb8ff', src: 'manifest' }, { name: 'AIS', color: '#3fd0c0', src: 'manifest' },
+  { name: 'ACARS', color: '#a98bff', src: 'manifest' }, { name: 'VDL2', color: '#e483d6', src: 'manifest' },
+  { name: 'FLEX', color: '#8fd46a', src: 'manifest' }, { name: 'POCSAG', color: '#d8d65a', src: 'manifest' },
+  { name: 'APRS', color: '#ff9d5c', src: 'manifest' }, { name: 'EAS', color: '#ff6474', src: 'manifest' },
+  { name: 'ISM433', color: '#c8b08a', src: 'auto, slot 9' }
+];
+function noise(i) { const v = Math.sin(i * 12.9898 + 1.3) * 43758.5453; return v - Math.floor(v); }
+class Component extends DCLogic {
+  renderVals() {
+    const theme = this.props.theme ?? 'dark';
+    const cols = [];
+    for (let i = 0; i < 30; i++) {
+      const segs = [];
+      if (i === 15 || i === 22) { cols.push({ segs }); continue; }
+      if (i >= 5 && i < 15) segs.push({ color: '#5cb8ff', h: (55 + noise(i) * 35).toFixed(1) });
+      if (i >= 15 && i < 25) segs.push({ color: '#3fd0c0', h: (25 + noise(i + 40) * 20).toFixed(1) });
+      if (i >= 25) segs.push({ color: '#e483d6', h: (10 + noise(i + 80) * 12).toFixed(1) });
+      cols.push({ segs });
+    }
+    return { themeCls: theme === 'light' ? 'light' : '', reg: REG, cols };
+  }
+}
+</script>
+</body>
+</html>

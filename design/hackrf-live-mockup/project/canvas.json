@@ -1,0 +1,29 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-10-30T21:14:07Z"},
+  "title": "hackrf-live UI mockup",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 1440, "h": 1100, "title": "1 · Live", "expand": "fill", "is_interactive": true},
+    "Map.dc.html": {"x": 1520, "y": 0, "w": 1440, "h": 940, "title": "2 · Map", "expand": "fill", "is_interactive": true},
+    "Log.dc.html": {"x": 3040, "y": 0, "w": 1440, "h": 1260, "title": "3 · Log explorer", "expand": "fill", "is_interactive": true},
+    "History.dc.html": {"x": 4560, "y": 0, "w": 1440, "h": 1260, "title": "4 · History", "expand": "fill", "is_interactive": true},
+    "Summaries.dc.html": {"x": 0, "y": 1380, "w": 1440, "h": 1240, "title": "5 · Summaries", "expand": "fill", "is_interactive": true},
+    "Alerts.dc.html": {"x": 1520, "y": 1380, "w": 1440, "h": 1080, "title": "6 · Alerts", "expand": "fill", "is_interactive": true},
+    "Plugins.dc.html": {"x": 3040, "y": 1380, "w": 1440, "h": 1480, "title": "7 · Plugins", "expand": "fill", "is_interactive": true},
+    "States.dc.html": {"x": 0, "y": 3260, "w": 1440, "h": 1180, "title": "States", "expand": "fill", "is_interactive": true},
+    "Components.dc.html": {"x": 1520, "y": 3260, "w": 1440, "h": 1900, "title": "Component sheet", "expand": "fill", "is_interactive": true},
+    "LiveTablet.dc.html": {"x": 3040, "y": 3260, "w": 834, "h": 1640, "title": "Live · tablet (834 px)", "is_interactive": true},
+    "AppBar.dc.html": {"x": 3954, "y": 3260, "w": 1440, "h": 56, "title": "Part · AppBar"},
+    "Waterfall.dc.html": {"x": 3954, "y": 3436, "w": 1000, "h": 540, "title": "Part · Waterfall + spectrum", "is_interactive": true}
+  },
+  "order": ["Main.dc.html", "Map.dc.html", "Log.dc.html", "History.dc.html", "Summaries.dc.html", "Alerts.dc.html", "Plugins.dc.html", "States.dc.html", "Components.dc.html", "LiveTablet.dc.html", "AppBar.dc.html", "Waterfall.dc.html"],
+  "notes": {
+    "t_screens": {"x": 0, "y": -300, "text": "hackrf-live — screens", "kind": "title1", "maxW": 6000},
+    "t_parts": {"x": 0, "y": 2960, "text": "States, components and parts", "kind": "title1", "maxW": 5400},
+    "howto": {"x": 6080, "y": 0, "w": 440, "text": "How to click through\n\n• Press Play on any screen; the top nav moves between screens.\n• Live: the dashed MOCKUP strip switches service states (paused, error, falling behind, log near cap, not running, nothing heard). Switch / Stop / Start and Edit rotation work.\n• Map: click aircraft and ships; Live/History + the time scrubber; layer toggles; replay.\n• Log: search, click a timeline minute, click a row for the drawer.\n• History: pick a rotation slot, click markers on the time axis.\n• Plugins: 'Simulate install' shows a new decoder and panel appearing everywhere.", "fill": "gray"},
+    "extend": {"x": 4560, "y": 1380, "w": 520, "text": "How a new decoder or panel slots in\n\n1. A decoder plugin ships a manifest: program + args, tuning (center, rate, channels with an emission hint), kinds it emits, which field is the subject and which the label, typed fields, supported views, colour (or 'auto').\n2. The service loads manifests into one registry served at /api/registry. Every screen renders from it: profile pickers, feed filters, log facets, timeline legend, map layers (only kinds that declare 'map'), alert field pickers, summary cards.\n3. Colour comes from the manifest or the next free palette slot, so a profile keeps one colour everywhere.\n4. A panel plugin declares a slot (live.health, map.side, log.drawer, summaries.card) and a query (kinds/profiles + fields). Screens render whatever panels are registered for their slots.\n5. Unknown kinds fall back to the generic row: subject, label, fields table, raw text. Nothing needs a redesign.", "fill": "teal"}
+  },
+  "designSystems": []
+}

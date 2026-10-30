@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Service states</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.sc{display:flex;flex-direction:column}
+.sc .pb{display:flex;flex-direction:column;gap:10px}
+.sc .why{font-size:12px;color:var(--muted)}
+.minihc{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid var(--line);border-radius:5px}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <main class="main">
+    <div class="row wr" style="gap: 8px 16px">
+      <h1 class="h1">Service and data states</h1>
+      <span class="t2">Each card is what the app bar chip, banner and affected panel show. Live’s MOCKUP menu switches between the same states in context.</span>
+    </div>
+    <div class="g-cards">
+
+      <section class="panel sc" aria-label="Service not running">
+        <div class="ph"><h2>Service not running</h2><span class="sp"></span><span class="chip st st-stopped"><span class="dot"></span>Service not running</span></div>
+        <div class="pb">
+          <div class="empty center">
+            <b>The hackrf-live service is not running</b>
+            <span>Nothing is decoded or logged. Logged data stays searchable.</span>
+            <span class="mono muted">Last contact 21:02:55 · retrying every 10 s</span>
+            <button type="button" class="btn sm primary">Retry connection</button>
+          </div>
+          <span class="why">Live replaces the waterfall and feed with this; other screens keep working read-only.</span>
+        </div>
+      </section>
+
+      <section class="panel sc" aria-label="Idle">
+        <div class="ph"><h2>Idle</h2><span class="sp"></span><span class="chip st st-idle"><span class="dot"></span>Idle</span></div>
+        <div class="pb">
+          <div class="banner idle"><div class="bt"><b>Idle — no profile is running</b><span class="t2">The radio is free. Start the rotation or one profile.</span></div><button type="button" class="btn sm">Start rotation</button></div>
+          <div class="rot" style="opacity: .55">
+            <span class="rs past" style="width: 33.3%; --pc: #5cb8ff">ADS-B</span><span class="rs past" style="width: 33.3%; --pc: #3fd0c0">AIS</span><span class="rs past" style="width: 16.7%; --pc: #e483d6">VDL2</span><span class="rs past" style="width: 16.7%; --pc: #8fd46a">FLEX</span>
+          </div>
+          <span class="why">Stop leaves the service up. The rotation strip dims; the feed keeps earlier messages.</span>
+        </div>
+      </section>
+
+      <section class="panel sc" aria-label="Paused by a capture">
+        <div class="ph"><h2>Paused by a capture</h2><span class="sp"></span><span class="chip st st-paused"><span class="dot"></span>Paused · hackrf_transfer · {{pause}}</span></div>
+        <div class="pb">
+          <div class="banner warn">
+            <div class="bt"><b>Paused by hackrf_transfer — resumes automatically in {{pause}}</b><span class="t2">A 30 s IQ capture holds the radio. The gap is logged as an event.</span></div>
+            <span class="bar" style="width: {{pausePct}}%"></span>
+          </div>
+          <div style="border: 1px solid var(--line); border-radius: 5px; overflow: hidden">
+            <dc-import name="Waterfall" mode="live" height="{{110}}" spec-height="{{40}}" compact="{{true}}" seed="{{21}}" overlay-title="Paused by hackrf_transfer" overlay-sub="Resumes automatically" overlay-tone="warn" hint-size="100%,182px" style="width: 100%"></dc-import>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel sc" aria-label="Waiting to retry after an error">
+        <div class="ph"><h2>Waiting to retry after an error</h2><span class="sp"></span><span class="chip st st-error"><span class="dot"></span>Retry in {{retry}}</span></div>
+        <div class="pb">
+          <div class="banner bad">
+            <div class="bt">
+              <b>AIS-catcher exited — waiting to retry in {{retry}}</b>
+              <span class="t2">Attempt 3. Retries back off to every 30 s.</span>
+              <span class="errtxt">AIS-catcher: hackrf_open() failed: HACKRF_ERROR_BUSY (-6)
+Another process holds the HackRF (exclusive USB access).</span>
+            </div>
+            <button type="button" class="btn sm">Retry now</button>
+          </div>
+          <span class="why">The error text is the decoder’s own last line, shown verbatim. The gap appears red on every timeline.</span>
+        </div>
+      </section>
+
+      <section class="panel sc" aria-label="Falling behind">
+        <div class="ph"><h2>Falling behind</h2><span class="sp"></span><span class="chip st st-behind"><span class="dot"></span>Falling behind · 84%</span></div>
+        <div class="pb">
+          <div class="minihc hc warn" style="border-right: 1px solid var(--line)">
+            <span class="cap">Input samples</span>
+            <span class="big">84.2<small>% of rate</small></span>
+            <span class="meter" style="--sc: var(--warn)"><span style="width: 84.2%"></span><i class="mk" style="left: 90%"></i></span>
+            <span class="muted" style="font-size: 12px">falling behind (below 90%) · CPU 91%</span>
+          </div>
+          <span class="why">Threshold tick at 90%. Below it the chip, banner and meter turn amber.</span>
+        </div>
+      </section>
+
+      <section class="panel sc" aria-label="Log near its size cap">
+        <div class="ph"><h2>Log near its size cap</h2><span class="sp"></span><span class="chip st st-warn"><span class="dot"></span>Log 95%</span></div>
+        <div class="pb">
+          <div class="minihc hc warn" style="border-right: 1px solid var(--line)">
+            <span class="cap">Log</span>
+            <span class="big">243<small>/ 256 MiB</small></span>
+            <span class="meter" style="--sc: var(--warn)"><span style="width: 95%"></span><i class="mk" style="left: 90%"></i></span>
+            <span class="muted" style="font-size: 12px">611,902 rows · oldest pruned first · ~5 of 7 days kept</span>
+          </div>
+          <div class="row wr"><button type="button" class="btn sm">Prune now</button><button type="button" class="btn sm ghost">Log settings</button></div>
+        </div>
+      </section>
+
+      <section class="panel sc" aria-label="Empty search">
+        <div class="ph"><h2>Empty search</h2></div>
+        <div class="pb">
+          <div class="empty">
+            <b>No rows match</b>
+            <span>Nothing logged for subject “ZZZ999” between 20:14 and 21:14.</span>
+            <span class="muted">Coverage note: ADS-B ran 20 of 60 minutes in this range (rotation). Absence of rows is not absence of signals.</span>
+            <div class="row wr"><button type="button" class="btn sm">Search today instead</button><button type="button" class="btn sm">Clear filters</button></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel sc" aria-label="Nothing heard, flat levels" style="--pc: #3fd0c0">
+        <div class="ph"><h2>Nothing heard · flat levels</h2><span class="sp"></span><span class="chip st st-running"><span class="dot"></span>Running</span></div>
+        <div class="pb">
+          <div class="banner idle"><div class="bt"><b>Nothing heard on AIS yet</b><span class="t2">Channel levels are flat: nothing on the air. The decoder is fine.</span></div></div>
+          <div class="col" style="gap: 6px">
+            <div class="lvl"><span class="ln">A 161.975</span><span class="trk"><span class="fill" style="width: {{flatA}}%"></span><span class="nf" style="left: 22.5%"></span></span><span class="lv">{{flatAdb}} dB</span></div>
+            <div class="lvl"><span class="ln">B 162.025</span><span class="trk"><span class="fill" style="width: {{flatB}}%"></span><span class="nf" style="left: 22.5%"></span></span><span class="lv">{{flatBdb}} dB</span></div>
+          </div>
+          <span class="why">0 msg/min and every channel at the noise floor tick (−92 dB).</span>
+        </div>
+      </section>
+
+      <section class="panel sc" aria-label="Nothing heard, decoder error" style="--pc: #3fd0c0">
+        <div class="ph"><h2>Nothing heard · decoder error</h2><span class="sp"></span><span class="chip st st-error"><span class="dot"></span>Decoder silent</span></div>
+        <div class="pb">
+          <div class="banner bad"><div class="bt"><b>Decoder error — AIS-catcher is silent</b><span class="t2">No messages for 3 min while channel A peaks at −58 dB.</span></div><button type="button" class="btn sm">Restart decoder</button></div>
+          <div class="col" style="gap: 6px">
+            <div class="lvl"><span class="ln">A 161.975</span><span class="trk"><span class="fill" style="width: {{actA}}%"></span><span class="nf" style="left: 22.5%"></span></span><span class="lv">{{actAdb}} dB</span></div>
+            <div class="lvl"><span class="ln">B 162.025</span><span class="trk"><span class="fill" style="width: {{actB}}%"></span><span class="nf" style="left: 22.5%"></span></span><span class="lv">{{actBdb}} dB</span></div>
+          </div>
+          <span class="why">Same 0 msg/min, but the levels show traffic, so the fault is the decoder, not the band.</span>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1180}}'>
+const pad = (n) => String(n).padStart(2, '0');
+const toPct = (db) => Math.max(0, Math.min(100, (db + 110) / 80 * 100));
+class Component extends DCLogic {
+  componentDidMount() { this.t = setInterval(() => this.setState({ sec: (this.state.sec || 0) + 1 }), 1000); }
+  componentWillUnmount() { clearInterval(this.t); }
+  renderVals() {
+    const sec = this.state.sec || 0, theme = this.props.theme ?? 'dark';
+    const p = 30 - (sec % 30), r = 12 - (sec % 12);
+    const j = (a, k) => Math.sin(sec * 1.7 + a) * k;
+    const fa = -92 + j(1, 0.3), fb = -92 + j(2, 0.3), aa = -58 + j(3, 2), ab = -66 + j(4, 2);
+    return {
+      themeCls: theme === 'light' ? 'light' : '',
+      pause: '0:' + pad(p), pausePct: ((30 - p) / 30 * 100).toFixed(1), retry: '0:' + pad(r),
+      flatA: toPct(fa).toFixed(1), flatAdb: fa.toFixed(1), flatB: toPct(fb).toFixed(1), flatBdb: fb.toFixed(1),
+      actA: toPct(aa).toFixed(1), actAdb: aa.toFixed(1), actB: toPct(ab).toFixed(1), actBdb: ab.toFixed(1)
+    };
+  }
+}
+</script>
+</body>
+</html>

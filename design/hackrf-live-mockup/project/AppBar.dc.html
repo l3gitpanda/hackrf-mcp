@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>App bar</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="hl abwrap {{themeCls}}">
+  <header class="appbar">
+    <a class="brand" href="Main.dc.html">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+      <span>hackrf-live</span>
+      <small>home station</small>
+    </a>
+    <nav class="nav" aria-label="Main">
+      <sc-for list="{{links}}" as="l" hint-placeholder-count="7">
+        <a href="{{l.href}}" aria-current="{{l.cur}}">{{l.label}}<sc-if value="{{l.badge}}"><span class="nbadge">{{l.badge}}</span></sc-if></a>
+      </sc-for>
+    </nav>
+    <div class="ab-r">
+      <span class="chip st {{st.cls}}" role="status"><span class="dot"></span>{{st.label}}</span>
+      <sc-if value="{{hasProfile}}">
+        <span class="chip" style="--pc: {{profileColor}}"><span class="sw"></span><span class="mono">{{profileText}}</span></span>
+      </sc-if>
+      <span class="chip mono" aria-label="Station clock, UTC">{{clock}} UTC</span>
+    </div>
+  </header>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"active":{"editor":"enum","options":["live","map","log","history","summaries","alerts","plugins"],"default":"live"},"state":{"editor":"enum","options":["running","paused","idle","error","behind","stopped","silent"],"default":"running"},"stateText":{"editor":null},"profileText":{"editor":null},"profileColor":{"editor":null},"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":56}}'>
+const LINKS = [
+  { id: 'live', label: 'Live', href: 'Main.dc.html' },
+  { id: 'map', label: 'Map', href: 'Map.dc.html' },
+  { id: 'log', label: 'Log', href: 'Log.dc.html' },
+  { id: 'history', label: 'History', href: 'History.dc.html' },
+  { id: 'summaries', label: 'Summaries', href: 'Summaries.dc.html' },
+  { id: 'alerts', label: 'Alerts', href: 'Alerts.dc.html', badge: '2' },
+  { id: 'plugins', label: 'Plugins', href: 'Plugins.dc.html' }
+];
+const ST = {
+  running: ['st-running', 'Running'],
+  paused: ['st-paused', 'Paused'],
+  idle: ['st-idle', 'Idle'],
+  error: ['st-error', 'Waiting to retry'],
+  behind: ['st-behind', 'Falling behind'],
+  stopped: ['st-stopped', 'Service not running'],
+  silent: ['st-error', 'Decoder silent']
+};
+const T0 = 21 * 3600 + 14 * 60 + 7;
+function hms(s) {
+  s = ((s % 86400) + 86400) % 86400;
+  const p = (n) => String(n).padStart(2, '0');
+  return p(Math.floor(s / 3600)) + ':' + p(Math.floor(s / 60) % 60) + ':' + p(s % 60);
+}
+class Component extends DCLogic {
+  componentDidMount() {
+    this.t = setInterval(() => this.setState({ sec: (this.state.sec || 0) + 1 }), 1000);
+  }
+  componentWillUnmount() { clearInterval(this.t); }
+  renderVals() {
+    const p = this.props;
+    const active = p.active ?? 'live';
+    const s = ST[p.state ?? 'running'] || ST.running;
+    const showProfile = !!p.profileText && !['stopped', 'idle'].includes(p.state ?? 'running');
+    return {
+      themeCls: (p.theme ?? 'dark') === 'light' ? 'light' : '',
+      links: LINKS.map((l) => ({ ...l, cur: l.id === active ? 'page' : undefined })),
+      st: { cls: s[0], label: p.stateText || s[1] },
+      hasProfile: showProfile,
+      profileText: p.profileText || '',
+      profileColor: p.profileColor || '#8a96a6',
+      clock: hms(T0 + (this.state.sec || 0))
+    };
+  }
+}
+</script>
+</body>
+</html>

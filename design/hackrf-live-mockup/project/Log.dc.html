@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Log explorer</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.sform{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:10px 12px;padding:12px}
+.sform .wide{grid-column:1 / -1}
+.ex{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:12px;color:var(--muted)}
+.ex button{font-family:var(--mono)}
+.tl.lab2{padding-top:38px}
+.gap .gl.r1{top:17px}
+.thumbcap{font-size:11.5px;color:var(--muted)}
+.drawerp{position:sticky;top:12px}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <dc-import name="AppBar" active="log" state="running" profile-text="AIS · 162.000 MHz" profile-color="#3fd0c0" theme="{{theme}}" hint-size="100%,53px" style="width: 100%"></dc-import>
+  <main class="main">
+    <section class="panel" aria-label="Search">
+      <div class="ph"><h2>Search the log</h2><span class="sp"></span><span class="muted" style="font-size: 12px">412,388 rows · 157 MiB of 256 MiB · kept 7 days</span></div>
+      <div class="sform">
+        <div class="fld">
+          <label for="range">Time range</label>
+          <select id="range" class="inp" value="{{form.range}}" onChange="{{setRange}}">
+            <option value="15m">Last 15 minutes</option>
+            <option value="1h">Last hour</option>
+            <option value="today">Today</option>
+            <option value="7d">Last 7 days</option>
+          </select>
+        </div>
+        <div class="fld">
+          <label for="from">From (UTC)</label>
+          <input id="from" class="inp mono" value="{{rangeFrom}}" readonly>
+        </div>
+        <div class="fld">
+          <label for="to">To (UTC)</label>
+          <input id="to" class="inp mono" value="2026-10-30 21:14" readonly>
+        </div>
+        <div class="fld">
+          <label for="subj">Subject</label>
+          <input id="subj" class="inp mono" placeholder="ICAO, MMSI, capcode, callsign" value="{{form.subj}}" onInput="{{setSubj}}" onKeyDown="{{enter}}">
+        </div>
+        <div class="fld">
+          <label for="txt">Free text</label>
+          <input id="txt" class="inp" placeholder="Words in fields or raw text" value="{{form.text}}" onInput="{{setText}}" onKeyDown="{{enter}}">
+        </div>
+        <div class="fld">
+          <label for="freq">Frequency (MHz, ±12.5 kHz)</label>
+          <input id="freq" class="inp mono" placeholder="e.g. 162.025" value="{{form.freq}}" onInput="{{setFreq}}" onKeyDown="{{enter}}">
+        </div>
+        <div class="fld wide">
+          <span class="lb">Profiles</span>
+          <div class="row wr" style="gap: 6px" role="group" aria-label="Profiles">
+            <sc-for list="{{chips}}" as="c"><button type="button" class="tchip" style="--pc: {{c.color}}" aria-pressed="{{c.on}}" onClick="{{c.toggle}}"><span class="sw"></span>{{c.name}}</button></sc-for>
+          </div>
+        </div>
+        <div class="wide row wr" style="gap: 8px 12px">
+          <button type="button" class="btn primary" onClick="{{search}}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20 l-4.5 -4.5"></path></svg>Search
+          </button>
+          <button type="button" class="btn" onClick="{{reset}}">Reset</button>
+          <div class="ex"><span>Try:</span>
+            <sc-for list="{{examples}}" as="e"><button type="button" class="linkbtn" onClick="{{e.go}}">{{e.label}}</button></sc-for>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Detection timeline">
+      <div class="ph">
+        <h2>Detections</h2>
+        <span class="mono muted">{{tl.title}}</span>
+        <span class="sp"></span>
+        <div class="legend">
+          <sc-for list="{{tl.legend}}" as="l"><span style="--pc: {{l.color}}"><span class="sw"></span>{{l.name}} <span class="mono muted">{{l.n}}</span></span></sc-for>
+          <span><i class="hatch"></i>stopped</span>
+          <span><i class="hatch paused"></i>paused</span>
+          <span><i class="hatch error"></i>error</span>
+        </div>
+      </div>
+      <div class="tlw">
+        <div class="tl lab2" role="group" aria-label="{{tl.aria}}">
+          <sc-for list="{{tl.cols}}" as="c">
+            <button type="button" class="{{c.cls}}" onClick="{{c.pick}}" aria-label="{{c.aria}}" title="{{c.aria}}">
+              <sc-for list="{{c.segs}}" as="g"><span class="s" style="height: {{g.h}}%; --pc: {{g.color}}"></span></sc-for>
+            </button>
+          </sc-for>
+          <sc-for list="{{tl.gaps}}" as="g">
+            <div class="{{g.cls}}" style="left: {{g.l}}%; width: {{g.w}}%" title="{{g.label}}"><sc-if value="{{g.show}}"><span class="{{g.lcls}}">{{g.label}}</span></sc-if></div>
+          </sc-for>
+        </div>
+        <div class="tlx"><sc-for list="{{tl.ticks}}" as="t"><span style="left: {{t.pct}}%">{{t.label}}</span></sc-for></div>
+        <sc-if value="{{bucketOn}}">
+          <div class="row" style="margin-top: 6px"><span class="tag">{{bucketLabel}}</span><button type="button" class="btn sm ghost" onClick="{{clearBucket}}">Clear time filter</button></div>
+        </sc-if>
+      </div>
+    </section>
+
+    <div class="{{gridCls}}">
+      <section class="panel" aria-label="Results">
+        <div class="ph">
+          <h2>Results</h2>
+          <span class="mono muted">{{countTxt}}</span>
+          <span class="sp"></span>
+          <span class="muted" style="font-size: 12px">ADS-B and AIS: one row per target per minute</span>
+          <button type="button" class="btn sm">Export CSV</button>
+        </div>
+        <sc-if value="{{hasRows}}">
+          <div class="tscroll" style="max-height: 560px">
+            <table class="tbl">
+              <thead>
+                <tr><th>Start</th><th>End</th><th>Profile</th><th>Kind</th><th class="r">MHz</th><th class="r">dB</th><th>Subject</th><th>Label</th><th>Decoded</th></tr>
+              </thead>
+              <tbody>
+                <sc-for list="{{rows}}" as="r">
+                  <tr class="{{r.cls}}" onClick="{{r.pick}}" style="--pc: {{r.color}}">
+                    <td class="mono">{{r.start}}</td>
+                    <td class="mono muted">{{r.end}}</td>
+                    <td><span class="pbadge">{{r.pname}}</span></td>
+                    <td class="kind">{{r.k}}</td>
+                    <td class="mono r">{{r.f}}</td>
+                    <td class="mono r">{{r.db}}</td>
+                    <td class="mono"><button type="button" class="linkbtn" onClick="{{r.pickBtn}}" aria-label="{{r.aria}}">{{r.s}}</button></td>
+                    <td style="font-weight: 600">{{r.l}}</td>
+                    <td class="wc">
+                      <span class="row wr" style="gap: 2px 10px">
+                        <sc-if value="{{r.emerg}}"><span class="tag bad">{{r.emerg}}</span></sc-if>
+                        <sc-for list="{{r.sumv}}" as="x"><span class="{{x.cls}}">{{x.v}}</span></sc-for>
+                      </span>
+                    </td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </sc-if>
+        <sc-if value="{{noRows}}">
+          <div class="empty" style="margin: 16px">
+            <b>No rows match</b>
+            <span>{{emptyWhy}}</span>
+            <sc-if value="{{emptyCover}}"><span class="muted">{{emptyCover}}</span></sc-if>
+            <div class="row wr">
+              <button type="button" class="btn sm" onClick="{{widen}}">Search today instead</button>
+              <button type="button" class="btn sm" onClick="{{reset}}">Clear filters</button>
+            </div>
+          </div>
+        </sc-if>
+      </section>
+
+      <sc-if value="{{hasSel}}">
+        <section class="panel drawerp" aria-label="Row detail" style="--pc: {{d.color}}">
+          <div class="ph">
+            <span class="pbadge">{{d.pname}}</span>
+            <span class="kind">{{d.k}}</span>
+            <span class="sp"></span>
+            <button type="button" class="btn sm icon ghost" onClick="{{closeSel}}" aria-label="Close detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg></button>
+          </div>
+          <div class="pb col" style="gap: 14px">
+            <div class="col" style="gap: 2px">
+              <span class="row wr" style="gap: 6px 10px"><span class="mono" style="font-size: 18px; font-weight: 600">{{d.s}}</span><span style="font-size: 16px; font-weight: 600">{{d.l}}</span><sc-if value="{{d.emerg}}"><span class="tag bad">{{d.emerg}}</span></sc-if></span>
+              <span class="mono muted" style="font-size: 12px">{{d.start}} → {{d.end}} · {{d.f}} MHz · {{d.db}} dB</span>
+            </div>
+            <div class="col" style="gap: 6px">
+              <span class="cap">Decoded fields</span>
+              <dl class="kv"><sc-for list="{{d.fields}}" as="kv"><dt>{{kv.k}}</dt><dd class="{{kv.cls}}">{{kv.v}}</dd></sc-for></dl>
+            </div>
+            <div class="col" style="gap: 6px">
+              <span class="cap">Raw decoder text</span>
+              <pre class="raw">{{d.raw}}</pre>
+            </div>
+            <div class="col" style="gap: 6px">
+              <span class="cap">Show on waterfall</span>
+              <div style="border: 1px solid var(--line); border-radius: 5px; overflow: hidden">
+                <dc-import name="Waterfall" band="{{d.band}}" mode="static" height="{{120}}" spec-height="{{44}}" compact="{{true}}" peak="{{false}}" seed="{{d.seed}}" marks="{{d.marks}}" times="{{d.times}}" hint-size="100%,198px" style="width: 100%"></dc-import>
+              </div>
+              <span class="thumbcap">{{d.thumbCap}}</span>
+            </div>
+            <div class="row wr">
+              <a class="btn sm" href="History.dc.html">Open in History</a>
+              <sc-if value="{{d.mapOk}}"><a class="btn sm" href="Map.dc.html">Show on map</a></sc-if>
+              <button type="button" class="btn sm" onClick="{{d.filterSubj}}">Only this subject</button>
+              <button type="button" class="btn sm ghost">Copy JSON</button>
+            </div>
+          </div>
+        </section>
+      </sc-if>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1260}}'>
+// Registry (from /api/registry in the product): facets, colours and tuning are read from it, never hard-coded per screen.
+const REG = [
+  { id: 'adsb', name: 'ADS-B', color: '#5cb8ff', center: 1090.0, rate: 2.4, ch: [{ f: 1090.0, label: '1090', kind: 'pulse' }], rpm: 24 },
+  { id: 'ais', name: 'AIS', color: '#3fd0c0', center: 162.0, rate: 2.0, ch: [{ f: 161.975, label: 'A', kind: 'burst' }, { f: 162.025, label: 'B', kind: 'burst' }], rpm: 11 },
+  { id: 'acars', name: 'ACARS', color: '#a98bff', center: 130.4, rate: 3.0, ch: [{ f: 129.125, kind: 'msk' }, { f: 130.025, kind: 'msk' }, { f: 130.45, kind: 'msk' }, { f: 131.125, kind: 'msk' }, { f: 131.55, label: '131.550', kind: 'msk' }], rpm: 5 },
+  { id: 'vdl2', name: 'VDL2', color: '#e483d6', center: 136.8, rate: 2.0, ch: [{ f: 136.65, kind: 'burst' }, { f: 136.725, kind: 'burst' }, { f: 136.775, kind: 'burst' }, { f: 136.875, kind: 'burst' }, { f: 136.975, label: '.975', kind: 'burst' }], rpm: 5 },
+  { id: 'flex', name: 'FLEX', color: '#8fd46a', center: 931.5, rate: 2.0, ch: [{ f: 931.0625, kind: 'fsk' }, { f: 931.75, label: '931.750', kind: 'fsk' }, { f: 931.9375, kind: 'fsk' }], rpm: 14 },
+  { id: 'pocsag', name: 'POCSAG', color: '#d8d65a', center: 152.1, rate: 2.0, ch: [{ f: 152.0075, kind: 'fsk' }, { f: 152.24, label: '152.240', kind: 'fsk' }], rpm: 8 },
+  { id: 'aprs', name: 'APRS', color: '#ff9d5c', center: 144.29, rate: 2.0, ch: [{ f: 144.39, label: '144.390', kind: 'afsk' }], rpm: 0 },
+  { id: 'eas', name: 'EAS', color: '#ff6474', center: 162.3, rate: 2.0, ch: [{ f: 162.4, kind: 'carrier' }, { f: 162.45, kind: 'carrier' }, { f: 162.55, label: '.550', kind: 'carrier' }], rpm: 0.02 }
+];
+const RP = Object.fromEntries(REG.map((p) => [p.id, p]));
+const NOW = 21 * 60 + 14 + 7 / 60;
+const pad = (n) => String(n).padStart(2, '0');
+const hm = (m) => { const d = Math.floor(m / 1440); m = m - d * 1440; return (d < 0 ? '10-' + (30 + d) + ' ' : '') + pad(Math.floor(m / 60)) + ':' + pad(Math.floor(m % 60)); };
+const hms = (m) => { const d = Math.floor(m / 1440); const x = m - d * 1440; const s = Math.round(x * 60); return (d < 0 ? '10-' + (30 + d) + ' ' : '') + pad(Math.floor(s / 3600)) + ':' + pad(Math.floor(s / 60) % 60) + ':' + pad(s % 60); };
+const tm = (t) => { const [h, m, s] = t.split(':').map(Number); return h * 60 + m + (s || 0) / 60; };
+const F = (o) => Object.entries(o).map(([k, v]) => ({ k, v, cls: v === '[content not logged]' ? 'nc' : 'mono' }));
+let NID = 1;
+function R(day, start, end, p, k, f, db, s, l, sum, fields, raw, emerg) {
+  const a = tm(start) + day * 1440, b = end ? tm(end) + day * 1440 : a;
+  return { id: NID++, a, b, p, k, f, db, s, l, sum, fields: F(fields), raw, emerg: emerg || '' };
+}
+const KIL = { MMSI: '367435980', Name: 'KILLEEN', Type: 'Tug (52)', 'Nav status': 'Under way using engine' };
+const ROWS = [
+  R(0, '21:14:00', '21:14:02', 'ais', 'vessel', 161.975, -38.6, '367435980', 'KILLEEN', ['3.7 kn', 'COG 141°', 'Tug'], { ...KIL, SOG: '3.7 kn', COG: '141.2°', Position: '33.7379 N, 118.2570 W', 'Messages in row': '3' }, '!AIVDM,1,1,,A,15MwkT0P00G?ro8E`4UOwvN0R@3W,0*6C\n!AIVDM,1,1,,A,15MwkT0P00G?ro6E`4TOwvN2R@4Q,0*41'),
+  R(0, '21:13:58', null, 'ais', 'aid-to-navigation', 162.025, -44.1, '993692211', 'LONG BEACH LT', ['Type 21', 'Light, without sectors'], { MMSI: '993692211', Name: 'LONG BEACH LT', 'AtoN type': 'Light, without sectors', 'Off position': 'no', Virtual: 'no' }, '!AIVDM,1,1,,B,E>jHC=c6:W2h22R`@1:WdP00000Opu?KPv@4000000,4*1D'),
+  R(0, '21:13:00', '21:13:51', 'ais', 'vessel', 161.975, -41.0, '368165820', 'V.A. POINT FERMIN', ['23.9 kn', 'COG 201°'], { MMSI: '368165820', Name: 'V.A. POINT FERMIN', Type: 'High-speed craft (40)', SOG: '23.9 kn', COG: '201.4°', Heading: '199°' }, '!AIVDM,1,1,,A,15N2HV001RG?pj4E`F3B<Ov00@Ev,0*39'),
+  R(0, '21:13:40', null, 'ais', 'base-station', 162.025, -35.2, '3669139', '', ['Type 4', 'UTC 21:13:40'], { MMSI: '3669139', Message: 'Base station report (4)', UTC: '2026-10-30 21:13:40', EPFD: 'Surveyed' }, '!AIVDM,1,1,,B,4021tHAvJ2`b9o7aHFE<9Aw00S2w,0*1A'),
+  R(0, '21:13:22', null, 'ais', 'aid-to-navigation', 161.975, -47.9, '993692036', 'LB', ['Type 21', 'Fixed structure'], { MMSI: '993692036', Name: 'LB', 'AtoN type': 'Fixed structure' }, '!AIVDM,1,1,,A,E>jHC=1:W2h0000000000000000Opu=7Pv5@4000000,4*7B'),
+  R(0, '21:13:00', '21:13:55', 'ais', 'vessel', 162.025, -39.2, '367435980', 'KILLEEN', ['3.6 kn', 'COG 140°'], { ...KIL, SOG: '3.6 kn', COG: '140.0°' }, '!AIVDM,1,1,,B,15MwkT0P00G?rnfE`4QOwvN0R@2E,0*0B'),
+  R(0, '21:09:00', '21:09:57', 'adsb', 'aircraft', 1090.0, -9.8, 'A2B12D', 'UAL817', ['5,100 ft', '212 kt', 'TRK 255°'], { ICAO: 'A2B12D', Flight: 'UAL817', Squawk: '2215', Altitude: '5,100 ft', 'Ground speed': '212 kt', Track: '255°', 'Messages in row': '211' }, '*8DA2B12D58C382D690C8AC2863A7;\n*8DA2B12D99117F9A8838A5C3B9C6;'),
+  R(0, '21:09:00', '21:09:51', 'adsb', 'aircraft', 1090.0, -14.6, 'AA9A7A', 'SWA3162', ['33,125 ft', '462 kt', 'TRK 112°'], { ICAO: 'AA9A7A', Flight: 'SWA3162', Squawk: '3341', Altitude: '33,125 ft', 'Ground speed': '462 kt', Track: '112°' }, '*8DAA9A7A5867D1F2B4A79E1B3C2D;'),
+  R(0, '21:09:00', '21:09:44', 'adsb', 'aircraft', 1090.0, -7.1, 'A6B790', 'N53176', ['5,050 ft', '84 kt', 'SQK 5321'], { ICAO: 'A6B790', Flight: 'N53176', Squawk: '5321', Altitude: '5,050 ft', 'Ground speed': '84 kt' }, '*5DA6B7903F1A2C;\n*28000A3F1C2B9E;'),
+  R(0, '21:08:00', '21:08:59', 'adsb', 'aircraft', 1090.0, -10.2, 'A2B12D', 'UAL817', ['5,800 ft', '214 kt', 'TRK 255°'], { ICAO: 'A2B12D', Flight: 'UAL817', Altitude: '5,800 ft', 'Ground speed': '214 kt' }, '*8DA2B12D58C3B2D6F0C8AE2861F2;'),
+  R(0, '21:08:00', '21:08:10', 'adsb', 'aircraft', 1090.0, -6.3, 'A4F2C3', 'N4127P', ['2,400 ft', '96 kt', 'SQK 7700'], { ICAO: 'A4F2C3', Flight: 'N4127P', Squawk: '7700 (general emergency)', Altitude: '2,400 ft', 'Ground speed': '96 kt' }, '*28001B3FA4F2C3;', '7700 emergency'),
+  R(0, '21:08:00', '21:08:58', 'adsb', 'aircraft', 1090.0, -15.1, 'AA9A7A', 'SWA3162', ['32,925 ft', '462 kt'], { ICAO: 'AA9A7A', Flight: 'SWA3162', Altitude: '32,925 ft' }, '*8DAA9A7A5867B1F2B6A79E1B0C11;'),
+  R(0, '20:58:31', null, 'flex', 'page', 931.75, -52.3, '1234567', '', ['ALN', '[content not logged]'], { Capcode: '1234567', Type: 'ALN (alphanumeric)', Channel: '931.750 MHz · 1600/2', Content: '[content not logged]' }, 'FLEX|2026-10-30 20:58:31|1600/2/K/A|11.074|001234567|ALN|[content not logged]'),
+  R(0, '20:57:02', null, 'flex', 'page', 931.75, -55.0, '2345678', '', ['NUM', '[content not logged]'], { Capcode: '2345678', Type: 'NUM (numeric)', Content: '[content not logged]' }, 'FLEX|2026-10-30 20:57:02|1600/2/K/A|11.012|002345678|NUM|[content not logged]'),
+  R(0, '20:56:40', null, 'flex', 'page', 931.75, -52.8, '1234567', '', ['TON'], { Capcode: '1234567', Type: 'TON (tone only)' }, 'FLEX|2026-10-30 20:56:40|1600/2/K/A|11.010|001234567|TON|'),
+  R(0, '20:56:05', null, 'flex', 'page', 931.75, -54.1, '2345678', '', ['ALN', '[content not logged]'], { Capcode: '2345678', Type: 'ALN (alphanumeric)', Content: '[content not logged]' }, 'FLEX|2026-10-30 20:56:05|1600/2/K/A|11.001|002345678|ALN|[content not logged]'),
+  R(0, '20:53:12', null, 'vdl2', 'vdl2', 136.975, -41.2, 'N85370', 'OO5351', ['ACARS H1', 'blk 7'], { Registration: 'N85370', Flight: 'OO5351', 'ACARS label': 'H1', Block: '7', 'Msg no.': 'D06A' }, '[2026-10-30 20:53:12 UTC] [136.975 MHz] [-41.2/-63.0 dBFS] [21.8 dB]\nA85A45 (Aircraft, Airborne) -> 11A2E5 (Ground station): Command\nACARS: Reg: .N85370 Flight: OO5351\n Mode: 2 Label: H1 Blk id: 7 Ack: ! Msg no.: D06A'),
+  R(0, '20:51:20', null, 'vdl2', 'vdl2', 136.975, -43.5, 'N85370', 'OO5351', ['ACARS 5Z'], { Registration: 'N85370', Flight: 'OO5351', 'ACARS label': '5Z', Block: '6' }, '[2026-10-30 20:51:20 UTC] [136.975 MHz] [-43.5/-63.4 dBFS] [19.9 dB]\nACARS: Reg: .N85370 Flight: OO5351\n Mode: 2 Label: 5Z Blk id: 6'),
+  R(0, '20:49:00', '20:49:58', 'ais', 'vessel', 161.975, -40.4, '367435980', 'KILLEEN', ['3.7 kn', 'COG 141°'], { ...KIL, SOG: '3.7 kn' }, '!AIVDM,1,1,,A,15MwkT0P00G?rmnE`4KOwvN0R@1W,0*55'),
+  R(0, '20:39:00', '20:39:50', 'adsb', 'aircraft', 1090.0, -8.0, 'A6B790', 'N53176', ['4,950 ft', '84 kt', 'SQK 5321'], { ICAO: 'A6B790', Flight: 'N53176', Squawk: '5321', Altitude: '4,950 ft' }, '*5DA6B7903F1A2C;'),
+  R(0, '18:05:00', '18:05:09', 'eas', 'eas', 162.55, -61.0, 'KLOX/NWS', 'RWT · Required Weekly Test', ['WXR', 'FIPS 006037 +2', '+0015'], { Originator: 'WXR (National Weather Service)', Event: 'RWT (Required Weekly Test)', Locations: '006037 Los Angeles, 006059 Orange, 006111 Ventura', Duration: '15 min', Issued: 'day 303, 18:05 UTC', Sender: 'KLOX/NWS' }, 'ZCZC-WXR-RWT-006037-006059-006111+0015-3031805-KLOX/NWS-'),
+  R(0, '11:20:41', null, 'pocsag', 'page', 152.24, -57.2, '765432', '', ['Function 3', '[content not logged]'], { Capcode: '765432', Function: '3', Rate: '1200 baud', Content: '[content not logged]' }, 'POCSAG1200: Address:  765432  Function: 3  [content not logged]'),
+  R(0, '10:02:41', null, 'acars', 'acars', 131.55, -38.4, 'N85370', 'OO5351', ['Label Q0', 'link test'], { Registration: 'N85370', Flight: 'OO5351', Label: 'Q0 (link test)', Mode: '2' }, '[#1 (F:131.550 L:-38.4 E:0) 30/10/2026 10:02:41.112 --------------------------------\nMode : 2 Label : Q0 Id : 5 Nak\nAircraft reg: .N85370 Flight id: OO5351\nNo: S12A'),
+  R(-1, '19:44:00', '19:44:59', 'ais', 'vessel', 162.025, -42.8, '367435980', 'KILLEEN', ['4.1 kn', 'COG 322°'], { ...KIL, SOG: '4.1 kn', COG: '322.0°' }, '!AIVDM,1,1,,B,15MwkT0P00G?s0fE`3rOwvN0R@4K,0*22')
+];
+// What ran when (minutes of the day). Gaps are read from the events table.
+const ROT_DAY = [['acars', 10], ['pocsag', 10], ['eas', 5], ['ais', 10], ['adsb', 10]];
+const ROT_EVE = [['adsb', 10], ['ais', 10], ['vdl2', 5], ['flex', 5]];
+const GAPS = [
+  { a: 0, b: 390, kind: 'stopped', label: 'stopped' },
+  { a: 1200, b: 1230, kind: 'stopped', label: 'stopped' },
+  { a: 1244.5, b: 1245, kind: 'paused', label: 'paused 30 s · hackrf_transfer' },
+  { a: 1252.17, b: 1252.67, kind: 'error', label: 'error · dumpvdl2 exited' },
+  { a: 1264.2, b: 1264.2, kind: 'paused', label: 'paused 0 s · hackrf_info' },
+  { a: 702, b: 709, kind: 'error', label: 'error · AIS-catcher' },
+  { a: -1440, b: -1440 + 390, kind: 'stopped', label: 'stopped' },
+  { a: -4320, b: -2880 + 400, kind: 'stopped', label: 'stopped (maintenance)' }
+];
+function onAir(m) {
+  for (const g of GAPS) if (g.b > g.a && m >= g.a && m < g.b) return null;
+  const d = Math.floor(m / 1440), x = m - d * 1440;
+  if (x < 390) return null;
+  const evening = x >= 1230 || (d < 0 && x >= 720), rot = evening ? ROT_EVE : ROT_DAY;
+  const anchor = evening ? (x >= 1230 ? 1230 : 720) : 390;
+  const total = rot.reduce((a, r) => a + r[1], 0);
+  let pos = ((x - anchor) % total + total) % total, acc = 0;
+  for (const [p, len] of rot) { if (pos < acc + len) return p; acc += len; }
+  return null;
+}
+function noise(i) { const v = Math.sin(i * 12.9898) * 43758.5453; return v - Math.floor(v); }
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const blank = { range: '1h', subj: '', text: '', freq: '', off: {} };
+    this.blank = blank;
+    this.state = { form: { ...blank }, q: { ...blank }, sel: 7, bucket: null };
+  }
+  setForm(k, v) { this.setState({ form: { ...this.state.form, [k]: v } }); }
+  apply(extra) { const f = { ...this.state.form, ...(extra || {}) }; this.setState({ form: f, q: f, sel: null }); }
+  range(r) {
+    if (r === '15m') return [NOW - 15, NOW, 1];
+    if (r === 'today') return [0, NOW, 15];
+    if (r === '7d') return [NOW - 7 * 1440, NOW, 360];
+    return [NOW - 60, NOW, 1];
+  }
+  timeline(q) {
+    const [a, b, step] = this.range(q.range);
+    const n = Math.ceil((b - a) / step);
+    const totals = {};
+    const cols = [];
+    let max = 1;
+    for (let i = 0; i < n; i++) {
+      const c0 = a + i * step, per = {};
+      const sub = 1;
+      for (let m = c0; m < c0 + step && m < b; m += sub) {
+        const p = onAir(m);
+        if (!p || q.off[p]) continue;
+        const v = RP[p].rpm * sub * (0.6 + noise(Math.floor(m)) * 0.8);
+        per[p] = (per[p] || 0) + v;
+      }
+      const tot = Object.values(per).reduce((x, y) => x + y, 0);
+      max = Math.max(max, tot);
+      cols.push({ c0, per, tot });
+      for (const k in per) totals[k] = (totals[k] || 0) + per[k];
+    }
+    const bk = this.state.bucket;
+    const outCols = cols.map((c) => ({
+      cls: 'c' + (bk && bk[0] === c.c0 ? ' on' : ''),
+      aria: hm(c.c0) + ' — ' + Math.round(c.tot) + ' rows',
+      pick: () => this.setState({ bucket: bk && bk[0] === c.c0 ? null : [c.c0, c.c0 + step], sel: null }),
+      segs: REG.filter((r) => c.per[r.id]).map((r) => ({ color: r.color, h: (c.per[r.id] / max * 100).toFixed(2) }))
+    }));
+    let alt = 0;
+    const gaps = GAPS.filter((g) => g.b >= a && g.a <= b).map((g) => {
+      const l = (Math.max(g.a, a) - a) / (b - a) * 100, w = (Math.min(g.b, b) - Math.max(g.a, a)) / (b - a) * 100;
+      const thin = w < 0.35;
+      const show = w > 2 || (q.range === '1h' || q.range === '15m');
+      const row = show ? (alt++ % 2) : 0;
+      return { l: l.toFixed(3), w: Math.max(w, 0.15).toFixed(3), cls: 'gap ' + g.kind + (thin ? ' thin' : ''), label: g.label, show, lcls: 'gl' + (row ? ' r1' : '') };
+    });
+    const ticks = [];
+    const tstep = q.range === '15m' ? 5 : q.range === '1h' ? 15 : q.range === 'today' ? 180 : 1440;
+    for (let t = Math.ceil(a / tstep) * tstep; t <= b; t += tstep) {
+      const pct = (t - a) / (b - a) * 100;
+      if (pct > 2 && pct < 98) ticks.push({ pct: pct.toFixed(2), label: q.range === '7d' ? '10-' + pad(30 + Math.floor(t / 1440)) : hm(t) });
+    }
+    const legend = REG.filter((r) => totals[r.id]).map((r) => ({ name: r.name, color: r.color, n: Math.round(totals[r.id]).toLocaleString('en-US') }));
+    const title = (q.range === '7d' ? 'last 7 days · 6 h bars' : q.range === 'today' ? 'today · 15 min bars' : hm(a) + '–' + hm(b) + ' · 1 min bars');
+    return { cols: outCols, gaps, ticks, legend, title, aria: 'Stacked detections per profile, ' + title };
+  }
+  renderVals() {
+    const s = this.state, q = s.q, theme = this.props.theme ?? 'dark';
+    const [a, b] = this.range(q.range);
+    const subj = q.subj.trim().toLowerCase(), text = q.text.trim().toLowerCase(), fq = parseFloat(q.freq);
+    const list = ROWS.filter((r) => {
+      if (r.b < a || r.a > b) return false;
+      if (s.bucket && (r.b < s.bucket[0] || r.a >= s.bucket[1])) return false;
+      if (q.off[r.p]) return false;
+      if (subj && !(r.s.toLowerCase().includes(subj) || r.l.toLowerCase().includes(subj))) return false;
+      if (text && ![r.l, r.raw, ...r.sum, ...r.fields.map((x) => x.v)].join(' ').toLowerCase().includes(text)) return false;
+      if (!isNaN(fq) && Math.abs(r.f - fq) > 0.0125) return false;
+      return true;
+    });
+    const rows = list.map((r) => ({
+      cls: 'click' + (s.sel === r.id ? ' sel' : '') + (r.emerg ? ' emerg' : ''),
+      pick: () => this.setState({ sel: s.sel === r.id ? null : r.id }),
+      pickBtn: (e) => { e.stopPropagation(); this.setState({ sel: s.sel === r.id ? null : r.id }); },
+      color: RP[r.p].color, pname: RP[r.p].name, k: r.k,
+      start: hms(r.a), end: r.b > r.a ? hms(r.b).slice(-8) : '—', f: r.f.toFixed(3), db: r.db.toFixed(1),
+      s: r.s, l: r.l, emerg: r.emerg, aria: 'Open ' + r.s + ' ' + r.l + ' at ' + hms(r.a),
+      sumv: r.sum.map((v) => ({ v, cls: v === '[content not logged]' ? 'nc' : 't2' }))
+    }));
+    const selRow = ROWS.find((r) => r.id === s.sel && list.includes(r));
+    let d = {};
+    if (selRow) {
+      const pr = RP[selRow.p];
+      d = {
+        color: pr.color, pname: pr.name, k: selRow.k, s: selRow.s, l: selRow.l, emerg: selRow.emerg,
+        start: hms(selRow.a), end: hms(selRow.b), f: selRow.f.toFixed(3), db: selRow.db.toFixed(1),
+        fields: selRow.fields, raw: selRow.raw,
+        band: { id: pr.id, name: pr.name, center: pr.center, rate: pr.rate, color: pr.color, channels: pr.ch },
+        seed: selRow.id, marks: [{ t: 0.5, f: selRow.f, color: pr.color, label: selRow.s, active: true }],
+        times: [{ t: 0.08, label: '+30 s' }, { t: 0.5, label: hm(selRow.a) }, { t: 0.92, label: '−30 s' }],
+        thumbCap: pr.center.toFixed(3) + ' MHz ±' + (pr.rate / 2).toFixed(1) + ' MHz around ' + hms(selRow.a) + ' (±30 s). Ring marks this row.',
+        mapOk: selRow.p === 'adsb' || selRow.p === 'ais',
+        filterSubj: () => this.apply({ subj: selRow.s })
+      };
+    }
+    const chips = REG.map((r) => ({ name: r.name, color: r.color, on: q.off[r.id] ? 'false' : 'true', toggle: () => { const off = { ...q.off, [r.id]: !q.off[r.id] }; this.setState({ q: { ...q, off }, form: { ...s.form, off } }); } }));
+    const tl = this.timeline(q);
+    let emptyWhy = '', emptyCover = '';
+    if (!list.length) {
+      const parts = [];
+      if (subj) parts.push('subject “' + q.subj + '”');
+      if (text) parts.push('text “' + q.text + '”');
+      if (!isNaN(fq)) parts.push(fq.toFixed(3) + ' MHz');
+      emptyWhy = 'Nothing logged for ' + (parts.join(', ') || 'these filters') + ' between ' + hm(a) + ' and ' + hm(b) + '.';
+      if (q.range === '1h' || q.range === '15m') emptyCover = 'Coverage note: in this range ADS-B ran 20 of 60 minutes and AIS 14 (rotation), and the service was stopped 20:14–20:30. Absence of rows is not absence of signals.';
+    }
+    const fromTxt = q.range === '7d' ? '2026-10-23 21:14' : q.range === 'today' ? '2026-10-30 00:00' : '2026-10-30 ' + hm(a);
+    return {
+      themeCls: theme === 'light' ? 'light' : '', theme,
+      form: s.form, rangeFrom: fromTxt,
+      setRange: (e) => { const v = e.target.value; this.setState({ form: { ...s.form, range: v }, q: { ...q, range: v }, bucket: null, sel: null }); },
+      setSubj: (e) => this.setForm('subj', e.target.value),
+      setText: (e) => this.setForm('text', e.target.value),
+      setFreq: (e) => this.setForm('freq', e.target.value),
+      enter: (e) => { if (e.key === 'Enter') this.apply(); },
+      search: () => this.apply(),
+      reset: () => this.setState({ form: { ...this.blank }, q: { ...this.blank }, bucket: null, sel: null }),
+      widen: () => { this.setState({ bucket: null }); this.apply({ range: 'today' }); },
+      examples: [
+        { label: 'A2B12D', go: () => this.apply({ subj: 'A2B12D', text: '', freq: '' }) },
+        { label: '367435980', go: () => this.apply({ subj: '367435980', text: '', freq: '' }) },
+        { label: '1234567', go: () => this.apply({ subj: '1234567', text: '', freq: '', range: 'today' }) },
+        { label: 'OO5351', go: () => this.apply({ subj: 'OO5351', text: '', freq: '', range: 'today' }) },
+        { label: '931.750', go: () => this.apply({ subj: '', text: '', freq: '931.750', range: 'today' }) },
+        { label: 'ZZZ999 (empty result)', go: () => this.apply({ subj: 'ZZZ999', text: '', freq: '' }) }
+      ],
+      chips, tl,
+      bucketOn: !!s.bucket, bucketLabel: s.bucket ? 'Time ' + hm(s.bucket[0]) + '–' + hm(s.bucket[1]) : '',
+      clearBucket: () => this.setState({ bucket: null }),
+      gridCls: 'g-log' + (selRow ? '' : ' closed'),
+      countTxt: rows.length + ' rows (sample)',
+      hasRows: rows.length > 0, noRows: rows.length === 0, rows, emptyWhy, emptyCover,
+      hasSel: !!selRow, d, closeSel: () => this.setState({ sel: null })
+    };
+  }
+}
+</script>
+</body>
+</html>

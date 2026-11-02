@@ -53,6 +53,10 @@ test('the colour scale follows the noise floor', () => {
   for (let i = 0; i < 100; i++) lvl.update(new Float32Array(512).fill(-56));
   assert.ok(Math.abs(lvl.lo - -62) < 0.5);
   assert.ok(Math.abs(lvl.hi - -12) < 0.5);
+  const hot = new AutoLevel(50, 6);
+  hot.update(new Float32Array(512).fill(-30));
+  assert.equal(hot.hi, 0);  // never above full scale
+  assert.equal(hot.lo, -36);
   const lut = makeLut();
   assert.equal(lut.length, 768);
   assert.deepEqual(Array.from(lut.slice(0, 3)), [5, 8, 15]);

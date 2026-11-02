@@ -3,22 +3,152 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hackrf-live</title>
-<link rel="stylesheet" href="/static/login.css">
+<meta name="color-scheme" content="dark">
+<title>Live · hackrf-live</title>
+<link rel="stylesheet" href="/static/hl.css">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/js/live.js"></script>
 </head>
 <body>
-<main>
-  <h1>hackrf-live</h1>
-  <p>Signed in. The Live, Log and Map screens are the next milestones; the API is ready:</p>
-  <ul>
-    <li><a href="/api/registry">/api/registry</a></li>
-    <li><a href="/api/status">/api/status</a></li>
-    <li><a href="/api/log?since=1h&amp;limit=50">/api/log</a></li>
-    <li><a href="/api/events?since=1d">/api/events</a></li>
-    <li><a href="/api/spectrum/segments?since=1h">/api/spectrum/segments</a></li>
-    <li><a href="/api/positions?since=10m">/api/positions</a></li>
-  </ul>
-  <form method="post" action="/auth/logout"><button type="submit">Sign out</button></form>
-</main>
+<div class="hl page">
+  <div class="abwrap">
+    <header class="appbar">
+      <a class="brand" href="/">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <span>hackrf-live</span>
+        <small>home station</small>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/" aria-current="page">Live</a>
+        <a aria-disabled="true" title="Coming in a later milestone">Map</a>
+        <a aria-disabled="true" title="Coming in a later milestone">Log</a>
+        <a aria-disabled="true" title="Coming in a later milestone">History</a>
+        <a aria-disabled="true" title="Coming in a later milestone">Summaries</a>
+      </nav>
+      <div class="ab-r">
+        <span class="chip st st-idle" id="ab-state" role="status"><span class="dot"></span><span id="ab-state-text">Connecting…</span></span>
+        <span class="chip" id="ab-prof" hidden><span class="sw"></span><span class="mono" id="ab-prof-text"></span></span>
+        <span class="chip mono" id="ab-clock" aria-label="Station clock, UTC">--:--:-- UTC</span>
+        <form method="post" action="/auth/logout"><button type="submit" class="btn sm ghost">Sign out</button></form>
+      </div>
+    </header>
+  </div>
+  <main class="main">
+    <section class="panel" id="unreach" aria-label="Service not reachable" hidden>
+      <div class="unreach">
+        <svg class="ico" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"></rect><rect x="9" y="9" width="6" height="6" rx="1"></rect></svg>
+        <b id="unreach-title">The hackrf-live service is not running</b>
+        <span class="why t2" id="unreach-why"></span>
+        <span class="mono muted" id="unreach-retry"></span>
+      </div>
+    </section>
+    <div class="banner" id="banner" role="status" hidden>
+      <span class="bi" id="banner-icon"></span>
+      <div class="bt"><b id="banner-title"></b><span class="t2" id="banner-sub"></span><span class="errtxt" id="banner-err" hidden></span></div>
+      <span class="bar" id="banner-bar" hidden></span>
+    </div>
+    <section class="panel ctl" id="ctl" aria-label="Radio control">
+      <div class="ctl-top">
+        <div class="ctl-prof" id="ctl-prof">
+          <span class="cap">Profile</span>
+          <span class="row"><span class="pbadge lg" id="cur-name">—</span><span class="t2" id="cur-desc">Nothing running</span></span>
+        </div>
+        <dl class="tune" aria-label="Tuning">
+          <div><dt>Center</dt><dd><span id="t-center">—</span> <small>MHz</small></dd></div>
+          <div><dt>Sample rate</dt><dd><span id="t-rate">—</span> <small>MS/s</small></dd></div>
+          <div><dt>LNA</dt><dd><span id="t-lna">—</span> <small>dB</small></dd></div>
+          <div><dt>VGA</dt><dd><span id="t-vga">—</span> <small>dB</small></dd></div>
+          <div><dt>Amp</dt><dd id="t-amp">—</dd></div>
+        </dl>
+        <div class="ctl-act">
+          <label class="sr" for="pick">Profile to start</label>
+          <select id="pick" class="inp"></select>
+          <label class="sr" for="pick-freqs">Channels in MHz</label>
+          <input id="pick-freqs" class="inp mono freqs" placeholder="channels, MHz: 931.75" hidden>
+          <button type="button" class="btn" id="btn-start">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5 L19 12 L7 19 Z"></path></svg><span id="btn-start-text">Start</span>
+          </button>
+          <button type="button" class="btn danger" id="btn-stop">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"></rect></svg>Stop
+          </button>
+        </div>
+      </div>
+      <details class="ctl-adv">
+        <summary>Gains</summary>
+        <label for="g-lna">LNA</label><select id="g-lna" class="inp mono"></select>
+        <label for="g-vga">VGA</label><select id="g-vga" class="inp mono"></select>
+        <label class="check"><input type="checkbox" id="g-amp">RF amp (+11 dB)</label>
+        <span>Empty uses the profile's own gains.</span>
+      </details>
+      <div class="ctl-err" id="ctl-err" role="alert" hidden></div>
+      <div class="ctl-rot">
+        <div class="row wr">
+          <span class="cap">Rotation</span>
+          <span class="t2" id="rot-text">—</span>
+          <span class="ctl-note" id="rot-note" hidden>Starting a single profile replaces the rotation.</span>
+          <span class="sp"></span>
+          <button type="button" class="btn sm" id="btn-rot">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20 h4 L19 9 l-4 -4 L4 16 Z"></path></svg>Edit rotation
+          </button>
+        </div>
+        <div class="rot" id="rot" role="img" aria-label="Rotation"></div>
+        <div class="rotx" id="rotx" aria-hidden="true"></div>
+      </div>
+    </section>
+    <div class="g-live">
+      <section class="panel" aria-label="Spectrum and waterfall">
+        <div class="ph">
+          <span class="pbadge" id="wf-name">—</span>
+          <span class="mono t2" id="wf-band">no samples yet</span>
+          <span class="row wr" id="wf-chans"></span>
+          <span class="sp"></span>
+          <button type="button" class="btn sm" id="btn-peak" aria-pressed="true">Peak hold</button>
+          <button type="button" class="btn sm" id="btn-wfmode" aria-pressed="true" title="Draw each row's peak (shows short bursts) or its mean">Peaks</button>
+          <span class="row legend-db" title="Waterfall palette, levelled to the noise floor"><span class="mono muted" id="wf-lo">−</span><span class="lut"></span><span class="mono muted" id="wf-hi">− dBFS</span></span>
+        </div>
+        <div id="wf"></div>
+      </section>
+      <section class="panel feedp" aria-label="Live decoded feed">
+        <div class="ph">
+          <h2>Decoded feed</h2>
+          <span class="mono muted" id="feed-rate">— msg/min</span>
+          <span class="sp"></span>
+          <button type="button" class="btn sm" id="btn-hold" aria-pressed="false">Pause feed</button>
+        </div>
+        <div class="feedf" id="feed-chips" role="group" aria-label="Show profiles"></div>
+        <div class="feed" id="feed" aria-live="off"></div>
+      </section>
+    </div>
+    <section class="panel" aria-label="Health">
+      <div class="health" id="health"></div>
+    </section>
+  </main>
+  <div class="backdrop" id="rot-backdrop" hidden></div>
+  <aside class="drawer" id="rot-drawer" aria-label="Edit rotation" hidden>
+    <div class="ph">
+      <h2>Edit rotation</h2>
+      <span class="sp"></span>
+      <button type="button" class="btn sm icon" id="rot-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg>
+      </button>
+    </div>
+    <div class="db">
+      <p class="t2">Profiles run in this order and repeat. A capture from any hackrf_* tool pauses the current step; the rotation clock keeps running. Saving starts the new rotation at its first step.</p>
+      <div class="col" id="rot-steps"></div>
+      <button type="button" class="btn sm" id="rot-add">+ Add step</button>
+      <div class="col">
+        <span class="cap" id="rot-total">Preview</span>
+        <div class="rot" id="rot-preview"></div>
+        <div class="legend" id="rot-share"></div>
+      </div>
+      <div class="ctl-err" id="rot-err" role="alert" hidden></div>
+    </div>
+    <div class="pf">
+      <span class="sp"></span>
+      <button type="button" class="btn" id="rot-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="rot-save">Save rotation</button>
+    </div>
+  </aside>
+</div>
 </body>
 </html>

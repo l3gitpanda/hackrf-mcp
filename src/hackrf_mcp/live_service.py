@@ -592,6 +592,17 @@ class LiveService:
                 "state": state,
                 "profile": self.running_spec.profile if self.running_spec else None,
                 "tuning": self.tuning.describe() if self.tuning else None,
+                "tuning_detail": None
+                if self.tuning is None
+                else {
+                    "profile": self.tuning.profile.name,
+                    "center_hz": self.tuning.center_hz,
+                    "sample_rate_hz": self.tuning.sample_rate_hz,
+                    "freqs_hz": list(self.tuning.freqs_hz),
+                    "lna_gain_db": self.tuning.lna_gain_db,
+                    "vga_gain_db": self.tuning.vga_gain_db,
+                    "amp": self.tuning.amp,
+                },
                 "running_since": self.running_since,
                 "desired": desired,
                 "target": target.profile if target else None,

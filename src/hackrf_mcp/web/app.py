@@ -217,6 +217,9 @@ class Gate:
                 h += SECURITY_HEADERS
                 if path.startswith("/api/"):
                     h.append((b"cache-control", b"no-store"))
+                elif path == "/" or path.startswith("/static/") or path == "/login":
+                    # Revalidate every time, so a deploy reaches browsers at once.
+                    h.append((b"cache-control", b"no-cache"))
                 message = {**message, "headers": h}
             await send(message)
 

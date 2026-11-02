@@ -64,6 +64,7 @@ def test_start_switch_and_stop(svc):
     assert r["ok"] and r["state"] == "running" and r["profile"] == "adsb"
     r = svc.handle({"cmd": "start", "profile": "flex", "freqs_hz": [931_750_000]})
     assert r["profile"] == "flex"
+    assert r["tuning_detail"]["freqs_hz"] == [931_750_000] and r["tuning_detail"]["sample_rate_hz"] > 0
     assert svc.pipes[0].stopped and svc.pipes[1].running
     r = svc.handle({"cmd": "stop"})
     assert r["state"] == "idle" and svc.pipes[1].stopped

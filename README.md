@@ -322,9 +322,14 @@ strongest bins, to check a recording against a known signal.
 ## Web UI
 
 `hackrf-web` (`python -m hackrf_mcp.web`, [`deploy/hackrf-web.service`](deploy/hackrf-web.service))
-is the backend of a browser UI for live decoding; the screens are being
-built milestone by milestone ([TODO.md](TODO.md)). It never opens the
-HackRF. It reads the live log and the spectrum history, relays the live
+serves a browser UI for live decoding; the screens are being built
+milestone by milestone ([TODO.md](TODO.md)). The **Live** screen shows the
+running profile and its tuning, a waterfall and spectrum of its band
+(levelled to the noise floor, with peak hold, prefilled from the spectrum
+history), the decoded feed with per-profile filters, the rotation and an
+editor for it, start, switch and stop, and a health strip (input rate and
+power, channel levels, messages a minute, CPU and memory of both services,
+log and spectrum sizes). It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,
 switches and stops profiles over the control socket, as the MCP tools do.
@@ -350,6 +355,12 @@ on read, in the API and on the websocket, unless `HACKRF_MCP_PAGER_CONTENT`
 is on, even from rows logged while it was. Protocol modules say how their
 rows are shown (`views` on `Profile`; a table and a timeline when they
 declare none), so a new decoder appears without changes to the UI.
+
+The UI is plain ES modules and CSS in `src/hackrf_mcp/web/static/` (no
+build step, nothing loaded from other sites). To work on it without a
+HackRF, `uv run python tools/webui_demo.py` runs the real service, feed,
+log, spectrum history and backend on simulated samples with made-up rows,
+and prints a sign-in token for `http://127.0.0.1:18766/`.
 
 ## Adding a decoder
 

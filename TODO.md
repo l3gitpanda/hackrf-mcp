@@ -84,7 +84,8 @@ after the owner approves.
    Port 8766 behind ufw (source IPs to confirm with the owner), its own token
    (digest), the browser exchanging it once for an HttpOnly SameSite=Strict
    cookie; websockets check the Origin.
-5. **Live screen**, 6. **Log screen**, 7. **Map** (Leaflet over
+5. **Live screen** (done: `web/static/`, checked in headless Chromium
+   against `tools/webui_demo.py`), 6. **Log screen**, 7. **Map** (Leaflet over
    `positions`; tar1090 is GPL and live-ADS-B-only, so at most a link),
    then History, Summaries, Alerts and Plugins.
 

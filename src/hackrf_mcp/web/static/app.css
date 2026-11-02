@@ -1,0 +1,49 @@
+/* hackrf-web: the Live screen. Shared tokens and components are in hl.css
+   (from design/hackrf-live-mockup); these are the screen's own, from the
+   mockup's Live artboard, plus what the real controls need. Colour is data:
+   --pc is a profile's colour. No inline styles anywhere (the CSP forbids
+   them); scripts set custom properties through the CSSOM. */
+body{margin:0;background:#0a0e13}
+[hidden]{display:none !important}
+.ctl{display:flex;flex-direction:column}
+.ctl-top{display:flex;align-items:center;gap:12px 22px;padding:10px 12px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.ctl-prof{display:flex;flex-direction:column;gap:4px;min-width:200px}
+.tune{display:flex;gap:4px 18px;margin:0;flex-wrap:wrap}
+.tune div{display:flex;flex-direction:column;gap:2px}
+.tune dt{font-size:11px;color:var(--muted)}
+.tune dd{margin:0;font-family:var(--mono);font-size:14px;font-weight:500;white-space:nowrap}
+.tune dd small{font-size:11px;color:var(--muted);font-weight:400}
+.ctl-act{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
+.ctl-act{min-width:0;max-width:100%}
+.ctl-act .inp{width:auto;max-width:100%;min-width:0}
+.ctl-act select.inp{width:min(26em,100%)}
+.ctl-act .freqs{width:12em}
+.ctl-adv{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 12px 10px;color:var(--muted);font-size:12px}
+.ctl-adv .inp{width:5.5em}
+.ctl-rot{padding:8px 12px 6px;display:flex;flex-direction:column;gap:6px}
+.ctl-note{color:var(--warn);font-size:12px}
+.ctl-err{color:var(--bad);font-size:12.5px;padding:0 12px 8px}
+.chl{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11.5px;color:var(--text2)}
+.feedf{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.steprow{display:grid;grid-template-columns:22px minmax(0,1fr) 100px auto;gap:8px;align-items:center}
+.steprow .freqs{grid-column:2 / span 2}
+.nav a[aria-disabled="true"]{color:var(--muted);cursor:not-allowed;opacity:.6}
+.nav a[aria-disabled="true"]:hover{background:transparent}
+.ab-r form{margin:0}
+.wfp{--g:62px}
+.wfp .plot canvas{display:block;width:100%;height:100%}
+.wfp .spec{height:120px}
+.wfp .wf{height:440px}
+.wfp .gut{position:relative}
+.unreach{display:flex;flex-direction:column;align-items:center;gap:12px;padding:72px 24px;text-align:center}
+.unreach .why{max-width:560px}
+.unreach .ico{color:var(--muted)}
+.hc .sub2{color:var(--muted);font-size:12px}
+.feedp .feed{flex:1 1 0}
+.fiw .acts{display:flex;gap:6px;flex-wrap:wrap}
+.legend-db{font-size:11px}
+.spark{height:26px;width:100%}
+@container (max-width:900px){
+  .wfp .wf{height:300px}
+  .ctl-act{margin-left:0}
+}

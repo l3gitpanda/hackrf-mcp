@@ -117,6 +117,8 @@ def test_everything_but_sign_in_needs_a_token(env):
     assert "script-src 'self'" in r.headers["Content-Security-Policy"]
     assert r.headers["X-Frame-Options"] == "DENY"
     assert c.get("/static/login.css").status_code == 200
+    assert c.get("/static/login.css").headers["cache-control"] == "no-cache"
+    assert c.get("/api/registry", headers=BEARER).headers["cache-control"] == "no-store"
     assert c.get("/static/index.html").status_code == 303  # the rest of /static needs sign-in
     assert c.get("/api/registry", headers={"Authorization": "Bearer wrong-token-wrong-token"}).status_code == 401
     assert c.get("/api/registry", headers=BEARER).status_code == 200

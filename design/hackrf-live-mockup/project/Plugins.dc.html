@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plugins</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.vw{display:inline-flex;gap:4px;flex-wrap:wrap}
+.vw span{font-size:10.5px;font-family:var(--mono);padding:1px 6px;border-radius:3px;border:1px solid var(--line2);color:var(--text)}
+.vw span.off{color:var(--muted);border-style:dashed;text-decoration:line-through;opacity:.7}
+.ok{color:var(--ok)}
+.miss{color:var(--bad)}
+tr.isnew td{background:color-mix(in oklab,var(--pc) 12%,var(--panel))}
+.where{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:12px}
+.mini{border:1px solid var(--line);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:var(--panel2);min-width:0}
+.mini h3{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.opt{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:4px;font-size:12.5px}
+.opt.isnew{background:color-mix(in oklab,var(--pc) 16%,transparent)}
+.tchip.on{background:color-mix(in oklab,var(--pc) 13%,var(--panel));border-color:color-mix(in oklab,var(--pc) 50%,transparent);color:var(--text);cursor:default}
+.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;color:var(--text2)}
+.steps b{color:var(--text)}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <dc-import name="AppBar" active="plugins" state="running" profile-text="AIS · 162.000 MHz" profile-color="#3fd0c0" theme="{{theme}}" hint-size="100%,53px" style="width: 100%"></dc-import>
+  <main class="main">
+    <section class="panel" aria-label="Try it">
+      <div class="ph">
+        <h2>Try it</h2>
+        <span class="t2">Simulate a plugin landing in <span class="mono">plugins/</span> and watch the UI pick it up.</span>
+        <span class="sp"></span>
+        <button type="button" class="btn" onClick="{{toggleIsm}}" aria-pressed="{{ismStr}}">{{ismBtn}}</button>
+        <button type="button" class="btn" onClick="{{togglePanel}}" aria-pressed="{{panelStr}}">{{panelBtn}}</button>
+      </div>
+      <div class="pb">
+        <div class="where">
+          <div class="mini">
+            <h3>Live · Switch to profile</h3>
+            <sc-for list="{{profiles}}" as="p"><div class="{{p.optCls}}" style="--pc: {{p.color}}"><span class="sw"></span><span>{{p.name}}</span><sc-if value="{{p.missing}}"><span class="muted" style="font-size: 11.5px">missing {{p.prog}}</span></sc-if><sc-if value="{{p.isNew}}"><span class="tag new">new</span></sc-if></div></sc-for>
+          </div>
+          <div class="mini">
+            <h3>Live feed · Log facets · timeline legend</h3>
+            <div class="row wr" style="gap: 6px">
+              <sc-for list="{{profiles}}" as="p"><span class="tchip on" style="--pc: {{p.color}}"><span class="sw"></span>{{p.name}}<sc-if value="{{p.isNew}}"><span class="tag new">new</span></sc-if></span></sc-for>
+            </div>
+            <span class="muted" style="font-size: 12px">Colour comes from the manifest, or the next free palette slot (ism433 gets slot 9, sand).</span>
+          </div>
+          <div class="mini">
+            <h3>Map · layers</h3>
+            <sc-for list="{{layers}}" as="l"><div class="opt" style="--pc: {{l.color}}"><span class="sw"></span>{{l.label}}<span class="muted" style="font-size: 11.5px">{{l.from}}</span></div></sc-for>
+            <sc-if value="{{ism}}"><span class="muted" style="font-size: 12px">ism433 declares no “map” view, so no layer is added.</span></sc-if>
+          </div>
+          <div class="mini">
+            <h3>Alerts · fields</h3>
+            <sc-for list="{{alertFields}}" as="f"><div class="{{f.cls}}" style="--pc: {{f.color}}"><span class="sw"></span><span class="mono">{{f.id}}</span><span class="muted" style="font-size: 11.5px">{{f.from}}</span></div></sc-for>
+          </div>
+          <sc-if value="{{ism}}">
+            <div class="mini" style="--pc: #c8b08a">
+              <h3>Summaries · generic card (no code)</h3>
+              <div class="row"><span class="pbadge">ISM433</span><span style="font-weight: 600">Sensors heard today</span><span class="tag new">new</span></div>
+              <table class="tbl">
+                <thead><tr><th>Subject</th><th>Label</th><th class="r">Rows</th><th>Last</th></tr></thead>
+                <tbody>
+                  <tr><td class="mono">Acurite-Tower:11021</td><td>Acurite-Tower</td><td class="mono r">0</td><td class="mono muted">not run yet</td></tr>
+                </tbody>
+              </table>
+              <span class="muted" style="font-size: 12px">Built from subject, label and row counts every profile has. Shows an empty state until the profile has run.</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{panel}}">
+            <div class="mini" style="--pc: #5cb8ff">
+              <h3>Summaries · panel slot</h3>
+              <div class="row"><span class="pbadge">ADS-B</span><span style="font-weight: 600">Squawk board · last hour</span><span class="tag new">new</span></div>
+              <table class="tbl">
+                <thead><tr><th>Squawk</th><th>Callsign</th><th>Meaning</th></tr></thead>
+                <tbody>
+                  <tr class="emerg"><td class="mono">7700</td><td class="mono">N4127P</td><td>General emergency</td></tr>
+                  <tr><td class="mono">5321</td><td class="mono">N53176</td><td class="muted">—</td></tr>
+                  <tr><td class="mono">3341</td><td class="mono">SWA3162</td><td class="muted">—</td></tr>
+                  <tr><td class="mono">2215</td><td class="mono">UAL817</td><td class="muted">—</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Decoders and profiles">
+      <div class="ph"><h2>Decoders and profiles</h2><span class="mono muted">{{decCount}} installed · {{missCount}} missing a program</span><span class="sp"></span><button type="button" class="btn sm">Re-scan plugins</button></div>
+      <div class="tscroll">
+        <table class="tbl">
+          <thead><tr><th>Profile</th><th>Program</th><th>Status</th><th>Tuning</th><th>Kinds</th><th>Views</th><th>Colour</th></tr></thead>
+          <tbody>
+            <sc-for list="{{profiles}}" as="p">
+              <tr class="{{p.rowCls}}" style="--pc: {{p.color}}">
+                <td><span class="row" style="gap: 8px"><span class="pbadge">{{p.name}}</span><span class="t2">{{p.desc}}</span><sc-if value="{{p.isNew}}"><span class="tag new">new</span></sc-if></span></td>
+                <td class="mono">{{p.prog}} <span class="muted">{{p.ver}}</span></td>
+                <td>
+                  <sc-if value="{{p.missing}}"><span class="miss">● missing program</span> <span class="muted mono" style="font-size: 11.5px">{{p.fix}}</span></sc-if>
+                  <sc-if value="{{p.ready}}"><span class="ok">● installed</span></sc-if>
+                </td>
+                <td class="mono t2">{{p.tune}}</td>
+                <td class="kind">{{p.kinds}}</td>
+                <td><span class="vw"><sc-for list="{{p.views}}" as="v"><span class="{{v.cls}}">{{v.id}}</span></sc-for></span></td>
+                <td><span class="row" style="gap: 6px"><span class="sw"></span><span class="mono muted" style="font-size: 11.5px">{{p.color}} · {{p.colorSrc}}</span></span></td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Panels">
+      <div class="ph"><h2>Panels</h2><span class="mono muted">{{panels.length}} installed</span></div>
+      <div class="tscroll">
+        <table class="tbl">
+          <thead><tr><th>Panel</th><th>Slot</th><th>Data it asks for</th><th>Renderer</th></tr></thead>
+          <tbody>
+            <sc-for list="{{panels}}" as="p">
+              <tr class="{{p.cls}}" style="--pc: #8a96a6">
+                <td style="font-weight: 600">{{p.title}} <sc-if value="{{p.isNew}}"><span class="tag new">new</span></sc-if></td>
+                <td class="mono">{{p.slot}}</td>
+                <td class="mono t2">{{p.query}}</td>
+                <td class="mono">{{p.render}}</td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="g-2">
+      <section class="panel" aria-label="Decoder manifest">
+        <div class="ph"><h2>Decoder manifest</h2><span class="mono muted">plugins/ism433/plugin.toml</span></div>
+        <div class="pb"><pre class="raw">[decoder]
+id       = "ism433"
+name     = "ISM433"
+program  = "rtl_433"
+args     = ["-r", "cs8:-", "-F", "json", "-M", "level"]
+color    = "auto"            # next free palette slot
+
+[tuning]
+center_mhz = 433.62          # LO offset keeps 433.92 off the DC spike
+rate_msps  = 2.0
+channels   = [{ f = 433.92, label = "433.92", emission = "burst" }]
+
+[record]
+kinds   = ["sensor"]
+subject = "{model}:{id}"
+label   = "model"
+level   = "rssi"
+fields  = { temperature_C = "°C", humidity = "%", battery_ok = "bool" }
+
+[views]
+supports = ["table", "timeline", "waterfall"]   # no "map": no map layer</pre></div>
+      </section>
+      <section class="panel" aria-label="How plugins slot in">
+        <div class="ph"><h2>How a decoder or panel slots in</h2></div>
+        <div class="pb col" style="gap: 12px">
+          <ol class="steps">
+            <li><b>Manifest, not code.</b> A decoder declares its program, tuning, the kinds it emits, which field is the subject and which the label, typed fields and the views it supports.</li>
+            <li><b>One registry.</b> The service loads manifests and serves them at <span class="mono">/api/registry</span>. Every screen renders pickers, filters, legends, layers and alert fields from it.</li>
+            <li><b>Generic first.</b> A new kind gets the generic row (subject, label, fields table, raw text), a feed item, timeline counts and a summary card without any UI work.</li>
+            <li><b>Views are opt-in.</b> Only kinds with a position and <span class="mono">"map"</span> get a map layer; the waterfall uses the channel’s emission hint.</li>
+            <li><b>Panels fill slots.</b> A panel names a slot and a query; screens render whatever is registered for their slots.</li>
+          </ol>
+          <pre class="raw"># plugins/squawk-board/panel.toml
+[panel]
+id     = "squawk-board"
+title  = "Squawk board"
+slot   = "summaries.card"   # live.health · map.side · log.drawer · summaries.card
+query  = { kinds = ["aircraft"], fields = ["squawk", "callsign"], window = "1h" }
+render = "table"            # table · list · stat · sparkline</pre>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1480}}'>
+const ALL = ['map', 'table', 'waterfall', 'timeline'];
+const REG = [
+  { id: 'adsb', name: 'ADS-B', desc: 'Aircraft', prog: 'readsb', ver: '3.14.1', tune: '1090.000 MHz · 2.4 MS/s', kinds: 'aircraft', views: ALL, color: '#5cb8ff', fields: ['icao', 'callsign', 'squawk', 'altitude'] },
+  { id: 'ais', name: 'AIS', desc: 'Ships and navigation aids', prog: 'AIS-catcher', ver: '0.61', tune: '162.000 MHz · 2.0 MS/s', kinds: 'vessel, base-station, aid-to-navigation', views: ALL, color: '#3fd0c0', fields: ['mmsi', 'name', 'ship_type'] },
+  { id: 'acars', name: 'ACARS', desc: 'Aircraft datalink', prog: 'acarsdec', ver: '3.7', tune: '130.400 MHz · 3.0 MS/s', kinds: 'acars', views: ['table', 'waterfall', 'timeline'], color: '#a98bff', fields: ['registration', 'label'] },
+  { id: 'vdl2', name: 'VDL2', desc: 'Aircraft datalink', prog: 'dumpvdl2', ver: '2.4.0', tune: '136.800 MHz · 2.0 MS/s', kinds: 'vdl2', views: ['table', 'waterfall', 'timeline'], color: '#e483d6', fields: ['registration', 'label'] },
+  { id: 'flex', name: 'FLEX', desc: 'Pagers · metadata only', prog: 'multimon-ng', ver: '1.3.1', tune: '931.500 MHz · 2.0 MS/s', kinds: 'page', views: ['table', 'waterfall', 'timeline'], color: '#8fd46a', fields: ['capcode', 'page_type'] },
+  { id: 'pocsag', name: 'POCSAG', desc: 'Pagers · metadata only', prog: 'multimon-ng', ver: '1.3.1', tune: '152.100 MHz · 2.0 MS/s', kinds: 'page', views: ['table', 'waterfall', 'timeline'], color: '#d8d65a', fields: ['capcode', 'function'] },
+  { id: 'aprs', name: 'APRS', desc: 'Amateur packet radio', prog: 'direwolf', ver: '', tune: '144.290 MHz · 2.0 MS/s', kinds: 'aprs', views: ALL, color: '#ff9d5c', missing: true, fix: 'not in PATH · apt install direwolf', fields: ['callsign', 'symbol'] },
+  { id: 'eas', name: 'EAS', desc: 'NOAA weather alert headers', prog: 'multimon-ng', ver: '1.3.1', tune: '162.300 MHz · 2.0 MS/s', kinds: 'eas', views: ['table', 'timeline'], color: '#ff6474', fields: ['event', 'location'] }
+];
+const ISM = { id: 'ism433', name: 'ISM433', desc: 'Weather and tyre sensors', prog: 'rtl_433', ver: '23.11', tune: '433.620 MHz · 2.0 MS/s', kinds: 'sensor', views: ['table', 'waterfall', 'timeline'], color: '#c8b08a', auto: true, isNew: true, fields: ['model', 'temperature_C', 'humidity', 'battery_ok'] };
+const PANELS = [
+  { title: 'Aircraft range plot', slot: 'map.side', query: 'kinds=[aircraft] fields=[position, rssi] window=24h', render: 'polar' },
+  { title: 'Pager capcode activity', slot: 'summaries.card', query: 'kinds=[page] fields=[capcode, type] window=today', render: 'table' },
+  { title: 'AIS channel balance', slot: 'live.health', query: 'profiles=[ais] fields=[channel, level] window=10m', render: 'stat' },
+  { title: 'EAS header decoder', slot: 'log.drawer', query: 'kinds=[eas] fields=[raw]', render: 'list' }
+];
+const SQB = { title: 'Squawk board', slot: 'summaries.card', query: 'kinds=[aircraft] fields=[squawk, callsign] window=1h', render: 'table', isNew: true };
+
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { ism: false, panel: false }; }
+  renderVals() {
+    const s = this.state, theme = this.props.theme ?? 'dark';
+    const list = s.ism ? [...REG, ISM] : REG;
+    const profiles = list.map((p) => ({
+      ...p, missing: !!p.missing, ready: !p.missing, isNew: !!p.isNew,
+      rowCls: p.isNew ? 'isnew' : '', optCls: 'opt' + (p.isNew ? ' isnew' : ''),
+      colorSrc: p.auto ? 'auto, slot 9' : 'manifest',
+      views: ALL.map((v) => ({ id: v, cls: p.views.includes(v) ? '' : 'off' })),
+      fix: p.fix || '', ver: p.ver || ''
+    }));
+    const layers = [
+      { label: 'Aircraft', from: 'ADS-B · aircraft', color: '#5cb8ff' },
+      { label: 'Ships', from: 'AIS · vessel', color: '#3fd0c0' },
+      { label: 'Aids to navigation', from: 'AIS · aid-to-navigation', color: '#3fd0c0' },
+      { label: 'Base stations', from: 'AIS · base-station', color: '#3fd0c0' },
+      { label: 'APRS stations', from: 'APRS · waiting for direwolf', color: '#ff9d5c' }
+    ];
+    const alertFields = [];
+    list.forEach((p) => p.fields.forEach((f) => { if (alertFields.length < 9 || p.isNew) alertFields.push({ id: f, from: p.name, color: p.color, cls: 'opt' + (p.isNew ? ' isnew' : '') }); }));
+    const panels = (s.panel ? [...PANELS, SQB] : PANELS).map((p) => ({ ...p, isNew: !!p.isNew, cls: p.isNew ? 'isnew' : '' }));
+    return {
+      themeCls: theme === 'light' ? 'light' : '', theme,
+      ism: s.ism, panel: s.panel,
+      ismStr: s.ism ? 'true' : 'false', panelStr: s.panel ? 'true' : 'false',
+      ismBtn: s.ism ? 'Remove ism433 decoder' : 'Simulate: install ism433 decoder (rtl_433)',
+      panelBtn: s.panel ? 'Remove Squawk board panel' : 'Simulate: add Squawk board panel',
+      toggleIsm: () => this.setState({ ism: !s.ism }), togglePanel: () => this.setState({ panel: !s.panel }),
+      profiles, layers, alertFields: alertFields.slice(-12), panels,
+      decCount: list.length, missCount: list.filter((p) => p.missing).length
+    };
+  }
+}
+</script>
+</body>
+</html>

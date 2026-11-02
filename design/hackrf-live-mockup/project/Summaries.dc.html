@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Summaries</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.cov{display:flex;height:22px;border-radius:4px;overflow:hidden;border:1px solid var(--line)}
+.cov span{display:block;height:100%;background:var(--pc);min-width:1px}
+.cov span.gapx{--gc:var(--idle);background:repeating-linear-gradient(135deg,color-mix(in oklab,var(--gc) 35%,transparent) 0 3px,transparent 3px 6px)}
+.cov span.gapx.paused{--gc:var(--warn)}
+.cov span.gapx.error{--gc:var(--bad)}
+.cardh{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.cardh .big{font-size:26px}
+.rr{display:grid;grid-template-columns:96px minmax(0,1fr) 150px;gap:12px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line)}
+.rr:last-child{border-bottom:0}
+.rr svg{display:block;width:100%;height:36px}
+.rr .tot{font-family:var(--mono);font-size:12px;text-align:right;color:var(--text2);white-space:nowrap}
+.rr .tot small{display:block;color:var(--muted);font-size:11px}
+.hx{position:relative;height:16px;margin:0 174px 8px 120px;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.hx span{position:absolute;transform:translateX(-50%)}
+@container (max-width:800px){.rr{grid-template-columns:72px minmax(0,1fr)}.rr .tot{grid-column:2;text-align:left}.hx{margin:0 12px 8px 96px}}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <dc-import name="AppBar" active="summaries" state="running" profile-text="AIS · 162.000 MHz" profile-color="#3fd0c0" theme="{{theme}}" hint-size="100%,53px" style="width: 100%"></dc-import>
+  <main class="main">
+    <section class="panel" aria-label="Coverage today">
+      <div class="ph">
+        <h2>Coverage today</h2>
+        <span class="mono muted">00:00–21:14 UTC</span>
+        <span class="sp"></span>
+        <div class="legend">
+          <sc-for list="{{covLegend}}" as="l"><span style="--pc: {{l.color}}"><span class="sw"></span>{{l.name}} <span class="mono muted">{{l.dur}}</span></span></sc-for>
+          <span><i class="hatch"></i>stopped <span class="mono muted">7 h 0 m</span></span>
+          <span><i class="hatch paused"></i>paused <span class="mono muted">30 s</span></span>
+          <span><i class="hatch error"></i>error <span class="mono muted">8 m</span></span>
+        </div>
+      </div>
+      <div class="pb col" style="gap: 6px">
+        <div class="cov" role="img" aria-label="Which profile ran when today">
+          <sc-for list="{{cov}}" as="c"><span class="{{c.cls}}" style="width: {{c.w}}%; --pc: {{c.color}}" title="{{c.title}}"></span></sc-for>
+        </div>
+        <div class="rotx"><sc-for list="{{hours}}" as="h"><span style="left: {{h.pct}}%">{{h.label}}</span></sc-for></div>
+        <span class="muted" style="font-size: 12px">Counts below only cover the time a profile was on the air. One radio, one profile at a time.</span>
+      </div>
+    </section>
+
+    <div class="g-cards">
+      <section class="panel" aria-label="Aircraft in the last hour" style="--pc: #5cb8ff">
+        <div class="ph"><span class="pbadge">ADS-B</span><h2>Aircraft · last hour</h2><span class="sp"></span><a class="btn sm" href="Map.dc.html">Map</a></div>
+        <div class="pb col" style="gap: 10px">
+          <div class="cardh"><span class="big">4</span><span class="t2">aircraft · ADS-B was on air 20 of 60 min</span></div>
+          <div class="tscroll">
+            <table class="tbl">
+              <thead><tr><th>Callsign</th><th>ICAO</th><th class="r">Alt ft</th><th class="r">kt</th><th>Squawk</th><th>Last</th></tr></thead>
+              <tbody>
+                <tr class="emerg"><td class="mono" style="font-weight: 600">N4127P</td><td class="mono">A4F2C3</td><td class="mono r">2,400</td><td class="mono r">96</td><td><span class="tag bad">7700</span></td><td class="mono">21:08:10</td></tr>
+                <tr><td class="mono" style="font-weight: 600">UAL817</td><td class="mono">A2B12D</td><td class="mono r">5,100</td><td class="mono r">212</td><td class="mono">2215</td><td class="mono">21:09:57</td></tr>
+                <tr><td class="mono" style="font-weight: 600">SWA3162</td><td class="mono">AA9A7A</td><td class="mono r">33,125</td><td class="mono r">462</td><td class="mono">3341</td><td class="mono">21:09:51</td></tr>
+                <tr><td class="mono" style="font-weight: 600">N53176</td><td class="mono">A6B790</td><td class="mono r">5,050</td><td class="mono r">84</td><td class="mono">5321</td><td class="mono">21:09:44</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Ships today" style="--pc: #3fd0c0">
+        <div class="ph"><span class="pbadge">AIS</span><h2>Ships today</h2><span class="sp"></span><a class="btn sm" href="Map.dc.html">Map</a></div>
+        <div class="pb col" style="gap: 10px">
+          <div class="cardh"><span class="big">2</span><span class="t2">vessels · plus 2 aids to navigation, 1 base station</span></div>
+          <div class="tscroll">
+            <table class="tbl">
+              <thead><tr><th>Name</th><th>MMSI</th><th>Type</th><th class="r">kn</th><th>Last</th></tr></thead>
+              <tbody>
+                <tr><td style="font-weight: 600">KILLEEN</td><td class="mono">367435980</td><td>Tug</td><td class="mono r">3.7</td><td class="mono">21:14:02</td></tr>
+                <tr><td style="font-weight: 600">V.A. POINT FERMIN</td><td class="mono">368165820</td><td>High-speed craft</td><td class="mono r">23.9</td><td class="mono">21:13:51</td></tr>
+                <tr><td style="font-weight: 600">LONG BEACH LT</td><td class="mono">993692211</td><td class="kind">aid to navigation</td><td class="mono r">—</td><td class="mono">21:13:58</td></tr>
+                <tr><td style="font-weight: 600">LB</td><td class="mono">993692036</td><td class="kind">aid to navigation</td><td class="mono r">—</td><td class="mono">21:13:22</td></tr>
+                <tr><td class="muted">—</td><td class="mono">3669139</td><td class="kind">base station</td><td class="mono r">—</td><td class="mono">21:13:40</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Active pager capcodes">
+        <div class="ph"><h2>Active pager capcodes</h2><span class="tag">metadata only</span><span class="sp"></span><a class="btn sm" href="Log.dc.html">Log</a></div>
+        <div class="pb col" style="gap: 10px">
+          <div class="cardh"><span class="big">3</span><span class="t2">most active capcodes today · FLEX and POCSAG</span></div>
+          <div class="tscroll">
+            <table class="tbl">
+              <thead><tr><th>Capcode</th><th>Profile</th><th>Types</th><th>Channel</th><th class="r">Pages</th><th>Last</th></tr></thead>
+              <tbody>
+                <tr style="--pc: #8fd46a"><td class="mono" style="font-weight: 600">1234567</td><td><span class="pbadge">FLEX</span></td><td class="mono">ALN 2 · TON 1</td><td class="mono">931.750</td><td class="mono r">3</td><td class="mono">20:58:31</td></tr>
+                <tr style="--pc: #8fd46a"><td class="mono" style="font-weight: 600">2345678</td><td><span class="pbadge">FLEX</span></td><td class="mono">NUM 1 · ALN 1</td><td class="mono">931.750</td><td class="mono r">2</td><td class="mono">20:57:02</td></tr>
+                <tr style="--pc: #d8d65a"><td class="mono" style="font-weight: 600">765432</td><td><span class="pbadge">POCSAG</span></td><td class="mono">func 3</td><td class="mono">152.240</td><td class="mono r">1</td><td class="mono">11:20:41</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <span class="muted" style="font-size: 12px">Rows keep capcode, type, time and channel. Message text is never stored and shows as <span class="nc">[content not logged]</span>.</span>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="ACARS and VDL2 flights">
+        <div class="ph"><h2>ACARS / VDL2 flights · today</h2><span class="sp"></span><a class="btn sm" href="Log.dc.html">Log</a></div>
+        <div class="pb col" style="gap: 10px">
+          <div class="cardh"><span class="big">1</span><span class="t2">flight · 4 messages</span></div>
+          <div class="tscroll">
+            <table class="tbl">
+              <thead><tr><th>Flight</th><th>Reg</th><th>Via</th><th>Labels</th><th class="r">Msgs</th><th>Last</th></tr></thead>
+              <tbody>
+                <tr><td class="mono" style="font-weight: 600">OO5351</td><td class="mono">N85370</td><td style="--pc: #e483d6"><span class="pbadge">VDL2</span> <span class="mono">136.975</span></td><td class="mono">H1 · 5Z</td><td class="mono r">2</td><td class="mono">20:53:12</td></tr>
+                <tr><td class="mono" style="font-weight: 600">OO5351</td><td class="mono">N85370</td><td style="--pc: #a98bff"><span class="pbadge">ACARS</span> <span class="mono">131.550</span></td><td class="mono">Q0</td><td class="mono r">1</td><td class="mono">10:02:41</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="EAS alerts" style="--pc: #ff6474">
+        <div class="ph"><span class="pbadge">EAS</span><h2>Weather alert headers · today</h2><span class="sp"></span><a class="btn sm" href="Alerts.dc.html">Rules</a></div>
+        <div class="pb col" style="gap: 10px">
+          <div class="cardh"><span class="big">1</span><span class="t2">header · no warnings for watched counties</span></div>
+          <div class="col" style="gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 5px">
+            <div class="row wr"><span class="mono">18:05:00</span><span style="font-weight: 600">RWT · Required Weekly Test</span><span class="tag">test</span></div>
+            <span class="t2" style="font-size: 12.5px">NWS Los Angeles/Oxnard (KLOX) on 162.550 · Los Angeles, Orange and Ventura counties · 15 min</span>
+            <pre class="raw">ZCZC-WXR-RWT-006037-006059-006111+0015-3031805-KLOX/NWS-</pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="APRS" style="--pc: #ff9d5c">
+        <div class="ph"><span class="pbadge">APRS</span><h2>Stations heard</h2></div>
+        <div class="pb">
+          <div class="empty">
+            <b>Not heard today</b>
+            <span>APRS isn’t in any rotation: its decoder program (direwolf) is missing.</span>
+            <a class="btn sm" href="Plugins.dc.html">Open Plugins</a>
+          </div>
+        </div>
+      </section>
+
+      <sc-for list="{{panelCards}}" as="c">
+        <section class="panel" aria-label="{{c.title}}" style="--pc: {{c.color}}">
+          <div class="ph"><span class="pbadge">{{c.badge}}</span><h2>{{c.title}}</h2><span class="tag">panel plugin</span></div>
+          <div class="pb col" style="gap: 8px">
+            <span class="t2">{{c.body}}</span>
+          </div>
+        </section>
+      </sc-for>
+    </div>
+
+    <section class="panel" aria-label="Message rate per profile over 24 hours">
+      <div class="ph"><h2>Message rate per profile · last 24 h</h2><span class="sp"></span><span class="muted" style="font-size: 12px">area = messages per 15 min · strip below = time on air</span></div>
+      <div>
+        <sc-for list="{{rates}}" as="r">
+          <div class="rr" style="--pc: {{r.color}}">
+            <span class="row" style="gap: 6px"><span class="pbadge">{{r.name}}</span></span>
+            <svg viewBox="0 0 1274 36" preserveAspectRatio="none" role="img" aria-label="{{r.aria}}">
+              <path d="{{r.area}}" fill="{{r.color}}" fill-opacity="0.35" stroke="{{r.color}}" stroke-width="1.2" vector-effect="non-scaling-stroke"></path>
+              <sc-for list="{{r.on}}" as="o"><rect x="{{o.x}}" y="31" width="{{o.w}}" height="4" fill="{{r.color}}"></rect></sc-for>
+              <path d="M0,35.5 H1274" stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"></path>
+            </svg>
+            <span class="tot">{{r.total}}<small>{{r.sub}}</small></span>
+          </div>
+        </sc-for>
+      </div>
+      <div class="hx"><sc-for list="{{hours}}" as="h"><span style="left: {{h.pct}}%">{{h.label}}</span></sc-for></div>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"extraPanels":{"editor":null},"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1240}}'>
+// Every row and colour below comes from the registry; a new decoder adds a row automatically.
+const REG = [
+  { id: 'adsb', name: 'ADS-B', color: '#5cb8ff', rpm: 24 },
+  { id: 'ais', name: 'AIS', color: '#3fd0c0', rpm: 11 },
+  { id: 'acars', name: 'ACARS', color: '#a98bff', rpm: 5 },
+  { id: 'vdl2', name: 'VDL2', color: '#e483d6', rpm: 5 },
+  { id: 'flex', name: 'FLEX', color: '#8fd46a', rpm: 14 },
+  { id: 'pocsag', name: 'POCSAG', color: '#d8d65a', rpm: 8 },
+  { id: 'aprs', name: 'APRS', color: '#ff9d5c', rpm: 0 },
+  { id: 'eas', name: 'EAS', color: '#ff6474', rpm: 0.02 }
+];
+const NOW = 21 * 60 + 14;
+const ROT_DAY = [['acars', 10], ['pocsag', 10], ['eas', 5], ['ais', 10], ['adsb', 10]];
+const ROT_EVE = [['adsb', 10], ['ais', 10], ['vdl2', 5], ['flex', 5]];
+const GAPS = [
+  { a: 0, b: 390, kind: '', label: 'stopped' },
+  { a: 702, b: 709, kind: 'error', label: 'error · AIS-catcher' },
+  { a: 1200, b: 1230, kind: '', label: 'stopped' },
+  { a: 1244.5, b: 1245, kind: 'paused', label: 'paused · hackrf_transfer' },
+  { a: 1252.17, b: 1252.67, kind: 'error', label: 'error · dumpvdl2' }
+];
+function onAir(m) {
+  for (const g of GAPS) if (m >= g.a && m < g.b) return null;
+  const evening = m >= 1230, rot = evening ? ROT_EVE : ROT_DAY, anchor = evening ? 1230 : 390;
+  const total = rot.reduce((a, r) => a + r[1], 0);
+  let pos = (m - anchor) % total, acc = 0;
+  for (const [p, len] of rot) { if (pos < acc + len) return p; acc += len; }
+  return null;
+}
+function noise(i) { const v = Math.sin(i * 12.9898 + 4.1) * 43758.5453; return v - Math.floor(v); }
+const pad = (n) => String(n).padStart(2, '0');
+const dur = (m) => (m >= 60 ? Math.floor(m / 60) + ' h ' : '') + Math.round(m % 60) + ' m';
+const RP = Object.fromEntries(REG.map((r) => [r.id, r]));
+
+class Component extends DCLogic {
+  renderVals() {
+    const theme = this.props.theme ?? 'dark';
+    if (!this._calc) {
+      // coverage runs
+      const runs = [];
+      let cur = null;
+      for (let m = 0; m < NOW; m++) {
+        const g = GAPS.find((x) => m >= x.a && m < x.b);
+        const key = g ? 'gap:' + g.kind : onAir(m);
+        if (!cur || cur.key !== key) { cur = { key, a: m, b: m + 1, g }; runs.push(cur); } else cur.b = m + 1;
+      }
+      const onMin = {};
+      runs.forEach((r) => { if (!r.key.startsWith('gap')) onMin[r.key] = (onMin[r.key] || 0) + (r.b - r.a); });
+      const cov = runs.map((r) => r.key.startsWith('gap')
+        ? { cls: 'gapx ' + r.g.kind, w: ((r.b - r.a) / NOW * 100).toFixed(3), color: '#8a96a6', title: r.g.label + ' ' + pad(Math.floor(r.a / 60)) + ':' + pad(r.a % 60) }
+        : { cls: '', w: ((r.b - r.a) / NOW * 100).toFixed(3), color: RP[r.key].color, title: RP[r.key].name });
+      const rates = REG.map((p) => {
+        const B = 15, n = Math.ceil(NOW / B), vals = [];
+        let total = 0;
+        for (let i = 0; i < n; i++) {
+          let v = 0;
+          for (let m = i * B; m < Math.min(NOW, (i + 1) * B); m++) if (onAir(m) === p.id) v += p.rpm * (0.6 + noise(m) * 0.8);
+          vals.push(v); total += v;
+        }
+        const max = Math.max(1, ...vals);
+        let area = 'M0,30';
+        vals.forEach((v, i) => { const y = (30 - v / max * 28).toFixed(1); area += ' L' + (i * B) + ',' + y + ' L' + Math.min(NOW, (i + 1) * B) + ',' + y; });
+        area += ' L' + NOW + ',30 Z';
+        const on = runs.filter((r) => r.key === p.id).map((r) => ({ x: r.a, w: r.b - r.a }));
+        const peak = Math.max(...vals) / B;
+        return {
+          name: p.name, color: p.color, area, on,
+          total: total ? Math.round(total).toLocaleString('en-US') + ' msgs' : '—',
+          sub: on.length ? dur(onMin[p.id] || 0) + ' on air · peak ' + peak.toFixed(1) + '/min' : 'not run today',
+          aria: p.name + ': ' + (total ? Math.round(total) + ' messages today' : 'not run today')
+        };
+      });
+      const covLegend = REG.filter((p) => onMin[p.id]).map((p) => ({ name: p.name, color: p.color, dur: dur(onMin[p.id]) }));
+      this._calc = { cov, rates, covLegend };
+    }
+    const hours = [];
+    for (let h = 0; h <= 21; h += 3) hours.push({ pct: (h * 60 / NOW * 100).toFixed(2), label: pad(h) + ':00' });
+    return {
+      themeCls: theme === 'light' ? 'light' : '', theme,
+      ...this._calc, hours,
+      panelCards: (this.props.extraPanels || [])
+    };
+  }
+}
+</script>
+</body>
+</html>

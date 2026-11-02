@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Alerts</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./hl.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;background:#0a0e13}
+.rule{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 12px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line)}
+.rule.on{background:color-mix(in oklab,var(--text) 6%,var(--panel))}
+.rule .nm{appearance:none;background:none;border:0;padding:0;font:inherit;font-weight:600;color:var(--text);text-align:left;cursor:pointer;font-size:13.5px}
+.rule .nm:hover{text-decoration:underline}
+.rule .cond{grid-column:2;font-family:var(--mono);font-size:12px;color:var(--text2);overflow-wrap:anywhere}
+.rule .meta{grid-column:2 / span 2;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--muted)}
+.rule .hits{text-align:right;font-family:var(--mono);font-size:12px;color:var(--text2);white-space:nowrap}
+.condrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+.ed{display:flex;flex-direction:column;gap:14px}
+</style>
+</helmet>
+<div class="hl page {{themeCls}}">
+  <dc-import name="AppBar" active="alerts" state="running" profile-text="AIS · 162.000 MHz" profile-color="#3fd0c0" theme="{{theme}}" hint-size="100%,53px" style="width: 100%"></dc-import>
+  <main class="main">
+    <div class="g-alert">
+      <div class="col" style="gap: 12px">
+        <section class="panel" aria-label="Rules">
+          <div class="ph"><h2>Rules</h2><span class="mono muted">{{rules.length}}</span><span class="sp"></span><button type="button" class="btn sm" onClick="{{newRule}}">+ New rule</button></div>
+          <sc-for list="{{rules}}" as="r">
+            <div class="{{r.cls}}">
+              <input type="checkbox" class="switch" checked="{{r.on}}" onChange="{{r.toggle}}" aria-label="{{r.aria}}">
+              <button type="button" class="nm" onClick="{{r.pick}}">{{r.name}}</button>
+              <span class="hits">{{r.hits}} hits · 24 h</span>
+              <span class="cond">{{r.cond}}</span>
+              <span class="meta">
+                <span class="row" style="gap: 4px"><sc-for list="{{r.badges}}" as="b"><span class="pbadge" style="--pc: {{b.color}}">{{b.name}}</span></sc-for></span>
+                <span>{{r.actions}}</span>
+                <span>last hit {{r.last}}</span>
+              </span>
+            </div>
+          </sc-for>
+        </section>
+
+        <section class="panel" aria-label="Hit history">
+          <div class="ph"><h2>Hit history</h2><span class="mono muted">{{newCount}} new</span><span class="sp"></span><button type="button" class="btn sm" onClick="{{ackAll}}" disabled="{{noneNew}}">Acknowledge all</button></div>
+          <div class="tscroll">
+            <table class="tbl">
+              <thead><tr><th>Time</th><th>Rule</th><th>Profile</th><th>Subject</th><th>Label</th><th>Detail</th><th>State</th></tr></thead>
+              <tbody>
+                <sc-for list="{{hits}}" as="h">
+                  <tr class="{{h.cls}}" style="--pc: {{h.color}}">
+                    <td class="mono">{{h.t}}</td>
+                    <td>{{h.rule}}</td>
+                    <td><span class="pbadge">{{h.pname}}</span></td>
+                    <td class="mono">{{h.s}}</td>
+                    <td style="font-weight: 600">{{h.l}}</td>
+                    <td class="t2">{{h.d}}</td>
+                    <td>
+                      <sc-if value="{{h.isNew}}"><button type="button" class="btn sm" onClick="{{h.ack}}">Acknowledge</button></sc-if>
+                      <sc-if value="{{h.isAck}}"><span class="muted">acknowledged</span></sc-if>
+                    </td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel" aria-label="Rule editor" style="position: sticky; top: 12px">
+        <div class="ph"><h2>{{edTitle}}</h2><span class="sp"></span><sc-if value="{{ed.exists}}"><button type="button" class="btn sm ghost danger" onClick="{{delRule}}">Delete</button></sc-if></div>
+        <div class="pb ed">
+          <div class="fld">
+            <label for="rname">Name</label>
+            <input id="rname" class="inp" value="{{ed.name}}" onInput="{{setName}}">
+          </div>
+          <div class="fld">
+            <span class="lb">Applies to profiles</span>
+            <div class="row wr" style="gap: 6px" role="group" aria-label="Profiles">
+              <sc-for list="{{profChips}}" as="c"><button type="button" class="tchip" style="--pc: {{c.color}}" aria-pressed="{{c.on}}" onClick="{{c.toggle}}"><span class="sw"></span>{{c.name}}</button></sc-for>
+            </div>
+          </div>
+          <div class="col" style="gap: 8px">
+            <span class="cap">When</span>
+            <div class="condrow">
+              <div class="fld">
+                <label for="rfield">Field</label>
+                <select id="rfield" class="inp" value="{{ed.field}}" onChange="{{setField}}">
+                  <sc-for list="{{fields}}" as="f"><option value="{{f.id}}">{{f.label}}</option></sc-for>
+                </select>
+              </div>
+              <div class="fld">
+                <label for="rop">Operator</label>
+                <select id="rop" class="inp" value="{{ed.op}}" onChange="{{setOp}}">
+                  <option value="any">is any of</option>
+                  <option value="eq">equals</option>
+                  <option value="re">matches pattern</option>
+                  <option value="gt">is greater than</option>
+                  <option value="lt">is less than</option>
+                </select>
+              </div>
+            </div>
+            <div class="fld">
+              <label for="rvals">Values (one per line or comma separated)</label>
+              <textarea id="rvals" class="inp mono" value="{{ed.vals}}" onInput="{{setVals}}"></textarea>
+            </div>
+            <sc-if value="{{ed.extra}}"><div class="row wr"><span class="tag">and</span><span class="mono t2">{{ed.extra}}</span></div></sc-if>
+            <span class="muted" style="font-size: 12px">Fields come from each profile’s manifest. {{fieldNote}}</span>
+          </div>
+          <div class="col" style="gap: 4px">
+            <span class="cap">Then</span>
+            <label class="check"><input type="checkbox" checked="{{ed.act.ui}}" onChange="{{tUi}}">Highlight in the UI (banner, map, feed)</label>
+            <label class="check"><input type="checkbox" checked="{{ed.act.desktop}}" onChange="{{tDesk}}">Desktop notification</label>
+            <label class="check"><input type="checkbox" checked="{{ed.act.webhook}}" onChange="{{tHook}}">Webhook</label>
+            <sc-if value="{{ed.act.webhook}}"><input class="inp mono" aria-label="Webhook URL" placeholder="https://ntfy.example/hackrf" value="{{ed.hook}}" onInput="{{setHook}}"></sc-if>
+            <div class="row" style="margin-top: 4px"><label for="cool" class="muted" style="font-size: 12px">Repeat for the same subject at most every</label><select id="cool" class="inp" style="width: auto" value="{{ed.cool}}" onChange="{{setCool}}"><option value="0">every hit</option><option value="10">10 min</option><option value="60">1 hour</option></select></div>
+          </div>
+          <div class="col" style="gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 5px">
+            <span class="cap">Preview · last 7 days</span>
+            <span><b class="mono">{{preview.n}}</b> matching rows</span>
+            <sc-for list="{{preview.rows}}" as="p"><span class="mono t2" style="font-size: 12px">{{p}}</span></sc-for>
+          </div>
+          <div class="row" style="justify-content: flex-end">
+            <button type="button" class="btn" onClick="{{revert}}">Revert</button>
+            <button type="button" class="btn primary" onClick="{{save}}">Save rule</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1080}}'>
+// Profiles and their alertable fields come from plugin manifests via the registry.
+const REG = [
+  { id: 'adsb', name: 'ADS-B', color: '#5cb8ff', fields: ['icao', 'callsign', 'squawk', 'altitude', 'speed'] },
+  { id: 'ais', name: 'AIS', color: '#3fd0c0', fields: ['mmsi', 'name', 'ship_type', 'speed', 'nav_status'] },
+  { id: 'acars', name: 'ACARS', color: '#a98bff', fields: ['registration', 'callsign', 'label'] },
+  { id: 'vdl2', name: 'VDL2', color: '#e483d6', fields: ['registration', 'callsign', 'label'] },
+  { id: 'flex', name: 'FLEX', color: '#8fd46a', fields: ['capcode', 'page_type'] },
+  { id: 'pocsag', name: 'POCSAG', color: '#d8d65a', fields: ['capcode', 'function'] },
+  { id: 'aprs', name: 'APRS', color: '#ff9d5c', fields: ['callsign', 'symbol'] },
+  { id: 'eas', name: 'EAS', color: '#ff6474', fields: ['event', 'originator', 'location'] }
+];
+const RP = Object.fromEntries(REG.map((r) => [r.id, r]));
+const FLABEL = { icao: 'ICAO address', callsign: 'Callsign / flight', squawk: 'Squawk', altitude: 'Altitude (ft)', speed: 'Speed', mmsi: 'MMSI', name: 'Name', ship_type: 'Ship type', nav_status: 'Nav status', registration: 'Registration', label: 'ACARS label', capcode: 'Capcode', page_type: 'Page type', function: 'Function', symbol: 'Symbol', event: 'Event code', originator: 'Originator', location: 'Location (FIPS)' };
+const OPS = { any: 'in', eq: '=', re: '~', gt: '>', lt: '<' };
+// Sample of logged rows the preview evaluates against.
+const SAMPLE = [
+  { t: '21:14:02', p: 'ais', f: { mmsi: '367435980', name: 'KILLEEN', speed: '3.7' } },
+  { t: '21:13:51', p: 'ais', f: { mmsi: '368165820', name: 'V.A. POINT FERMIN', speed: '23.9' } },
+  { t: '21:09:57', p: 'adsb', f: { icao: 'A2B12D', callsign: 'UAL817', squawk: '2215', altitude: '5100' } },
+  { t: '21:09:51', p: 'adsb', f: { icao: 'AA9A7A', callsign: 'SWA3162', squawk: '3341', altitude: '33125' } },
+  { t: '21:09:44', p: 'adsb', f: { icao: 'A6B790', callsign: 'N53176', squawk: '5321', altitude: '5050' } },
+  { t: '21:08:10', p: 'adsb', f: { icao: 'A4F2C3', callsign: 'N4127P', squawk: '7700', altitude: '2400' } },
+  { t: '20:58:31', p: 'flex', f: { capcode: '1234567', page_type: 'ALN' } },
+  { t: '20:57:02', p: 'flex', f: { capcode: '2345678', page_type: 'NUM' } },
+  { t: '20:53:12', p: 'vdl2', f: { registration: 'N85370', callsign: 'OO5351', label: 'H1' } },
+  { t: '18:05:00', p: 'eas', f: { event: 'RWT', originator: 'WXR', location: '006037 006059 006111' } },
+  { t: '10-28 06:12:44', p: 'adsb', f: { icao: 'A2B12D', callsign: 'UAL817', squawk: '1203', altitude: '11000' } }
+];
+const RULES0 = [
+  { id: 1, name: 'Emergency squawk', profiles: ['adsb'], field: 'squawk', op: 'any', vals: '7500, 7600, 7700', act: { ui: true, desktop: true, webhook: false }, cool: '0', on: true, hits: 1, last: '21:08:10' },
+  { id: 2, name: 'Harbor watchlist', profiles: ['ais'], field: 'mmsi', op: 'any', vals: '367435980\n368165820', act: { ui: true, desktop: false, webhook: false }, cool: '60', on: true, hits: 6, last: '21:14:02' },
+  { id: 3, name: 'Callsign watch', profiles: ['adsb', 'vdl2', 'acars'], field: 'callsign', op: 'any', vals: 'UAL817\nOO5351', act: { ui: true, desktop: false, webhook: true }, hook: 'https://ntfy.example/hackrf', cool: '60', on: true, hits: 3, last: '21:09:57' },
+  { id: 4, name: 'Severe weather — Los Angeles County', profiles: ['eas'], field: 'event', op: 'any', vals: 'TOR, SVR, FFW, TSW', extra: 'location includes 006037', act: { ui: true, desktop: true, webhook: true }, hook: 'https://ntfy.example/hackrf', cool: '0', on: true, hits: 0, last: '—' },
+  { id: 5, name: 'Capcode activity (metadata only)', profiles: ['flex', 'pocsag'], field: 'capcode', op: 'any', vals: '1234567', act: { ui: true, desktop: false, webhook: false }, cool: '10', on: false, hits: 3, last: '20:58:31' }
+];
+const HITS0 = [
+  { id: 1, t: '21:14:02', rule: 'Harbor watchlist', p: 'ais', s: '367435980', l: 'KILLEEN', d: '3.7 kn · COG 141°', st: 'new' },
+  { id: 2, t: '21:13:51', rule: 'Harbor watchlist', p: 'ais', s: '368165820', l: 'V.A. POINT FERMIN', d: '23.9 kn · COG 201°', st: 'ack' },
+  { id: 3, t: '21:09:57', rule: 'Callsign watch', p: 'adsb', s: 'A2B12D', l: 'UAL817', d: '5,100 ft · 212 kt', st: 'ack' },
+  { id: 4, t: '21:08:10', rule: 'Emergency squawk', p: 'adsb', s: 'A4F2C3', l: 'N4127P', d: 'squawk 7700 · 2,400 ft · 96 kt', st: 'new', emerg: true },
+  { id: 5, t: '20:58:31', rule: 'Capcode activity (metadata only)', p: 'flex', s: '1234567', l: '', d: 'ALN · [content not logged]', st: 'ack' },
+  { id: 6, t: '20:53:12', rule: 'Callsign watch', p: 'vdl2', s: 'N85370', l: 'OO5351', d: 'ACARS H1 · 136.975', st: 'ack' }
+];
+function splitVals(v) { return String(v || '').split(/[\s,]+/).map((x) => x.trim()).filter(Boolean); }
+function matches(rule, row) {
+  if (!rule.profiles.includes(row.p)) return false;
+  const v = row.f[rule.field];
+  if (v == null) return false;
+  const vals = splitVals(rule.vals);
+  if (rule.op === 'any' || rule.op === 'eq') return vals.some((x) => x.toLowerCase() === String(v).toLowerCase());
+  if (rule.op === 're') { try { return vals.some((x) => new RegExp(x, 'i').test(v)); } catch (e) { return false; } }
+  if (rule.op === 'gt') return Number(v) > Number(vals[0]);
+  if (rule.op === 'lt') return Number(v) < Number(vals[0]);
+  return false;
+}
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { rules: RULES0, hits: HITS0, sel: 1, ed: { ...RULES0[0] }, nextId: 6 };
+  }
+  setEd(k, v) { this.setState({ ed: { ...this.state.ed, [k]: v } }); }
+  setAct(k) { const ed = this.state.ed; this.setState({ ed: { ...ed, act: { ...ed.act, [k]: !ed.act[k] } } }); }
+  renderVals() {
+    const s = this.state, ed = s.ed, theme = this.props.theme ?? 'dark';
+    const actTxt = (a) => [a.ui && 'highlight', a.desktop && 'desktop', a.webhook && 'webhook'].filter(Boolean).join(' · ') || 'log only';
+    const rules = s.rules.map((r) => ({
+      name: r.name, hits: r.hits, last: r.last, on: r.on,
+      cls: 'rule' + (s.sel === r.id ? ' on' : ''),
+      aria: 'Enable ' + r.name,
+      cond: (FLABEL[r.field] || r.field).toLowerCase() + ' ' + OPS[r.op] + ' [' + splitVals(r.vals).join(', ') + ']' + (r.extra ? ' and ' + r.extra : ''),
+      badges: r.profiles.map((p) => ({ name: RP[p].name, color: RP[p].color })),
+      actions: actTxt(r.act),
+      toggle: () => this.setState({ rules: s.rules.map((x) => (x.id === r.id ? { ...x, on: !x.on } : x)) }),
+      pick: () => this.setState({ sel: r.id, ed: { ...r } })
+    }));
+    const fieldIds = [];
+    ed.profiles.forEach((p) => RP[p].fields.forEach((f) => { if (!fieldIds.includes(f)) fieldIds.push(f); }));
+    const fields = fieldIds.map((f) => {
+      const inP = ed.profiles.filter((p) => RP[p].fields.includes(f));
+      return { id: f, label: (FLABEL[f] || f) + (inP.length < ed.profiles.length ? ' (' + inP.map((p) => RP[p].name).join(', ') + ' only)' : '') };
+    });
+    const pagerOnly = ed.profiles.length > 0 && ed.profiles.every((p) => p === 'flex' || p === 'pocsag');
+    const m = SAMPLE.filter((row) => matches(ed, row));
+    const hits = s.hits.map((h) => ({
+      ...h, pname: RP[h.p].name, color: RP[h.p].color, isNew: h.st === 'new', isAck: h.st !== 'new',
+      cls: (h.emerg ? 'emerg' : ''), d: h.d,
+      ack: () => this.setState({ hits: s.hits.map((x) => (x.id === h.id ? { ...x, st: 'ack' } : x)) })
+    }));
+    const newCount = s.hits.filter((h) => h.st === 'new').length;
+    return {
+      themeCls: theme === 'light' ? 'light' : '', theme,
+      rules, hits, newCount, noneNew: newCount === 0,
+      ackAll: () => this.setState({ hits: s.hits.map((x) => ({ ...x, st: 'ack' })) }),
+      newRule: () => { const r = { id: s.nextId, name: 'New rule', profiles: ['ais'], field: 'mmsi', op: 'any', vals: '', act: { ui: true, desktop: false, webhook: false }, cool: '10', on: true, hits: 0, last: '—', isNew: true }; this.setState({ sel: r.id, ed: r, nextId: s.nextId + 1 }); },
+      edTitle: s.rules.some((r) => r.id === ed.id) ? 'Edit rule' : 'New rule',
+      ed: { ...ed, exists: s.rules.some((r) => r.id === ed.id), extra: ed.extra || '', hook: ed.hook || '' },
+      setName: (e) => this.setEd('name', e.target.value),
+      setField: (e) => this.setEd('field', e.target.value),
+      setOp: (e) => this.setEd('op', e.target.value),
+      setVals: (e) => this.setEd('vals', e.target.value),
+      setHook: (e) => this.setEd('hook', e.target.value),
+      setCool: (e) => this.setEd('cool', e.target.value),
+      tUi: () => this.setAct('ui'), tDesk: () => this.setAct('desktop'), tHook: () => this.setAct('webhook'),
+      profChips: REG.map((r) => ({ name: r.name, color: r.color, on: ed.profiles.includes(r.id) ? 'true' : 'false', toggle: () => {
+        const ps = ed.profiles.includes(r.id) ? ed.profiles.filter((x) => x !== r.id) : [...ed.profiles, r.id];
+        const allF = []; ps.forEach((p) => RP[p].fields.forEach((f) => allF.push(f)));
+        this.setState({ ed: { ...ed, profiles: ps, field: allF.includes(ed.field) ? ed.field : (allF[0] || '') } });
+      } })),
+      fields,
+      fieldNote: pagerOnly ? 'Pager rules can only use metadata: message text is never logged.' : 'A new decoder’s fields appear here when it is installed.',
+      preview: { n: m.length, rows: m.slice(0, 4).map((r) => r.t + '  ' + RP[r.p].name + '  ' + Object.values(r.f).slice(0, 2).join(' ')) },
+      revert: () => { const r = s.rules.find((x) => x.id === ed.id); if (r) this.setState({ ed: { ...r } }); },
+      save: () => {
+        const exists = s.rules.some((r) => r.id === ed.id);
+        const clean = { ...ed }; delete clean.isNew;
+        this.setState({ rules: exists ? s.rules.map((r) => (r.id === ed.id ? clean : r)) : [...s.rules, clean] });
+      },
+      delRule: () => { const rest = s.rules.filter((r) => r.id !== ed.id); this.setState({ rules: rest, sel: rest[0] ? rest[0].id : null, ed: rest[0] ? { ...rest[0] } : ed }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

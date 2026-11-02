@@ -43,7 +43,7 @@ from pathlib import Path
 
 from hackrf_mcp import cli, live_log, live_profiles, live_spectrum, settings
 from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
-from hackrf_mcp.live_log import LiveLogWriter, Row
+from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
 from hackrf_mcp.live_spectrum import SpectrumRecorder, SpectrumWriter
 
@@ -96,6 +96,12 @@ class LogPump(threading.Thread):
         except queue.Full:
             self.dropped_queue += 1
 
+    def position(self, position: Position) -> None:
+        try:
+            self.q.put_nowait(("position", position))
+        except queue.Full:
+            self.dropped_queue += 1
+
     def spectrum(self, item: tuple) -> None:
         """Queue a SpectrumRecorder item for spectrum.db."""
         if self.spectrum_writer is None:
@@ -106,17 +112,18 @@ class LogPump(threading.Thread):
             self.dropped_queue += 1
 
     def drain(self) -> None:
-        rows, events, spectra = [], [], []
+        rows, events, spectra, positions = [], [], [], []
         while True:
             try:
                 kind, item = self.q.get_nowait()
             except queue.Empty:
                 break
-            {"row": rows, "event": events, "spectrum": spectra}[kind].append(item)
+            {"row": rows, "event": events, "spectrum": spectra, "position": positions}[kind].append(item)
         try:
             for ts, event, profile, detail in events:
                 self.writer.event(event, profile, detail, ts=ts)
             self.writer.write(rows)
+            self.writer.write_positions(positions)
         finally:
             # The spectrum history must not hold up the log, nor the log it.
             if spectra and self.spectrum_writer is not None:
@@ -212,6 +219,7 @@ class LiveService:
         self.rows = Rate()
         self.last_row_at: float | None = None
         self.per_profile_rows: collections.Counter = collections.Counter()
+        self.positions_total = 0
         # Besides the log, anything that wants every row as it is decoded
         # (a future web UI's live feed, say) can subscribe with add_sink().
         self.sinks: list = []
@@ -241,6 +249,11 @@ class LiveService:
             except Exception as exc:  # a broken consumer must not stop decoding
                 print(f"hackrf-live: row sink failed: {exc!r}", file=sys.stderr, flush=True)
 
+    def _emit_position(self, position: Position) -> None:
+        self.positions_total += 1
+        if self.pump is not None:
+            self.pump.position(position)
+
     def add_sink(self, sink) -> None:
         """Call sink(row) for every row as it is decoded, from the decoder's
         thread; it must return quickly."""
@@ -265,6 +278,7 @@ class LiveService:
             count=lambda n: self.decoded.add(n),
             run_dir=self.run_dir,
             make_source=self._source,
+            emit_position=self._emit_position,
         )
 
     def resolve(self, spec: Spec) -> Tuning:
@@ -579,6 +593,7 @@ class LiveService:
                 "rows_10m": self.rows.over(600, now),
                 "rows_total": self.rows.total,
                 "rows_by_profile": dict(self.per_profile_rows),
+                "positions_total": self.positions_total,
                 "last_row_at": self.last_row_at,
                 "health": health,
                 "falling_behind": self.behind,
@@ -607,6 +622,8 @@ class LiveService:
                 file_bytes=w.file_bytes(),
                 rows_written=w.stats.rows_written,
                 rows_dropped=w.stats.rows_dropped + self.pump.dropped_queue,
+                positions_written=w.stats.positions_written,
+                positions_dropped=w.stats.positions_dropped,
                 low_disk=w.stats.low_disk,
                 last_prune={
                     "deleted_age": w.stats.last_prune.deleted_age,
@@ -789,8 +806,10 @@ def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:
     took = time.monotonic() - started
     conn = live_log.open_reader(db)
     counts = conn.execute("SELECT kind, count(*) FROM messages GROUP BY kind").fetchall()
+    tracked = conn.execute("SELECT count(*), count(DISTINCT subject) FROM positions").fetchone()
     print(f"done in {took:.1f} s; decoded {service.decoded.total} messages; rows: "
-          + (", ".join(f"{k} {n}" for k, n in counts) or "none"))
+          + (", ".join(f"{k} {n}" for k, n in counts) or "none")
+          + f"; positions: {tracked[0]} for {tracked[1]} subjects")
     for r in live_log.search(conn, limit=args.show):
         print(f"  {_now_iso(r['ts'])} {r['kind']} {r['subject']} {r['label'] or ''} "
               f"{(r['freq_hz'] or 0) / 1e6:.4f} MHz level {r['level_db']} | {(r['raw'] or '')[:160]}")

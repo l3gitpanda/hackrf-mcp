@@ -13,7 +13,8 @@ module holds what they share:
   FileSource (a capture replayed as if it were the HackRF).
 - Pipeline, the base of every profile's pipeline, and ChannelPipeline for
   decoders that take audio channels cut out by iq.FFTChannelizer.
-- MinuteAggregator, for profiles that log one row per subject per minute.
+- MinuteAggregator, for profiles that log one row per subject per minute,
+  and PositionThrottle, which picks the positions kept for map tracks.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from pathlib import Path
 import numpy as np
 
 from hackrf_mcp import iq
-from hackrf_mcp.live_log import Row
+from hackrf_mcp.live_log import Position, Row
 from hackrf_mcp.settings import LiveSettings
 
 
@@ -543,6 +544,73 @@ class MinuteAggregator:
         raise NotImplementedError
 
 
+class PositionThrottle:
+    """Which positions to keep for map tracks: per subject, at most one
+    every `min_s`, and while it stands still (moved under `moved_m`, and
+    under `climb_ft` up or down) only one every `heartbeat_s`, so a moored
+    ship or a fixed AIS station doesn't fill the table."""
+
+    def __init__(
+        self,
+        profile: str,
+        emit: Callable[[Position], None],
+        min_s: float = 10.0,
+        heartbeat_s: float = 300.0,
+        moved_m: float = 25.0,
+        climb_ft: float = 100.0,
+        max_subjects: int = 5000,
+    ):
+        self.profile = profile
+        self.emit = emit
+        self.min_s = min_s
+        self.heartbeat_s = heartbeat_s
+        self.moved_m = moved_m
+        self.climb_ft = climb_ft
+        self.max_subjects = max_subjects
+        self.last: dict[str, Position] = {}
+
+    @staticmethod
+    def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        # Equirectangular: exact enough at the distances that matter here.
+        k = 6_371_000 * np.pi / 180
+        dx = (lon2 - lon1) * k * np.cos(np.radians((lat1 + lat2) / 2))
+        dy = (lat2 - lat1) * k
+        return float(np.hypot(dx, dy))
+
+    def offer(
+        self,
+        subject: str,
+        ts: float,
+        lat: float,
+        lon: float,
+        alt: float | None = None,
+        speed: float | None = None,
+        track: float | None = None,
+    ) -> bool:
+        """Keep (emit) this position if the rules allow; True if kept."""
+        last = self.last.get(subject)
+        if last is not None:
+            dt = ts - last.ts
+            if dt < self.min_s:
+                return False
+            still = self.distance_m(last.lat, last.lon, lat, lon) < self.moved_m and (
+                alt is None or last.alt is None or abs(alt - last.alt) < self.climb_ft
+            )
+            if still and dt < self.heartbeat_s:
+                return False
+        p = Position(ts, self.profile, subject, lat, lon, alt, speed, track)
+        self.last.pop(subject, None)
+        self.last[subject] = p
+        if len(self.last) > self.max_subjects:
+            self.last.pop(next(iter(self.last)))
+        self.emit(p)
+        return True
+
+
+def _no_position(position: Position) -> None:
+    pass
+
+
 # --- Pipelines -------------------------------------------------------------
 
 
@@ -558,6 +626,8 @@ class Context:
     # Replays (live_service.py --replay) decode a file instead of the HackRF.
     replay_path: Path | None = None
     replay_rate: int = 0
+    # Positions for map tracks (live_log.Position), from profiles that have them.
+    emit_position: Callable[[Position], None] = _no_position
 
 
 def wav_header(rate: int) -> bytes:

@@ -17,6 +17,13 @@ aircraft or ship per minute (see live_profiles.py), with:
   label         a secondary name: callsign, flight number, ship name ...
   fields        the decoded fields, as JSON
   raw           the decoder's text for it
+
+ADS-B and AIS also write `positions`, for map tracks finer than the
+per-minute rows: at most one per aircraft or ship every 10 s, and while it
+stands still one every 5 minutes (live_profiles.PositionThrottle), with
+time, profile, subject, lat, lon, altitude (feet, ADS-B), speed (knots)
+and track (degrees: ADS-B track, AIS course over ground). They are pruned
+with the messages.
 """
 
 from __future__ import annotations
@@ -58,6 +65,19 @@ CREATE TABLE IF NOT EXISTS events (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
+CREATE TABLE IF NOT EXISTS positions (
+    id INTEGER PRIMARY KEY,
+    ts REAL NOT NULL,
+    profile TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    alt REAL,
+    speed REAL,
+    track REAL
+);
+CREATE INDEX IF NOT EXISTS positions_ts ON positions (ts);
+CREATE INDEX IF NOT EXISTS positions_subject ON positions (subject, ts);
 """
 
 # The longest stretch one row covers (a per-minute summary), in seconds.
@@ -83,6 +103,18 @@ class Row:
     device: str = "hackrf"
 
 
+@dataclass
+class Position:
+    ts: float
+    profile: str
+    subject: str
+    lat: float
+    lon: float
+    alt: float | None = None
+    speed: float | None = None
+    track: float | None = None
+
+
 def _clean_level(level: float | None) -> float | None:
     if level is None:
         return None
@@ -105,6 +137,8 @@ class PruneResult:
 class WriterStats:
     rows_written: int = 0
     rows_dropped: int = 0
+    positions_written: int = 0
+    positions_dropped: int = 0
     low_disk: bool = False
     last_prune: PruneResult = field(default_factory=PruneResult)
 
@@ -180,6 +214,24 @@ class LiveLogWriter:
         self.stats.rows_written += len(rows)
         return len(rows)
 
+    def write_positions(self, positions: list[Position], now: float | None = None) -> int:
+        """Insert positions in one transaction, unless free disk space is
+        under the floor. Returns how many were written."""
+        if not positions:
+            return 0
+        now = time.time() if now is None else now
+        if not self._disk_ok(now):
+            self.stats.positions_dropped += len(positions)
+            return 0
+        with self.conn:
+            self.conn.execute("BEGIN")
+            self.conn.executemany(
+                "INSERT INTO positions (ts, profile, subject, lat, lon, alt, speed, track) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [(p.ts, p.profile, p.subject, p.lat, p.lon, p.alt, p.speed, p.track) for p in positions],
+            )
+        self.stats.positions_written += len(positions)
+        return len(positions)
+
     def event(self, event: str, profile: str | None = None, detail: str | None = None, ts: float | None = None) -> None:
         with self.conn:
             self.conn.execute("BEGIN")
@@ -211,24 +263,36 @@ class LiveLogWriter:
         with self.conn:
             self.conn.execute("BEGIN")
             result.deleted_age = self.conn.execute("DELETE FROM messages WHERE ts < ?", (cutoff,)).rowcount
+            self.conn.execute("DELETE FROM positions WHERE ts < ?", (cutoff,))
             self.conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
             self.conn.execute(
                 "DELETE FROM events WHERE id <= (SELECT max(id) FROM events) - ?", (MAX_EVENTS,)
             )
-        # Each pass removes a tenth of the rows, oldest first; the used size
-        # only falls once the freed pages are counted, so it's re-read.
+        # Each pass removes a tenth of the rows, oldest first, and the
+        # positions older than the oldest row left; the used size only falls
+        # once the freed pages are counted, so it's re-read.
         for _ in range(50):
             if self.used_bytes() <= self.max_bytes:
                 break
             count = self.conn.execute("SELECT count(*) FROM messages").fetchone()[0]
-            if count == 0:
+            positions = self.conn.execute("SELECT count(*) FROM positions").fetchone()[0]
+            if count == 0 and positions == 0:
                 break
-            n = max(1, count // 10)
             with self.conn:
                 self.conn.execute("BEGIN")
-                result.deleted_size += self.conn.execute(
-                    "DELETE FROM messages WHERE id IN (SELECT id FROM messages ORDER BY id LIMIT ?)", (n,)
-                ).rowcount
+                if count:
+                    result.deleted_size += self.conn.execute(
+                        "DELETE FROM messages WHERE id IN (SELECT id FROM messages ORDER BY id LIMIT ?)",
+                        (max(1, count // 10),),
+                    ).rowcount
+                oldest = self.conn.execute("SELECT min(ts) FROM messages").fetchone()[0]
+                if oldest is not None:
+                    self.conn.execute("DELETE FROM positions WHERE ts < ?", (oldest,))
+                elif positions:
+                    self.conn.execute(
+                        "DELETE FROM positions WHERE id IN (SELECT id FROM positions ORDER BY ts LIMIT ?)",
+                        (max(1, positions // 10),),
+                    )
         # The pragma frees pages as its result is stepped through, so read it all.
         self.conn.execute("PRAGMA incremental_vacuum").fetchall()
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -309,6 +373,33 @@ def search(
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+    args.append(max(1, int(limit)))
+    return conn.execute(sql, args).fetchall()
+
+
+def positions(
+    conn: sqlite3.Connection,
+    since: float | None = None,
+    until: float | None = None,
+    profile: str | None = None,
+    subject: str | None = None,
+    limit: int = 10_000,
+) -> list[sqlite3.Row]:
+    """Positions in [since, until], oldest first: tracks for a map."""
+    where, args = [], []
+    if since is not None:
+        where.append("ts >= ?")
+        args.append(since)
+    if until is not None:
+        where.append("ts <= ?")
+        args.append(until)
+    if profile:
+        where.append("profile = ?")
+        args.append(profile)
+    if subject:
+        where.append("subject = ? COLLATE NOCASE")
+        args.append(normalise_subject(subject))
+    sql = "SELECT * FROM positions" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY ts, id LIMIT ?"
     args.append(max(1, int(limit)))
     return conn.execute(sql, args).fetchall()
 

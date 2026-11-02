@@ -14,7 +14,7 @@ from pathlib import Path
 from hackrf_mcp import decoders, iq, live_profiles
 from hackrf_mcp.decoders import Capture, DecodeError, Decoder, Result, json_lines, nothing
 from hackrf_mcp.live_log import Row
-from hackrf_mcp.live_profiles import MinuteAggregator, Pipeline, Proc, Profile, line_buffered
+from hackrf_mcp.live_profiles import MinuteAggregator, Pipeline, PositionThrottle, Proc, Profile, line_buffered
 
 
 def decode_ais(cap: Capture, program: str, timeout: float, workdir: Path) -> Result:
@@ -88,9 +88,12 @@ class AisAggregator(MinuteAggregator):
     Names and callsigns from static messages are carried onto the
     position summaries."""
 
-    def __init__(self, emit: Callable[[Row], None]):
+    def __init__(self, emit: Callable[[Row], None], emit_position=None):
         super().__init__(emit)
         self.static: dict[str, dict] = {}
+        # Positions for map tracks, at most one per station every 10 s, and
+        # one every 5 minutes from a station that doesn't move.
+        self.positions = PositionThrottle("ais", emit_position) if emit_position else None
 
     def _remember_static(self, key: str, e: dict) -> None:
         s = self.static.setdefault(key, {})
@@ -156,6 +159,17 @@ class AisAggregator(MinuteAggregator):
             entry["status"] = e["status_text"]
         if isinstance(level, (int, float)):
             entry["level"] = max(entry.get("level", -1e9), level)
+        if self.positions is not None and isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            if abs(lat) <= 90 and abs(lon) <= 180:
+                speed, course = e.get("speed"), e.get("course")
+                self.positions.offer(
+                    key,
+                    now,
+                    round(lat, 5),
+                    round(lon, 5),
+                    speed=round(speed, 1) if isinstance(speed, (int, float)) and speed < 102.3 else None,
+                    track=round(course, 1) if isinstance(course, (int, float)) and course < 360 else None,
+                )
 
     def row(self, key: str, e: dict) -> Row:
         static = self.static.get(key, {})
@@ -208,7 +222,7 @@ class AisPipeline(Pipeline):
                 f"AIS-catcher needs its samples centred on {AIS_CENTER_HZ / 1e6:.1f} MHz, "
                 f"not {t.center_hz / 1e6:.4f} MHz"
             )
-        self.agg = AisAggregator(self.ctx.emit)
+        self.agg = AisAggregator(self.ctx.emit, emit_position=self.ctx.emit_position)
         self._lock = threading.Lock()
         args = [t.program, "-r", "CS8", ".", "-s", str(t.sample_rate_hz), "-o", "5"]
         self.decoder = Proc("AIS-catcher", line_buffered(args), stdin=True, on_line=self._line)

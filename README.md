@@ -271,7 +271,12 @@ as JSON, and the decoder's raw text. Once a minute rows older than the age
 limit, then the oldest rows beyond the size limit, are deleted and the
 space given back to the disk; nothing is written while free disk is below
 `HACKRF_MCP_MIN_FREE_MB`. Starts, stops, pauses and errors go to an
-`events` table, so gaps in coverage can be seen.
+`events` table, so gaps in coverage can be seen. ADS-B and AIS also write a
+`positions` table for map tracks finer than the per-minute rows: time,
+subject, latitude, longitude, altitude, speed and track, at most one per
+aircraft or ship every 10 s, and one every 5 minutes while it stands still
+(a fixed AIS station, a moored ship). Positions go with the rows when the
+log is pruned.
 
 **Spectrum history.** Beside the log, `$HACKRF_LIVE_DIR/spectrum.db` keeps
 what the band looked like while each profile ran, for a waterfall of any

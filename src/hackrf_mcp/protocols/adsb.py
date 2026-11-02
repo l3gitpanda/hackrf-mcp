@@ -12,7 +12,7 @@ from pathlib import Path
 from hackrf_mcp import decoders, iq, live_profiles
 from hackrf_mcp.decoders import AutoGain, Capture, DecodeError, Decoder, Result, nothing, sc16
 from hackrf_mcp.live_log import Row
-from hackrf_mcp.live_profiles import MinuteAggregator, Pipeline, Proc, Profile
+from hackrf_mcp.live_profiles import MinuteAggregator, Pipeline, PositionThrottle, Proc, Profile
 
 
 _ADSB_FIELDS = {
@@ -126,9 +126,11 @@ class AdsbAggregator(MinuteAggregator):
     few seconds: callsign, squawk, altitude range, last position, speed,
     track, strongest RSSI and how many messages arrived that minute."""
 
-    def __init__(self, emit: Callable[[Row], None], poll_s: float = 5.0):
+    def __init__(self, emit: Callable[[Row], None], poll_s: float = 5.0, emit_position=None):
         super().__init__(emit)
         self.poll_s = poll_s
+        # Positions for map tracks, at most one per aircraft every 10 s.
+        self.positions = PositionThrottle("adsb", emit_position) if emit_position else None
         self.prev_messages: dict[str, int] = {}
         self.total_messages: int | None = None
 
@@ -172,9 +174,20 @@ class AdsbAggregator(MinuteAggregator):
                 e["altitude_max"] = max(e.get("altitude_max", int(alt)), int(alt))
             elif alt == "ground":
                 e["on_ground"] = True
-            if a.get("lat") is not None and a.get("lon") is not None and float(a.get("seen_pos", 1e9)) <= self.poll_s + 1:
+            seen_pos = float(a.get("seen_pos", 1e9))
+            if a.get("lat") is not None and a.get("lon") is not None and seen_pos <= self.poll_s + 1:
                 e["lat"], e["lon"] = round(float(a["lat"]), 5), round(float(a["lon"]), 5)
                 e["positions"] += 1
+                if self.positions is not None:
+                    self.positions.offer(
+                        icao,
+                        now - seen_pos,
+                        e["lat"],
+                        e["lon"],
+                        alt=float(alt) if isinstance(alt, (int, float)) else None,
+                        speed=float(a["speed"]) if isinstance(a.get("speed"), (int, float)) else None,
+                        track=float(a["track"]) if isinstance(a.get("track"), (int, float)) else None,
+                    )
             if a.get("rssi") is not None:
                 e["rssi"] = max(e.get("rssi", -1e9), float(a["rssi"]))
         for icao in list(self.prev_messages):
@@ -251,7 +264,7 @@ class AdsbPipeline(Pipeline):
             args += ["--lat", str(self.ctx.settings.receiver[0]), "--lon", str(self.ctx.settings.receiver[1])]
         decoder = Proc("dump1090", args, stdin=True)
         self.procs.append(decoder)
-        self.agg = AdsbAggregator(self.ctx.emit)
+        self.agg = AdsbAggregator(self.ctx.emit, emit_position=self.ctx.emit_position)
         self.json_path = json_dir / "aircraft.json"
         self.source = self.ctx.make_source(t)
         self.started = time.time()

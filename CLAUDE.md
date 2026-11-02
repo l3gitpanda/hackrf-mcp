@@ -92,7 +92,10 @@ asyncio.run(main())
   "Adding a decoder". `multimon.py` holds `MultimonParser`, which does the
   pager redaction for both the live log and `hackrf_decode`.
 - `src/hackrf_mcp/live_log.py` — the SQLite log: schema, writer (size/age
-  pruning, free-space floor) and the read side the MCP tools use.
+  pruning, free-space floor) and the read side the MCP tools use. Its
+  `positions` table holds map-track points that the ADS-B and AIS
+  aggregators offer through `live_profiles.PositionThrottle` and
+  `Context.emit_position`.
 - `src/hackrf_mcp/live_spectrum.py` — the spectrum history beside the log
   (`spectrum.db`): `SpectrumTap` (512-point FFTs over every block a
   `Source` delivers, one mean+peak row per second of samples),

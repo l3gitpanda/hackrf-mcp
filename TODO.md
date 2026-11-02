@@ -50,10 +50,9 @@ views should drop in the way new decoders drop into `protocols/`. Wanted:
 - **AIS spectrum.** Done in milestone 2: AIS-catcher now reads
   `hackrf_transfer`'s samples on stdin at 2 MS/s like the other decoders,
   so AIS has a spectrum history, input-rate and stall checks too.
-- **Tracks.** ADS-B and AIS rows are per minute, with the last position in
-  the minute. A map with smooth tracks wants positions more often, e.g.
-  every 10 s in a separate positions table, or the per-minute row extended
-  with the minute's positions.
+- **Tracks.** Done in milestone 3: a `positions` table in `live.db`, one
+  position per aircraft or ship at most every 10 s (every 5 minutes while
+  it stands still), pruned with the log; `live_log.positions()` reads it.
 - **The live waterfall's source.** Only `hackrf-live` holds samples, so the
   UI's backend talks to it (a second socket command, or a sink that
   publishes FFT rows), not to `hackrf-mcp`.

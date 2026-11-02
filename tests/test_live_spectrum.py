@@ -21,6 +21,8 @@ from hackrf_mcp.live_spectrum import (
 RATE = 2_400_000
 BIN_HZ = RATE / BINS  # 4687.5 Hz
 BLOCK = 131072  # samples per block, as live_profiles.READ_BYTES gives
+# Enough samples for one row: rows come out up to one batch (0.25 s) late.
+ONE_ROW = int(1.3 * RATE)
 
 
 def cs8(x: np.ndarray) -> bytes:
@@ -82,7 +84,7 @@ def test_a_tone_lands_in_its_bin_at_its_level():
     rows = []
     tap = SpectrumTap(RATE, rows.append)
     # 64 bins above the centre, on a bin centre, at half of full scale.
-    feed(tap, tone(RATE + BLOCK, 64 * BIN_HZ, 0.5) + noise(RATE + BLOCK))
+    feed(tap, tone(ONE_ROW, 64 * BIN_HZ, 0.5) + noise(ONE_ROW))
     assert len(rows) == 1
     row = rows[0]
     assert row.mean_db.shape == (BINS,) and row.mean_db.dtype == np.float32
@@ -94,22 +96,41 @@ def test_a_tone_lands_in_its_bin_at_its_level():
     assert row.seconds == pytest.approx(1.0, abs=0.06)
 
 
-def test_rows_are_timed_by_sample_count_however_blocks_fall():
+def test_rows_are_cut_at_exact_sample_counts_however_blocks_fall():
     rows = []
-    tap = SpectrumTap(RATE, rows.append, clock=Ticker(1000.0, 0.01))
-    # Blocks of 100,000 samples don't divide into 512-sample frames or seconds.
-    feed(tap, noise(int(3.5 * RATE)), block=100_000)
+    fed = [0]
+    # The clock tells the true time of each block, as a real stream would.
+    tap = SpectrumTap(RATE, rows.append, clock=lambda: 1000.0 + fed[0] / RATE)
+    data = cs8(noise(int(3.3 * RATE)))
+    # Blocks of 100,000 samples divide into neither frames nor seconds.
+    for i in range(0, len(data), 200_000):
+        tap(data[i : i + 200_000])
+        fed[0] += len(data[i : i + 200_000]) // 2
     assert len(rows) == 3
-    assert [r.ts for r in rows] == sorted(r.ts for r in rows)
-    # Each row's frames cover about a second of samples.
-    for r in rows:
-        assert abs(r.frames - RATE / BINS) < 2 * 100_000 / BINS
+    # Stamped by sample position, a second apart, each exactly a second long.
+    assert [round(r.ts, 3) for r in rows] == [1000.0, 1001.0, 1002.0]
+    assert all(r.seconds == 1.0 for r in rows)
+    # No samples are lost between blocks: every frame starting before 3 s is in.
+    assert sum(r.frames for r in rows) == -(-3 * RATE // BINS)
+
+
+def test_a_change_mid_batch_lands_in_the_right_row():
+    rows = []
+    tap = SpectrumTap(RATE, rows.append)
+    x = noise(int(2.3 * RATE))
+    x[:RATE] += tone(RATE, 64 * BIN_HZ, 0.5)
+    x[RATE:] += tone(x.size - RATE, -64 * BIN_HZ, 0.5, start=RATE)
+    feed(tap, x)
+    first, second = rows[0].mean_db, rows[1].mean_db
+    a, b = BINS // 2 + 64, BINS // 2 - 64
+    assert first[a] == pytest.approx(-6.0, abs=0.5) and first[b] < -35
+    assert second[b] == pytest.approx(-6.0, abs=0.5) and second[a] < -40
 
 
 def test_the_peak_catches_a_burst_the_mean_hides():
     rows = []
     tap = SpectrumTap(RATE, rows.append)
-    x = noise(RATE + BLOCK)
+    x = noise(ONE_ROW)
     # A 1 ms burst (2,400 samples) 100 bins below the centre.
     x[500_000:502_400] += tone(2_400, -100 * BIN_HZ, 0.5, start=500_000)
     feed(tap, x)
@@ -122,7 +143,7 @@ def test_the_peak_catches_a_burst_the_mean_hides():
 
 def test_duty_transforms_a_share_of_each_block():
     full, part = [], []
-    x = noise(RATE + BLOCK)
+    x = noise(ONE_ROW)
     feed(SpectrumTap(RATE, full.append), x)
     feed(SpectrumTap(RATE, part.append, duty=0.25), x)
     assert part[0].frames == pytest.approx(full[0].frames / 4, rel=0.05)
@@ -202,7 +223,7 @@ def test_live_sinks_get_about_four_rows_a_second():
     rec = SpectrumRecorder(lambda item: None)
     rec.add_live_sink(lambda seg, row: got.append((seg["profile"], row.frames)))
     tap = rec.tap_for(tuning())
-    feed(tap, noise(RATE + BLOCK))
+    feed(tap, noise(ONE_ROW))
     assert 3 <= len(got) <= 5 and got[0][0] == "adsb"
 
 

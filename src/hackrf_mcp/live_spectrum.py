@@ -80,7 +80,7 @@ def _db(power: np.ndarray) -> np.ndarray:
 
 @dataclass
 class SpectrumRow:
-    ts: float  # wall time when the row's first block arrived
+    ts: float  # wall time when the row's first samples arrived
     seconds: float  # sample time the row covers
     frames: int  # FFT frames averaged
     mean_db: np.ndarray  # float32[bins], frequency order
@@ -90,35 +90,40 @@ class SpectrumRow:
 class _Accumulator:
     def __init__(self, bins: int):
         self.bins = bins
-        self.reset()
+        self.reset(None)
 
-    def reset(self) -> None:
-        self.ts: float | None = None
+    def reset(self, ts: float | None) -> None:
+        self.ts = ts
         self.sum = np.zeros(self.bins, dtype=np.float64)
         self.max = np.zeros(self.bins, dtype=np.float32)
         self.frames = 0
-        self.samples = 0
 
-    def add(self, power: np.ndarray) -> None:
-        self.sum += power.sum(axis=0, dtype=np.float64)
-        np.maximum(self.max, power.max(axis=0), out=self.max)
-        self.frames += power.shape[0]
+    def add(self, total: np.ndarray, peak: np.ndarray, frames: int) -> None:
+        self.sum += total
+        np.maximum(self.max, peak, out=self.max)
+        self.frames += frames
 
-    def row(self, sample_rate_hz: int, scale: float) -> SpectrumRow:
+    def row(self, seconds: float, scale: float) -> SpectrumRow:
         mean = np.fft.fftshift(self.sum / max(self.frames, 1) * scale)
         peak = np.fft.fftshift(self.max.astype(np.float64) * scale)
-        return SpectrumRow(self.ts or 0.0, self.samples / sample_rate_hz, self.frames, _db(mean), _db(peak))
+        return SpectrumRow(self.ts or 0.0, seconds, self.frames, _db(mean), _db(peak))
 
 
 class SpectrumTap:
     """Called with every block of int8 I/Q bytes a Source delivers, from the
     source's thread. Calls on_row with one SpectrumRow per `row_s` of
-    samples (counted, so rows average exactly row_s however blocks fall),
-    and on_live, if given, with one per `live_s`.
+    samples and on_live, if given, with one per `live_s`; rows are cut at
+    exact sample counts, so they average exactly row_s however blocks fall.
 
-    `duty` (0-1] is the share of each block's 512-sample frames that are
-    transformed, spread evenly through the block; 1 transforms every
-    sample, so the peak catches every burst."""
+    Blocks are gathered and transformed about every `batch_s` of samples,
+    not one by one: on the QNAP's Celeron, work done in short bursts between
+    idle gaps cost about three times as much CPU as the same work run back
+    to back. Samples left over after the last whole frame of a batch are
+    carried into the next, so frames stay contiguous.
+
+    `duty` (0-1] is the share of each batch's 512-sample frames that are
+    transformed, spread evenly through it; 1 transforms every sample, so
+    the peak catches every burst."""
 
     def __init__(
         self,
@@ -130,6 +135,7 @@ class SpectrumTap:
         row_s: float = 1.0,
         on_live: Callable[[SpectrumRow], None] | None = None,
         live_s: float = LIVE_ROW_S,
+        batch_s: float = LIVE_ROW_S,
         clock: Callable[[], float] = time.time,
     ):
         if not 0 < duty <= 1:
@@ -145,11 +151,15 @@ class SpectrumTap:
         # full-scale tone on a bin centre then reads 0 dBFS.
         self._weights = np.repeat(window / 128.0, 2).astype(np.float32)
         self.scale = 1.0 / float(window.sum()) ** 2
-        self.row_samples = sample_rate_hz * row_s
-        self.live_samples = sample_rate_hz * live_s
+        self.row_samples = int(round(sample_rate_hz * row_s))
+        self.live_samples = int(round(sample_rate_hz * live_s))
+        self.batch_samples = max(bins, int(sample_rate_hz * batch_s))
         self._row = _Accumulator(bins)
         self._live = _Accumulator(bins)
-        self._samples = 0
+        self._pending: list[bytes] = []
+        self._pending_samples = 0
+        self._batch_start = 0  # stream sample index of the first pending sample
+        self._batch_ts: float | None = None  # wall time it arrived
         self._next_row = self.row_samples
         self._next_live = self.live_samples
         self.rows = 0
@@ -158,39 +168,78 @@ class SpectrumTap:
         n = len(buf) // 2
         if n == 0:
             return
-        now = self.clock()
+        if self._batch_ts is None:
+            self._batch_ts = self.clock()
+        self._pending.append(buf[: 2 * n])
+        self._pending_samples += n
+        if self._pending_samples >= self.batch_samples:
+            self._process()
+
+    def _ts_at(self, sample: int) -> float:
+        return (self._batch_ts or 0.0) + (sample - self._batch_start) / self.sample_rate_hz
+
+    def _process(self) -> None:
+        data = self._pending[0] if len(self._pending) == 1 else b"".join(self._pending)
+        b = self.bins
+        frames = self._pending_samples // b
+        start = self._batch_start
+        end = start + frames * b  # samples covered by this batch's frames
         if self._row.ts is None:
-            self._row.ts = now
+            self._row.ts = self._ts_at(start)
         if self.on_live is not None and self._live.ts is None:
-            self._live.ts = now
-        frames = n // self.bins
+            self._live.ts = self._ts_at(start)
+        idx = np.arange(frames)
+        power = np.zeros((0, b), dtype=np.float32)
         if frames:
-            raw = np.frombuffer(buf, dtype=np.int8, count=frames * self.bins * 2).reshape(frames, 2 * self.bins)
+            raw = np.frombuffer(data, dtype=np.int8, count=frames * b * 2).reshape(frames, 2 * b)
             if self.duty < 1:
                 k = max(1, int(round(frames * self.duty)))
                 if k < frames:
-                    raw = raw[np.linspace(0, frames - 1, k).round().astype(np.intp)]
+                    idx = np.unique(np.linspace(0, frames - 1, k).round().astype(np.intp))
+                    raw = raw[idx]
             x = (raw * self._weights).view(np.complex64)
             # scipy's FFT is several times faster than numpy's on complex64.
             power = np.abs(scipy.fft.fft(x, axis=1, overwrite_x=True))
             power *= power
-            self._row.add(power)
-            if self.on_live is not None:
-                self._live.add(power)
-        self._row.samples += n
-        self._live.samples += n
-        self._samples += n
-        if self._samples >= self._next_row:
-            self._next_row += self.row_samples
-            if self._row.frames:
-                self.rows += 1
-                self.on_row(self._row.row(self.sample_rate_hz, self.scale))
-            self._row.reset()
-        if self.on_live is not None and self._samples >= self._next_live:
-            self._next_live += self.live_samples
-            if self._live.frames:
-                self.on_live(self._live.row(self.sample_rate_hz, self.scale))
-            self._live.reset()
+        # Hand each run of frames between row and live boundaries to the
+        # accumulators, reducing it once; emit a row at each boundary.
+        pos = 0
+        live = self.on_live is not None
+        while True:
+            boundary = min(self._next_row, self._next_live) if live else self._next_row
+            if boundary > end:
+                break
+            cut = int(np.searchsorted(idx, -(-(boundary - start) // b)))
+            self._add(power[pos:cut])
+            pos = cut
+            ts = self._ts_at(boundary)
+            if boundary == self._next_row:
+                self._next_row += self.row_samples
+                if self._row.frames:
+                    self.rows += 1
+                    self.on_row(self._row.row(self.row_samples / self.sample_rate_hz, self.scale))
+                self._row.reset(ts)
+            if live and boundary == self._next_live:
+                self._next_live += self.live_samples
+                if self._live.frames:
+                    self.on_live(self._live.row(self.live_samples / self.sample_rate_hz, self.scale))
+                self._live.reset(ts)
+        self._add(power[pos:])
+        # Carry the samples after the last whole frame into the next batch.
+        tail = data[2 * frames * b :]
+        self._batch_ts = self._ts_at(end)
+        self._batch_start = end
+        self._pending = [tail] if tail else []
+        self._pending_samples = len(tail) // 2
+
+    def _add(self, power: np.ndarray) -> None:
+        if not power.shape[0]:
+            return
+        total = power.sum(axis=0).astype(np.float64)
+        peak = power.max(axis=0)
+        self._row.add(total, peak, power.shape[0])
+        if self.on_live is not None:
+            self._live.add(total, peak, power.shape[0])
 
 
 # --- The recorder: segments and the minute roll-up --------------------------

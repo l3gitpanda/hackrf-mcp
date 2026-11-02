@@ -104,6 +104,17 @@ asyncio.run(main())
   and age limits) and the read side. Sources call the tap through
   `Source._deliver()`, which counts its errors and never lets it stop
   decoding; protocol modules don't see it.
+- `src/hackrf_mcp/live_feed.py` — `hackrf-live`'s feed socket: JSON lines of
+  rows, events, positions and live FFT rows to every connected client,
+  each with a bounded queue so a slow client loses messages (and is told)
+  instead of holding up decoding.
+- `src/hackrf_mcp/web/` — `hackrf-web`, the web UI's backend (Starlette,
+  `deploy/hackrf-web.service`): the JSON API over the log and spectrum
+  history, the `/ws/live` relay of the feed (`hub.py`), sign-in with signed
+  session cookies (`sessions.py`), and the static UI. `Gate` in `app.py`
+  checks the token or cookie, the Origin of changes and websockets, and
+  adds the security headers (a strict CSP: no inline scripts or styles).
+  Pager text is removed on read through each profile's `redact`.
 - `src/hackrf_mcp/live_client.py` — the MCP server's side of the socket.
   `_run_on_device()` pauses the live service around every device call.
 

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hackrf-live · sign in</title>
+<link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+<main>
+  <h1>hackrf-live</h1>
+  <form method="post" action="/auth/login">
+    <label for="token">Access token</label>
+    <input id="token" name="token" type="password" autocomplete="current-password" required minlength="16" autofocus>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="note">The token is in <code>/etc/hackrf-mcp/web-token</code> on the receiver. Signing in keeps this browser signed in for 30 days.</p>
+</main>
+</body>
+</html>

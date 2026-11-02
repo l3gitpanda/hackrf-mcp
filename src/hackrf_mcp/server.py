@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from hackrf_mcp import __version__, decoders, iq, live_client, live_log, live_profiles, policy, settings, storage
 from hackrf_mcp import protocols  # noqa: F401  (registers every decoder and live profile)
 from hackrf_mcp.cli import run, set_bin_dir
+from hackrf_mcp.live_log import parse_when
 
 mcp = FastMCP(
     "hackrf",
@@ -1264,32 +1265,6 @@ def _ago(ts: float | None, now: float) -> str:
     if s < 7200:
         return f"{s / 60:.0f} min ago"
     return f"{s / 3600:.1f} h ago"
-
-
-def parse_when(value: str | float | None, now: float) -> float | None:
-    """A time for the live tools: "30m", "2h", "1d" or "90s" ago; an ISO 8601
-    time (UTC unless it carries an offset); or Unix seconds."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    v = value.strip().lower()
-    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    if v[-1:] in units and v[:-1].replace(".", "", 1).isdigit():
-        return now - float(v[:-1]) * units[v[-1]]
-    if v.replace(".", "", 1).isdigit():
-        return float(v)
-    from datetime import datetime, timezone
-
-    try:
-        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(
-            f"can't read the time {value!r}: use e.g. 30m, 2h, 1d, or 2026-10-29T21:00:00Z"
-        ) from exc
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.timestamp()
 
 
 def _live_one_line() -> str:

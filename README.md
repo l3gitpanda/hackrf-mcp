@@ -319,6 +319,38 @@ A replay also records the spectrum (to `--spectrum-db`, by default
 `replay-spectrum.db` beside `--db`) and prints the noise floor and the
 strongest bins, to check a recording against a known signal.
 
+## Web UI
+
+`hackrf-web` (`python -m hackrf_mcp.web`, [`deploy/hackrf-web.service`](deploy/hackrf-web.service))
+is the backend of a browser UI for live decoding; the screens are being
+built milestone by milestone ([TODO.md](TODO.md)). It never opens the
+HackRF. It reads the live log and the spectrum history, relays the live
+service's feed socket (`feed.sock`: decoded rows, events, positions and
+about four FFT rows a second) to browsers over a websocket, and starts,
+switches and stops profiles over the control socket, as the MCP tools do.
+
+| Route | |
+|---|---|
+| `GET /api/registry` | profiles and decoders from the registries, with each profile's views (map, table, timeline) |
+| `GET /api/status` | the live service's status, and the memory and CPU of `hackrf-live` and `hackrf-web` |
+| `GET /api/log`, `/api/summary`, `/api/events` | the log, as `hackrf_live_search` and `hackrf_live_summary` read it |
+| `GET /api/positions` | map-track points |
+| `GET /api/spectrum/segments`, `/api/spectrum?segment=` | spectrum history, downsampled to the buckets asked for |
+| `POST /api/live/start`, `/api/live/stop` | the same requests as `hackrf_live_start` / `hackrf_live_stop` |
+| `WS /ws/live` | everything as it happens, and status every few seconds |
+
+**Access.** Every route but the sign-in page needs a token: an
+`Authorization: Bearer` header, or a cookie a browser gets by signing in
+once with a token (HttpOnly, SameSite=Strict, signed with a key in
+`/var/lib/hackrf-mcp/web`, 30 days). Changes and websockets must come from
+the page's own origin. Tokens come from `HACKRF_WEB_TOKEN_FILE` and
+`HACKRF_WEB_TOKEN_SHA256`; removing one ends its sessions. There is no TLS:
+limit the port with a firewall and never publish it. Pager text is removed
+on read, in the API and on the websocket, unless `HACKRF_MCP_PAGER_CONTENT`
+is on, even from rows logged while it was. Protocol modules say how their
+rows are shown (`views` on `Profile`; a table and a timeline when they
+declare none), so a new decoder appears without changes to the UI.
+
 ## Adding a decoder
 
 Each protocol lives in one module in

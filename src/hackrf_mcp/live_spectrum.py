@@ -702,3 +702,79 @@ def read(
         d["peak"] = dequantise(r["peak"], r["db_min"], r["db_step"])
         out.append(d)
     return out
+
+
+# Most time buckets one downsample() call returns.
+MAX_BUCKETS = 2000
+
+
+def downsample(
+    conn: sqlite3.Connection,
+    segment: int,
+    since: float | None = None,
+    until: float | None = None,
+    buckets: int = 600,
+    tier: int | None = None,
+    chunk: int = 512,
+) -> dict | None:
+    """One segment's spectrum over [since, until] in at most `buckets` time
+    buckets, for a waterfall: the mean power of each bucket's rows (in
+    linear power) and the highest peak. Second rows are used while a bucket
+    is under a minute wide (and while they're still kept), minute rows
+    beyond that. Rows are read `chunk` at a time, so memory stays at the
+    size of the answer however long the range is. Returns None for an
+    unknown segment; empty buckets are left out."""
+    seg = conn.execute("SELECT * FROM segments WHERE id = ?", (segment,)).fetchone()
+    if seg is None:
+        return None
+    seg = dict(seg)
+    lo = max(since if since is not None else seg["ts_start"], seg["ts_start"])
+    end = seg["ts_end"] if seg["ts_end"] is not None else time.time()
+    hi = min(until if until is not None else end, end)
+    buckets = max(1, min(int(buckets), MAX_BUCKETS))
+    span = max(hi - lo, 1e-9)
+    width = span / buckets
+    if tier is None:
+        tier = TIER_MINUTE if width >= 60 else TIER_SECOND
+        if tier == TIER_SECOND:
+            has = conn.execute(
+                "SELECT 1 FROM spectra WHERE segment = ? AND tier = ? AND ts >= ? AND ts <= ? LIMIT 1",
+                (segment, TIER_SECOND, lo, hi),
+            ).fetchone()
+            if has is None:
+                tier = TIER_MINUTE
+    bins = seg["bins"]
+    total = np.zeros((buckets, bins), dtype=np.float64)
+    peak = np.full((buckets, bins), -np.inf, dtype=np.float32)
+    count = np.zeros(buckets, dtype=np.int64)
+    # Minute rows are stamped at their first second; include the one that
+    # began before `lo` but runs into the range.
+    start = lo - (60 if tier == TIER_MINUTE else 0)
+    cur = conn.execute(
+        "SELECT ts, mean, peak FROM spectra WHERE segment = ? AND tier = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+        (segment, tier, start, hi),
+    )
+    while True:
+        rows = cur.fetchmany(chunk)
+        if not rows:
+            break
+        ts = np.array([r[0] for r in rows], dtype=np.float64)
+        idx = np.clip(((ts - lo) / width).astype(np.int64), 0, buckets - 1)
+        means = dequantise(b"".join(r[1] for r in rows), seg["db_min"], seg["db_step"]).reshape(len(rows), bins)
+        peaks = dequantise(b"".join(r[2] for r in rows), seg["db_min"], seg["db_step"]).reshape(len(rows), bins)
+        np.add.at(total, idx, np.power(10.0, means.astype(np.float64) / 10.0))
+        np.maximum.at(peak, idx, peaks)
+        np.add.at(count, idx, 1)
+    keep = np.nonzero(count)[0]
+    mean_db = _db(total[keep] / count[keep][:, None]) if keep.size else np.zeros((0, bins), np.float32)
+    return {
+        "segment": seg,
+        "tier": tier,
+        "since": lo,
+        "until": hi,
+        "bucket_s": width,
+        "ts": [float(lo + i * width) for i in keep],
+        "rows": int(count.sum()),
+        "mean": quantise(mean_db, seg["db_min"], seg["db_step"]),
+        "peak": quantise(peak[keep], seg["db_min"], seg["db_step"]),
+    }

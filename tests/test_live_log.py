@@ -118,3 +118,12 @@ def test_open_reader_without_a_log(tmp_path):
         assert "has not written one" in str(exc)
     else:
         raise AssertionError("expected LogNotFound")
+
+
+def test_events_between_two_times(tmp_path):
+    w = _writer(tmp_path)
+    for t in (10.0, 20.0, 30.0):
+        w.event("start", "adsb", None, ts=t)
+    conn = live_log.open_reader(w.path)
+    assert [r["ts"] for r in live_log.events(conn, since=15, until=25)] == [20.0]
+    assert [r["ts"] for r in live_log.events(conn, limit=2)] == [30.0, 20.0]

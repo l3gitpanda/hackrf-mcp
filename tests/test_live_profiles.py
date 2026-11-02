@@ -397,3 +397,15 @@ def test_input_ratio_survives_concurrent_counts():
     finally:
         stop.set()
         t.join()
+
+
+def test_redact_page_removes_the_text_from_a_logged_page():
+    row = {"kind": "page", "fields": {"capcode": "1", "message": "MEET AT 3\ncontinued"}, "raw": "FLEX|h|MEET AT 3\ncontinued"}
+    out = multimon.redact_page(row)
+    assert out["fields"] == {"capcode": "1"} and out["raw"] == "FLEX|h|" + CONTENT_NOT_LOGGED
+    assert row["fields"]["message"]  # the original is left alone
+    odd = multimon.redact_page({"kind": "page", "fields": {"message": "X"}, "raw": "cut off"})
+    assert odd["raw"] == CONTENT_NOT_LOGGED
+    other = {"kind": "aprs", "fields": {"message": "hi"}, "raw": "x"}
+    assert multimon.redact_page(other) is other
+    assert lp.PROFILES["flex"].redact is multimon.redact_page and lp.PROFILES["adsb"].redact is None

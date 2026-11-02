@@ -12,7 +12,7 @@ from pathlib import Path
 from hackrf_mcp import decoders, iq, live_profiles
 from hackrf_mcp.decoders import AutoGain, Capture, DecodeError, Decoder, Result, nothing, sc16
 from hackrf_mcp.live_log import Row
-from hackrf_mcp.live_profiles import MinuteAggregator, Pipeline, PositionThrottle, Proc, Profile
+from hackrf_mcp.live_profiles import MinuteAggregator, Pipeline, PositionThrottle, Proc, Profile, View
 
 
 _ADSB_FIELDS = {
@@ -322,5 +322,15 @@ live_profiles.register(
            position, speed, track, messages, strongest RSSI.""",
         summary_kinds=("aircraft",),
         summary_fields=("callsign", "squawk", "altitude_min", "altitude_max", "lat", "lon", "speed", "messages"),
+        views=(
+            View(
+                "map",
+                ("aircraft",),
+                ("callsign", "squawk", "altitude", "speed", "track", "vert_rate", "category"),
+                (("lat", "lat"), ("lon", "lon"), ("alt", "altitude"), ("heading", "track"), ("speed", "speed"), ("label", "callsign")),
+            ),
+            View("table", ("aircraft",), ("callsign", "squawk", "altitude_min", "altitude_max", "speed", "track", "messages")),
+            View("timeline", ("aircraft",)),
+        ),
     )
 )

@@ -14,7 +14,7 @@ from pathlib import Path
 from hackrf_mcp import decoders, iq, live_profiles
 from hackrf_mcp.decoders import Capture, DecodeError, Decoder, Result, json_lines, nothing
 from hackrf_mcp.live_log import Row
-from hackrf_mcp.live_profiles import MinuteAggregator, Pipeline, PositionThrottle, Proc, Profile, line_buffered
+from hackrf_mcp.live_profiles import MinuteAggregator, Pipeline, PositionThrottle, Proc, Profile, View, line_buffered
 
 
 def decode_ais(cap: Capture, program: str, timeout: float, workdir: Path) -> Result:
@@ -290,5 +290,15 @@ live_profiles.register(
            per ship per minute, other AIS messages one row each.""",
         summary_kinds=("vessel", "base-station", "aid-to-navigation", "sar-aircraft", "ais"),
         summary_fields=("name", "callsign", "shiptype", "aid_type", "destination", "status", "lat", "lon", "speed", "messages"),
+        views=(
+            View(
+                "map",
+                ("vessel", "base-station", "aid-to-navigation", "sar-aircraft"),
+                ("name", "callsign", "shiptype", "aid_type", "destination", "status", "speed", "course"),
+                (("lat", "lat"), ("lon", "lon"), ("heading", "course"), ("speed", "speed"), ("label", "name")),
+            ),
+            View("table", (), ("name", "callsign", "shiptype", "aid_type", "destination", "status", "speed", "messages")),
+            View("timeline"),
+        ),
     )
 )

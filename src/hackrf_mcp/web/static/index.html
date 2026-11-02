@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hackrf-live</title>
+<link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+<main>
+  <h1>hackrf-live</h1>
+  <p>Signed in. The Live, Log and Map screens are the next milestones; the API is ready:</p>
+  <ul>
+    <li><a href="/api/registry">/api/registry</a></li>
+    <li><a href="/api/status">/api/status</a></li>
+    <li><a href="/api/log?since=1h&amp;limit=50">/api/log</a></li>
+    <li><a href="/api/events?since=1d">/api/events</a></li>
+    <li><a href="/api/spectrum/segments?since=1h">/api/spectrum/segments</a></li>
+    <li><a href="/api/positions?since=10m">/api/positions</a></li>
+  </ul>
+  <form method="post" action="/auth/logout"><button type="submit">Sign out</button></form>
+</main>
+</body>
+</html>

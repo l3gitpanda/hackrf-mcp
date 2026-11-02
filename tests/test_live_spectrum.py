@@ -499,3 +499,24 @@ def test_live_status_reports_the_spectrum_history():
     out = server._format_live_status(_status(enabled=True, max_mb=1024, max_age_days=7, minute_days=90, segment=None))
     assert "adsb's decoder opens the HackRF itself" in out
     assert "Spectrum history: off" in server._format_live_status(_status(enabled=False))
+
+
+def test_downsample_reads_in_chunks_and_falls_back_to_minute_rows(tmp_path):
+    w = writer(tmp_path)
+    items = [("segment", 1, {**_meta(), "ts_start": 0.0})]
+    for t in range(100):
+        level = np.full(BINS, -80.0 if t < 50 else -60.0, dtype=np.float32)
+        items.append(("row", 1, TIER_SECOND, float(t), 10, live_spectrum.quantise(level), live_spectrum.quantise(level)))
+    items += [("row", 1, TIER_MINUTE, 0.0, 600, bytes(BINS), bytes(BINS)), ("end", 1, 100.0)]
+    w.apply(items)
+    conn = live_spectrum.open_reader(w.path)
+    out = live_spectrum.downsample(conn, 1, buckets=2, chunk=7)
+    assert out["tier"] == TIER_SECOND and out["rows"] == 100 and out["bucket_s"] == 50.0
+    mean = live_spectrum.dequantise(out["mean"]).reshape(2, BINS)
+    assert mean[0, 0] == pytest.approx(-80.0, abs=0.3) and mean[1, 0] == pytest.approx(-60.0, abs=0.3)
+    # Second rows gone (pruned): the same range comes from minute rows.
+    conn.close()
+    w.conn.execute("DELETE FROM spectra WHERE tier = 1")
+    conn = live_spectrum.open_reader(w.path)
+    assert live_spectrum.downsample(conn, 1, buckets=2)["tier"] == TIER_MINUTE
+    assert live_spectrum.downsample(conn, 99) is None

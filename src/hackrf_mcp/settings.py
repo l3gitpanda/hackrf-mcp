@@ -172,6 +172,10 @@ class LiveSettings:
         return self.live_dir / "live.db"
 
     @property
+    def feed_socket_path(self) -> Path:
+        return self.live_dir / "feed.sock"
+
+    @property
     def spectrum_db_path(self) -> Path:
         return self.live_dir / "spectrum.db"
 
@@ -231,3 +235,54 @@ def get_live() -> LiveSettings:
 def configure_live(settings: LiveSettings) -> None:
     global _live
     _live = settings
+
+
+@dataclass(frozen=True)
+class WebSettings:
+    """Settings of the web UI's backend (hackrf_mcp.web, the hackrf-web
+    service), from HACKRF_WEB_* in the same environment file. It reads the
+    live service's log and spectrum history and talks to its sockets, so it
+    takes LiveSettings too."""
+
+    host: str = "127.0.0.1"
+    port: int = 8766
+    # The bearer tokens it accepts: a file holding one (HACKRF_WEB_TOKEN_FILE)
+    # and/or SHA-256 hex digests (HACKRF_WEB_TOKEN_SHA256, comma-separated).
+    token_file: Path | None = None
+    token_sha256: tuple[str, ...] = ()
+    # A browser signs in once with a token and gets a session cookie this
+    # long. The key that signs it is kept in state_dir.
+    session_days: float = 30.0
+    state_dir: Path | None = None
+    # Origins (scheme://host:port) besides the server's own that may send
+    # state-changing requests and open websockets; normally none.
+    extra_origins: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0 < self.port < 65536:
+            raise ValueError(f"HACKRF_WEB_PORT must be a port number, not {self.port}")
+        if self.session_days <= 0:
+            raise ValueError("HACKRF_WEB_SESSION_DAYS must be above 0")
+
+    def state_path(self, live: LiveSettings) -> Path:
+        return self.state_dir or live.live_dir.parent / "web"
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> WebSettings:
+        env = os.environ if env is None else env
+        kwargs: dict = {}
+        if v := env.get("HACKRF_WEB_HOST"):
+            kwargs["host"] = v.strip()
+        if v := env.get("HACKRF_WEB_PORT"):
+            kwargs["port"] = int(v)
+        if v := env.get("HACKRF_WEB_TOKEN_FILE"):
+            kwargs["token_file"] = Path(v).expanduser()
+        if v := env.get("HACKRF_WEB_TOKEN_SHA256"):
+            kwargs["token_sha256"] = tuple(x.strip() for x in v.split(",") if x.strip())
+        if v := env.get("HACKRF_WEB_SESSION_DAYS"):
+            kwargs["session_days"] = float(v)
+        if v := env.get("HACKRF_WEB_STATE_DIR"):
+            kwargs["state_dir"] = Path(v).expanduser()
+        if v := env.get("HACKRF_WEB_EXTRA_ORIGINS"):
+            kwargs["extra_origins"] = tuple(x.strip().rstrip("/") for x in v.split(",") if x.strip())
+        return cls(**kwargs)

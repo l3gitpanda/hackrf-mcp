@@ -46,6 +46,25 @@ class SpecError(ValueError):
 
 
 @dataclass(frozen=True)
+class View:
+    """A way the web UI can show a profile's rows, declared by its protocol
+    module so a new decoder needs no UI change. `name` is the panel: "map",
+    "table", "timeline", or a custom panel's name. `kinds` are the row kinds
+    it applies to (empty: all of the profile's summary_kinds). `fields` are
+    the fields it shows, in order. `roles` map what a panel needs to a field
+    (for a map: lat, lon, and optionally alt, heading, speed, label); a map
+    view also draws tracks from the log's positions table."""
+
+    name: str
+    kinds: tuple[str, ...] = ()
+    fields: tuple[str, ...] = ()
+    roles: tuple[tuple[str, str], ...] = ()
+
+    def to_json(self) -> dict:
+        return {"name": self.name, "kinds": list(self.kinds), "fields": list(self.fields), "roles": dict(self.roles)}
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     summary: str
@@ -67,6 +86,21 @@ class Profile:
     # fields it shows for each subject.
     summary_kinds: tuple[str, ...] = ()
     summary_fields: tuple[str, ...] = ()
+    # How the web UI shows its rows (see View); none declared means a table
+    # of summary_fields and a timeline. `color` is a CSS colour for the
+    # profile in the UI; None takes the next free one from the palette.
+    views: tuple[View, ...] = ()
+    color: str | None = None
+    # For profiles whose rows can hold private message text (pagers): takes
+    # a row as a dict and returns it with the text removed. The web UI
+    # applies it on read unless the operator allows the content
+    # (HACKRF_MCP_PAGER_CONTENT), in case rows were logged while it was on.
+    redact: Callable[[dict], dict] | None = None
+
+    def ui_views(self) -> tuple[View, ...]:
+        if self.views:
+            return self.views
+        return (View("table", self.summary_kinds, self.summary_fields), View("timeline", self.summary_kinds))
 
 
 PROFILES: dict[str, Profile] = {}

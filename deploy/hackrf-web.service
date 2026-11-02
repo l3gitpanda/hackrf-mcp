@@ -1,0 +1,56 @@
+# systemd unit for hackrf-web, the web UI for live decoding
+# (src/hackrf_mcp/web/). It reads hackrf-live's log and spectrum history,
+# relays its feed socket to browsers and starts or stops profiles over its
+# control socket. It never opens the HackRF.
+#
+# Install, after hackrf-live.service:
+#   sudo cp deploy/hackrf-web.service /etc/systemd/system/
+#   sudo systemctl edit hackrf-web       # set User=/Group= to hackrf-live's
+#   (set HACKRF_WEB_* in /etc/hackrf-mcp/env; see hackrf-mcp.env.example)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now hackrf-web
+#
+# It listens on HACKRF_WEB_HOST:HACKRF_WEB_PORT (8766) without TLS: keep the
+# port to the LAN with a host firewall, and never publish it.
+
+[Unit]
+Description=hackrf-web (web UI for live HackRF decoding)
+After=network.target hackrf-live.service
+
+[Service]
+Type=simple
+User=hackrf
+Group=hackrf
+EnvironmentFile=/etc/hackrf-mcp/env
+ExecStart=/opt/hackrf-mcp/.venv/bin/python -m hackrf_mcp.web
+Restart=always
+RestartSec=5
+
+# A web UI must never cost the decoders or the box's other work: small
+# memory and CPU limits, and it gives way under contention.
+MemoryHigh=128M
+MemoryMax=192M
+CPUQuota=40%
+CPUWeight=20
+Nice=15
+IOWeight=20
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=100
+
+# /var/lib/hackrf-mcp: the live service's databases (SQLite readers need
+# their -shm files) and sockets, and web/ for the session key.
+StateDirectory=hackrf-mcp
+UMask=0007
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

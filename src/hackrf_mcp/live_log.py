@@ -304,6 +304,33 @@ class LiveLogWriter:
 # --- Reading ---------------------------------------------------------------
 
 
+def parse_when(value: str | float | None, now: float) -> float | None:
+    """A time for the live tools and the web API: "30m", "2h", "1d" or "90s" ago; an ISO 8601
+    time (UTC unless it carries an offset); or Unix seconds."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    v = value.strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if v[-1:] in units and v[:-1].replace(".", "", 1).isdigit():
+        return now - float(v[:-1]) * units[v[-1]]
+    if v.replace(".", "", 1).isdigit():
+        return float(v)
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            f"can't read the time {value!r}: use e.g. 30m, 2h, 1d, or 2026-10-29T21:00:00Z"
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+
 class LogNotFound(FileNotFoundError):
     pass
 
@@ -404,12 +431,20 @@ def positions(
     return conn.execute(sql, args).fetchall()
 
 
-def events(conn: sqlite3.Connection, since: float | None = None, limit: int = 20) -> list[sqlite3.Row]:
-    if since is None:
-        return conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    return conn.execute(
-        "SELECT * FROM events WHERE ts >= ? ORDER BY id DESC LIMIT ?", (since, limit)
-    ).fetchall()
+def events(
+    conn: sqlite3.Connection, since: float | None = None, limit: int = 20, until: float | None = None
+) -> list[sqlite3.Row]:
+    """Events newest first, optionally only those in [since, until]."""
+    where, args = [], []
+    if since is not None:
+        where.append("ts >= ?")
+        args.append(since)
+    if until is not None:
+        where.append("ts <= ?")
+        args.append(until)
+    sql = "SELECT * FROM events" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?"
+    args.append(max(1, int(limit)))
+    return conn.execute(sql, args).fetchall()
 
 
 def overview(conn: sqlite3.Connection) -> dict:

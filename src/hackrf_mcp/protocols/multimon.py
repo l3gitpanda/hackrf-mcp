@@ -66,6 +66,23 @@ CONTENT_NOT_LOGGED = "[content not logged]"
 _PAGER_PREFIXES = ("FLEX|", "FLEX:", "POCSAG")
 
 
+def redact_page(row: dict) -> dict:
+    """A logged page (as a dict) with its message text removed, as it would
+    have been logged with pager content off: the `message` field dropped and
+    the raw text cut back to the header plus CONTENT_NOT_LOGGED. Used on
+    read by the web UI, for rows written while content logging was on."""
+    if row.get("kind") != "page":
+        return row
+    out = dict(row)
+    fields = dict(out.get("fields") or {})
+    message = fields.pop("message", None)
+    out["fields"] = fields
+    raw = out.get("raw") or ""
+    if message:
+        out["raw"] = raw[: -len(message)] + CONTENT_NOT_LOGGED if raw.endswith(message) else CONTENT_NOT_LOGGED
+    return out
+
+
 class MultimonParser:
     """multimon-ng's output for one channel, as log rows.
 
@@ -399,6 +416,7 @@ live_profiles.register(
            content logging (hackrf_live_status says which).""",
         summary_kinds=("page",),
         summary_fields=("type", "mode"),
+        redact=redact_page,
     )
 )
 live_profiles.register(
@@ -411,6 +429,7 @@ live_profiles.register(
         needs_freqs=True,
         summary_kinds=("page",),
         summary_fields=("type", "function", "protocol"),
+        redact=redact_page,
     )
 )
 live_profiles.register(

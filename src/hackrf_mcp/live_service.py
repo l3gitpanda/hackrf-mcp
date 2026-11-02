@@ -41,7 +41,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hackrf_mcp import cli, live_log, live_profiles, live_spectrum, settings
+from hackrf_mcp import cli, live_feed, live_log, live_profiles, live_spectrum, settings
 from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
@@ -221,8 +221,9 @@ class LiveService:
         self.per_profile_rows: collections.Counter = collections.Counter()
         self.positions_total = 0
         # Besides the log, anything that wants every row as it is decoded
-        # (a future web UI's live feed, say) can subscribe with add_sink().
+        # can subscribe with add_sink(); attach_feed() does, for the web UI.
         self.sinks: list = []
+        self.feed: live_feed.FeedServer | None = None
 
     # --- plumbing -----------------------------------------------------
 
@@ -253,6 +254,15 @@ class LiveService:
         self.positions_total += 1
         if self.pump is not None:
             self.pump.position(position)
+        if self.feed is not None:
+            self.feed.publish(live_feed.position_message(position))
+
+    def attach_feed(self, feed: live_feed.FeedServer) -> None:
+        """Publish rows, events, positions and live spectrum rows on `feed`."""
+        self.feed = feed
+        self.add_sink(lambda row: feed.publish(live_feed.row_message(row)))
+        if self.spectrum is not None:
+            self.spectrum.add_live_sink(lambda seg, row: feed.publish(live_feed.fft_message(seg, row)))
 
     def add_sink(self, sink) -> None:
         """Call sink(row) for every row as it is decoded, from the decoder's
@@ -264,6 +274,8 @@ class LiveService:
               file=sys.stderr, flush=True)
         if self.pump is not None:
             self.pump.event(event, profile, detail)
+        if self.feed is not None:
+            self.feed.publish(live_feed.event_message(time.time(), event, profile, detail))
 
     def _source(self, tuning: Tuning) -> live_profiles.Source:
         source = self._make_source(tuning)
@@ -632,6 +644,7 @@ class LiveService:
             )
         out["log"] = log
         out["spectrum"] = self.spectrum_status()
+        out["feed"] = self.feed.status() if self.feed is not None else None
         return out
 
     def spectrum_status(self) -> dict:
@@ -714,6 +727,8 @@ def serve(live: settings.LiveSettings) -> None:
     pump.start()
     recorder = SpectrumRecorder(pump.spectrum, duty=live.spectrum_duty) if spectrum_writer else None
     service = LiveService(live, pump, spectrum=recorder)
+    feed = live_feed.FeedServer(live.feed_socket_path).start()
+    service.attach_feed(feed)
     service._event(
         "service-start",
         None,
@@ -742,6 +757,7 @@ def serve(live: settings.LiveSettings) -> None:
         except OSError:
             pass
         service._event("service-stop", None, None)
+        feed.close()
         pump.stop()
         writer.close()
         if spectrum_writer is not None:

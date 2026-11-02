@@ -53,9 +53,9 @@ views should drop in the way new decoders drop into `protocols/`. Wanted:
 - **Tracks.** Done in milestone 3: a `positions` table in `live.db`, one
   position per aircraft or ship at most every 10 s (every 5 minutes while
   it stands still), pruned with the log; `live_log.positions()` reads it.
-- **The live waterfall's source.** Only `hackrf-live` holds samples, so the
-  UI's backend talks to it (a second socket command, or a sink that
-  publishes FFT rows), not to `hackrf-mcp`.
+- **The live waterfall's source.** Done in milestone 4: `hackrf-live`
+  publishes rows, events, positions and FFT rows on `feed.sock`
+  (`live_feed.py`), which `hackrf-web` relays to browsers.
 
 ### Milestones (agreed 2026-11-01)
 

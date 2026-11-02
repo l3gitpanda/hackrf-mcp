@@ -36,6 +36,7 @@ Issues = "https://github.com/thehappydinoa/hackrf-mcp/issues"
 
 [project.scripts]
 hackrf-mcp = "hackrf_mcp.server:main"
+hackrf-web = "hackrf_mcp.web.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

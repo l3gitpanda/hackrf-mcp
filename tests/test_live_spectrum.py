@@ -6,7 +6,7 @@ import pytest
 
 from hackrf_mcp import live_service, live_spectrum, server, settings
 from hackrf_mcp.live_log import LiveLogWriter
-from hackrf_mcp.live_profiles import FileSource
+from hackrf_mcp.live_profiles import FileSource, HackrfSource
 from hackrf_mcp.live_service import LiveService, LogPump
 from hackrf_mcp.live_spectrum import (
     BINS,
@@ -298,6 +298,20 @@ def test_a_failing_tap_does_not_stop_decoding(tmp_path):
     assert src.finished.wait(5)
     assert sum(got) == 4 * BLOCK and src.tap_errors == 2
     assert src.health()["spectrum_tap_errors"] == 2
+
+
+def test_the_hackrf_source_feeds_its_tap_before_the_decoder(tmp_path):
+    fake = tmp_path / "hackrf_transfer"
+    fake.write_text("#!/bin/sh\nhead -c 524288 /dev/zero\n")
+    fake.chmod(0o755)
+    src = HackrfSource(str(fake), 1_090_000_000, RATE, 32, 40, False)
+    order = []
+    src.tap = lambda buf: order.append(("tap", len(buf)))
+    src.start(lambda buf: order.append(("decoder", len(buf))))
+    assert src.finished.wait(5)
+    src.stop()
+    assert sum(n for who, n in order if who == "tap") == 524288
+    assert order[0][0] == "tap" and [who for who, _ in order[:2]] == ["tap", "decoder"]
 
 
 class SourcePipeline:

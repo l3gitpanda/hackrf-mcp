@@ -332,6 +332,10 @@ class Source:
         self.error: str | None = None
         self.finished = threading.Event()
         self._recent: collections.deque[tuple[float, int]] = collections.deque(maxlen=200)
+        # The source's thread appends to _recent while the supervisor and
+        # status read it; iterating it unlocked raised "deque mutated during
+        # iteration" (124 supervisor errors on the QNAP by 2026-11-01).
+        self._recent_lock = threading.Lock()
         # Called with every block before the consumer (the live service's
         # spectrum history, live_spectrum.SpectrumTap). Its errors are
         # counted, never raised: it must not stop decoding.
@@ -356,17 +360,20 @@ class Source:
 
     def _count(self, n: int) -> None:
         self.bytes_read += n
-        self._recent.append((time.monotonic(), self.bytes_read))
+        with self._recent_lock:
+            self._recent.append((time.monotonic(), self.bytes_read))
 
     def input_ratio(self, window_s: float = 10.0) -> float | None:
         """Bytes received over the last window as a fraction of what the
         sample rate should deliver; well under 1 means samples are lost."""
         now = time.monotonic()
-        if not self._recent or now - self.started < window_s + 2:
+        with self._recent_lock:
+            recent = list(self._recent)
+        if not recent or now - self.started < window_s + 2:
             return None
-        old = [(t, n) for t, n in self._recent if now - t >= window_s]
-        t0, n0 = old[-1] if old else self._recent[0]
-        t1, n1 = self._recent[-1]
+        old = [(t, n) for t, n in recent if now - t >= window_s]
+        t0, n0 = old[-1] if old else recent[0]
+        t1, n1 = recent[-1]
         if t1 <= t0:
             return None
         return (n1 - n0) / (t1 - t0) / (2 * self.sample_rate_hz)

@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 import time
 
 import numpy as np
@@ -307,3 +308,28 @@ def test_multimon_pipeline_end_to_end_with_a_fake_decoder(tmp_path):
     # (less the channelizer's last part-block).
     got = int(got_file.read_text())
     assert 0.6 * 2 * 22_050 / 4 < got <= 2 * 22_050 / 4
+
+
+def test_input_ratio_survives_concurrent_counts():
+    # The source's thread counts blocks while the supervisor reads the rate.
+    from hackrf_mcp.live_profiles import Source
+
+    src = Source()
+    src.sample_rate_hz = 2_400_000
+    src.started = time.monotonic() - 100
+    for i in range(200):
+        src._recent.append((time.monotonic() - 20 + i * 0.1, i * 1000))
+    stop = threading.Event()
+
+    def count():
+        while not stop.is_set():
+            src._count(1000)
+
+    t = threading.Thread(target=count, daemon=True)
+    t.start()
+    try:
+        for _ in range(20000):
+            src.input_ratio()
+    finally:
+        stop.set()
+        t.join()

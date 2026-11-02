@@ -138,10 +138,13 @@ asyncio.run(main())
 - The live service never transmits and never turns on bias-tee power.
 - `iq.py` imports matplotlib only inside the PNG renderers, so the live
   service doesn't load it. Keep it that way.
-- The spectrum tap runs in each source's thread on every block, so keep it
-  cheap: it uses `scipy.fft` (several times faster than `numpy.fft` on
-  complex64), and on the QNAP's Celeron it must stay a few percent of a
-  core at `HACKRF_LIVE_SPECTRUM_DUTY=1`.
+- The spectrum tap runs in each source's thread, so keep it cheap. It uses
+  `scipy.fft` (several times faster than `numpy.fft` on complex64) and
+  works in batches of about 0.25 s: on the QNAP's Celeron, the same work
+  done per 55 ms block, in bursts between idle gaps, cost about three times
+  as much CPU as back to back. Measure changes paced at the real sample
+  rate (a `FileSource` with `realtime=True`), not in a tight loop.
+  `hackrf_live_status` shows the tap's share of a core.
 - The socket tests in `tests/test_live_service.py` need `AF_UNIX`; a
   sandbox that blocks it fails them with `PermissionError`.
 

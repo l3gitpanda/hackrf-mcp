@@ -1367,6 +1367,12 @@ def _format_live_status(st: dict) -> str:
             lines.append(
                 f"  Spectrum rows dropped: {sp['rows_dropped']}" + (" (free disk below the floor)" if sp.get("low_disk") else "")
             )
+    feed = st.get("feed")
+    if feed:
+        lines.append(
+            f"  Feed (for the web UI): {feed.get('clients', 0)} client(s) connected, "
+            f"{feed.get('published', 0)} messages published since the service started."
+        )
     if h.get("spectrum_tap_errors"):
         lines.append(f"  Spectrum tap errors: {h['spectrum_tap_errors']}, last: {h.get('spectrum_tap_error')}")
     lines.append(f"  Service started {_utc(st.get('service_started'))}, pid {st.get('pid')}.")

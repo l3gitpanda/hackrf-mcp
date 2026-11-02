@@ -499,6 +499,9 @@ def test_live_status_reports_the_spectrum_history():
     out = server._format_live_status(_status(enabled=True, max_mb=1024, max_age_days=7, minute_days=90, segment=None))
     assert "adsb's decoder opens the HackRF itself" in out
     assert "Spectrum history: off" in server._format_live_status(_status(enabled=False))
+    st = _status(enabled=False)
+    st["feed"] = {"path": "/x/feed.sock", "clients": 1, "published": 42}
+    assert "Feed (for the web UI): 1 client(s) connected, 42 messages" in server._format_live_status(st)
 
 
 def test_downsample_reads_in_chunks_and_falls_back_to_minute_rows(tmp_path):

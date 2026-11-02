@@ -31,6 +31,7 @@ RestartSec=5
 # this service rather than swapping the box; under CPU contention this
 # service gives way, and it never takes more than one and a half cores.
 # The log is bounded by HACKRF_LIVE_MAX_DB_MB and HACKRF_LIVE_MAX_AGE_DAYS,
+# the spectrum history by HACKRF_LIVE_SPECTRUM_MAX_MB and its age limits,
 # and nothing is written while free disk is under HACKRF_MCP_MIN_FREE_MB.
 MemoryHigh=384M
 MemoryMax=512M

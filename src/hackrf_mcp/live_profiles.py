@@ -332,6 +332,21 @@ class Source:
         self.error: str | None = None
         self.finished = threading.Event()
         self._recent: collections.deque[tuple[float, int]] = collections.deque(maxlen=200)
+        # Called with every block before the consumer (the live service's
+        # spectrum history, live_spectrum.SpectrumTap). Its errors are
+        # counted, never raised: it must not stop decoding.
+        self.tap: Callable[[bytes], None] | None = None
+        self.tap_errors = 0
+        self.tap_error: str | None = None
+
+    def _deliver(self, consumer: Callable[[bytes], None], buf: bytes) -> None:
+        if self.tap is not None:
+            try:
+                self.tap(buf)
+            except Exception as exc:
+                self.tap_errors += 1
+                self.tap_error = repr(exc)
+        consumer(buf)
 
     def start(self, consumer: Callable[[bytes], None]) -> None:
         raise NotImplementedError
@@ -357,7 +372,11 @@ class Source:
         return (n1 - n0) / (t1 - t0) / (2 * self.sample_rate_hz)
 
     def health(self) -> dict:
-        return {"bytes": self.bytes_read, "input_ratio": self.input_ratio()}
+        h = {"bytes": self.bytes_read, "input_ratio": self.input_ratio()}
+        if self.tap_errors:
+            h["spectrum_tap_errors"] = self.tap_errors
+            h["spectrum_tap_error"] = self.tap_error
+        return h
 
 
 class HackrfSource(Source):
@@ -403,7 +422,7 @@ class HackrfSource(Source):
                 if len(buf) % 2:
                     buf = buf[:-1]
                 self._count(len(buf))
-                consumer(buf)
+                self._deliver(consumer, buf)
         except Exception as exc:
             if not self._stopping:
                 self.error = f"stream stopped: {exc!r}"
@@ -466,7 +485,7 @@ class FileSource(Source):
                     if len(buf) % 2:
                         buf = buf[:-1]
                     self._count(len(buf))
-                    consumer(buf)
+                    self._deliver(consumer, buf)
                     if self.realtime:
                         due = self.started + self.bytes_read / (2 * self.sample_rate_hz)
                         delay = due - time.monotonic()

@@ -1362,6 +1362,33 @@ def _format_live_status(st: dict) -> str:
         )
         if log.get("rows_dropped"):
             lines.append(f"  Rows dropped: {log['rows_dropped']}" + (" (free disk below the floor)" if log.get("low_disk") else ""))
+    sp = st.get("spectrum") or {}
+    if sp and not sp.get("enabled"):
+        lines.append("  Spectrum history: off (HACKRF_LIVE_SPECTRUM).")
+    elif sp:
+        seg = sp.get("segment")
+        lines.append(
+            f"  Spectrum history: {sp.get('path')}, {sp.get('file_bytes', 0) / storage.MIB:.1f} MiB of "
+            f"{sp.get('max_mb'):g} MiB, second rows kept {sp.get('max_age_days'):g} days and minute rows "
+            f"{sp.get('minute_days'):g} days; {sp.get('rows_recorded', 0)} seconds recorded since the service "
+            f"started, last {_ago(sp.get('last_row_at'), now)}"
+            + (
+                f"; recording {seg['profile']} at {seg['center_hz'] / 1e6:.4f} MHz, "
+                f"{seg['sample_rate_hz'] / 1e6:g} MS/s wide."
+                if seg
+                else (
+                    f"; not recording: {st['profile']}'s decoder opens the HackRF itself."
+                    if state == "running"
+                    else "; not recording while nothing is decoding."
+                )
+            )
+        )
+        if sp.get("rows_dropped"):
+            lines.append(
+                f"  Spectrum rows dropped: {sp['rows_dropped']}" + (" (free disk below the floor)" if sp.get("low_disk") else "")
+            )
+    if h.get("spectrum_tap_errors"):
+        lines.append(f"  Spectrum tap errors: {h['spectrum_tap_errors']}, last: {h.get('spectrum_tap_error')}")
     lines.append(f"  Service started {_utc(st.get('service_started'))}, pid {st.get('pid')}.")
     return "\n".join(lines)
 
@@ -1381,8 +1408,9 @@ def hackrf_live_status() -> str:
     waiting to retry after an error; the profile and its tuning and since
     when; decoded-message and log-row rates; whether samples are arriving
     at the full rate; the last error; a rotation schedule if one is set;
-    the log's size and limits; and recent events (starts, stops, pauses,
-    errors) from the log.
+    the size and limits of the log and of the spectrum history (one row of
+    mean and peak power per bin per second of the band being decoded); and
+    recent events (starts, stops, pauses, errors) from the log.
 
     This does not access the HackRF device.
     """

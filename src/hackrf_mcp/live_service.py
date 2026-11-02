@@ -41,10 +41,11 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hackrf_mcp import cli, live_log, live_profiles, settings
+from hackrf_mcp import cli, live_log, live_profiles, live_spectrum, settings
 from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
 from hackrf_mcp.live_log import LiveLogWriter, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
+from hackrf_mcp.live_spectrum import SpectrumRecorder, SpectrumWriter
 
 MIB = 1024 * 1024
 # Retry delays after a profile fails, in seconds; the last one repeats.
@@ -62,12 +63,20 @@ def _now_iso(ts: float | None) -> str | None:
 
 
 class LogPump(threading.Thread):
-    """The only user of the database connection: inserts queued rows and
-    events about once a second and prunes the log once a minute."""
+    """The only user of the database connections: inserts queued rows,
+    events and spectrum rows about once a second and prunes the log and the
+    spectrum history once a minute."""
 
-    def __init__(self, writer: LiveLogWriter, flush_s: float = 1.0, prune_s: float = 60.0):
+    def __init__(
+        self,
+        writer: LiveLogWriter,
+        flush_s: float = 1.0,
+        prune_s: float = 60.0,
+        spectrum_writer: SpectrumWriter | None = None,
+    ):
         super().__init__(daemon=True, name="log-pump")
         self.writer = writer
+        self.spectrum_writer = spectrum_writer
         self.q: queue.Queue = queue.Queue(maxsize=100_000)
         self.flush_s = flush_s
         self.prune_s = prune_s
@@ -87,17 +96,31 @@ class LogPump(threading.Thread):
         except queue.Full:
             self.dropped_queue += 1
 
+    def spectrum(self, item: tuple) -> None:
+        """Queue a SpectrumRecorder item for spectrum.db."""
+        if self.spectrum_writer is None:
+            return
+        try:
+            self.q.put_nowait(("spectrum", item))
+        except queue.Full:
+            self.dropped_queue += 1
+
     def drain(self) -> None:
-        rows, events = [], []
+        rows, events, spectra = [], [], []
         while True:
             try:
                 kind, item = self.q.get_nowait()
             except queue.Empty:
                 break
-            (rows if kind == "row" else events).append(item)
-        for ts, event, profile, detail in events:
-            self.writer.event(event, profile, detail, ts=ts)
-        self.writer.write(rows)
+            {"row": rows, "event": events, "spectrum": spectra}[kind].append(item)
+        try:
+            for ts, event, profile, detail in events:
+                self.writer.event(event, profile, detail, ts=ts)
+            self.writer.write(rows)
+        finally:
+            # The spectrum history must not hold up the log, nor the log it.
+            if spectra and self.spectrum_writer is not None:
+                self.spectrum_writer.apply(spectra)
 
     def run(self) -> None:
         while not self._halt.wait(self.flush_s):
@@ -107,8 +130,10 @@ class LogPump(threading.Thread):
                 if now >= self._next_prune:
                     self._next_prune = now + self.prune_s
                     self.writer.prune(now)
+                    if self.spectrum_writer is not None:
+                        self.spectrum_writer.prune(now)
             except Exception as exc:
-                print(f"hackrf-live: log write failed: {exc!r}", file=sys.stderr, flush=True)
+                print(f"hackrf-live: log or spectrum write failed: {exc!r}", file=sys.stderr, flush=True)
         self.drain()
 
     def stop(self) -> None:
@@ -152,9 +177,13 @@ class LiveService:
         program_finder=live_profiles.find_program,
         run_dir: Path | None = None,
         clock=time.time,
+        spectrum: SpectrumRecorder | None = None,
     ):
         self.live = live
         self.pump = pump
+        # Spectrum history: every source a pipeline makes gets a tap, and
+        # each run of a pipeline is one segment of it.
+        self.spectrum = spectrum
         self.make_pipeline = make_pipeline
         self.program_finder = program_finder
         self.clock = clock
@@ -223,13 +252,19 @@ class LiveService:
         if self.pump is not None:
             self.pump.event(event, profile, detail)
 
+    def _source(self, tuning: Tuning) -> live_profiles.Source:
+        source = self._make_source(tuning)
+        if self.spectrum is not None:
+            source.tap = self.spectrum.tap_for(tuning, source.sample_rate_hz)
+        return source
+
     def _context(self) -> Context:
         return Context(
             settings=self.live,
             emit=self._emit,
             count=lambda n: self.decoded.add(n),
             run_dir=self.run_dir,
-            make_source=self._make_source,
+            make_source=self._source,
         )
 
     def resolve(self, spec: Spec) -> Tuning:
@@ -302,6 +337,8 @@ class LiveService:
             p.stop()
         except Exception as exc:
             self._event("error", name, f"while stopping: {exc!r}")
+        if self.spectrum is not None:
+            self.spectrum.end()
         self.last_stderr = p.stderr_tail()
         self._event("stop", name, why)
         self.running_spec = None
@@ -384,6 +421,8 @@ class LiveService:
                 pipeline.stop()
             except Exception:
                 pass
+            if self.spectrum is not None:
+                self.spectrum.end()
             return
         self.pipeline = pipeline
         self.tuning = tuning
@@ -575,7 +614,30 @@ class LiveService:
                 },
             )
         out["log"] = log
+        out["spectrum"] = self.spectrum_status()
         return out
+
+    def spectrum_status(self) -> dict:
+        sp: dict = {"enabled": self.spectrum is not None}
+        if self.spectrum is None:
+            return sp
+        sp.update(
+            path=str(self.live.spectrum_db_path),
+            max_mb=self.live.spectrum_max_mb,
+            max_age_days=self.live.spectrum_max_age_days,
+            minute_days=self.live.spectrum_minute_days,
+            **self.spectrum.status(),
+        )
+        w = self.pump.spectrum_writer if self.pump is not None else None
+        if w is not None:
+            sp.update(
+                path=str(w.path),
+                file_bytes=w.file_bytes(),
+                rows_written=w.stats.rows_written,
+                rows_dropped=w.stats.rows_dropped,
+                low_disk=w.stats.low_disk,
+            )
+        return sp
 
 
 # --- Control socket -----------------------------------------------------------
@@ -622,10 +684,25 @@ def serve(live: settings.LiveSettings) -> None:
     writer = LiveLogWriter(
         live.db_path, live.max_age_days * 86400, int(live.max_db_mb * MIB), int(live.min_free_mb * MIB)
     )
-    pump = LogPump(writer)
+    spectrum_writer = None
+    if live.spectrum:
+        spectrum_writer = SpectrumWriter(
+            live.spectrum_db_path,
+            live.spectrum_max_age_days * 86400,
+            live.spectrum_minute_days * 86400,
+            int(live.spectrum_max_mb * MIB),
+            int(live.min_free_mb * MIB),
+        )
+    pump = LogPump(writer, spectrum_writer=spectrum_writer)
     pump.start()
-    service = LiveService(live, pump)
-    service._event("service-start", None, f"pid {os.getpid()}, pager content {'on' if live.pager_content else 'off'}")
+    recorder = SpectrumRecorder(pump.spectrum, duty=live.spectrum_duty) if spectrum_writer else None
+    service = LiveService(live, pump, spectrum=recorder)
+    service._event(
+        "service-start",
+        None,
+        f"pid {os.getpid()}, pager content {'on' if live.pager_content else 'off'}, spectrum history "
+        + (f"on (duty {live.spectrum_duty:g})" if recorder else "off"),
+    )
     service.load()
     server = ControlServer(live.socket_path, service)
     threading.Thread(target=server.serve_forever, daemon=True, name="control").start()
@@ -650,6 +727,8 @@ def serve(live: settings.LiveSettings) -> None:
         service._event("service-stop", None, None)
         pump.stop()
         writer.close()
+        if spectrum_writer is not None:
+            spectrum_writer.close()
 
 
 def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:
@@ -666,14 +745,19 @@ def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:
             return 2
     db = Path(args.db)
     writer = LiveLogWriter(db, 365 * 86400, 1 << 40, 0)
-    pump = LogPump(writer)
+    spectrum_db = Path(args.spectrum_db) if args.spectrum_db else db.with_name(db.stem + "-spectrum.db")
+    spectrum_writer = SpectrumWriter(spectrum_db, 365 * 86400, 365 * 86400, 1 << 40, 0)
+    pump = LogPump(writer, spectrum_writer=spectrum_writer)
     pump.start()
     realtime = not args.fast or tuning.profile.name == "adsb"
+    # Rows are stamped with the wall clock; a fast replay squeezes them together.
+    recorder = SpectrumRecorder(pump.spectrum, duty=live.spectrum_duty)
     service = LiveService(
         live,
         pump,
         make_source=lambda t: FileSource(path, args.rate, realtime=realtime),
         run_dir=Path(args.run_dir) if args.run_dir else db.parent / "replay-run",
+        spectrum=recorder,
     )
     ctx = service._context()
     ctx.replay_path = path
@@ -689,6 +773,7 @@ def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:
         time.sleep(0.5)
     time.sleep(args.drain)
     pipeline.stop()
+    recorder.end()
     pump.stop()
     took = time.monotonic() - started
     conn = live_log.open_reader(db)
@@ -700,8 +785,31 @@ def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:
               f"{(r['freq_hz'] or 0) / 1e6:.4f} MHz level {r['level_db']} | {(r['raw'] or '')[:160]}")
     for line in pipeline.stderr_tail():
         print(f"  stderr {line}")
+    _print_spectrum(spectrum_db)
     writer.close()
+    spectrum_writer.close()
     return 0
+
+
+def _print_spectrum(path: Path) -> None:
+    """What a replay recorded: rows, and the strongest bins of the mean."""
+    try:
+        conn = live_spectrum.open_reader(path)
+    except live_spectrum.SpectrumNotFound:
+        return
+    rows = live_spectrum.read(conn, tier=live_spectrum.TIER_SECOND, limit=100_000)
+    minutes = conn.execute("SELECT count(*) FROM spectra WHERE tier = ?", (live_spectrum.TIER_MINUTE,)).fetchone()[0]
+    print(f"spectrum: {len(rows)} second rows, {minutes} minute rows in {path}")
+    if not rows:
+        return
+    import numpy as np
+
+    mean = np.mean([r["mean"] for r in rows], axis=0)
+    peak = np.max([r["peak"] for r in rows], axis=0)
+    freqs = live_spectrum.bin_freqs(rows[0]["center_hz"], rows[0]["sample_rate_hz"], mean.size)
+    print(f"  noise floor (median bin) {np.median(mean):.1f} dBFS; strongest bins by mean:")
+    for i in np.argsort(mean)[::-1][:5]:
+        print(f"    {freqs[i] / 1e6:.4f} MHz mean {mean[i]:.1f} peak {peak[i]:.1f} dBFS")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -713,6 +821,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--center", type=int, help="the capture's center frequency (replay)")
     parser.add_argument("--freqs", type=int, nargs="*", help="channels to decode (replay)")
     parser.add_argument("--db", help="database to write (replay)")
+    parser.add_argument("--spectrum-db", help="spectrum history to write (replay; default <db>-spectrum.db)")
     parser.add_argument("--run-dir", help="scratch directory for decoder files (replay)")
     parser.add_argument("--fast", action="store_true", help="replay as fast as possible (not ADS-B)")
     parser.add_argument("--drain", type=float, default=3.0, help="seconds to let decoders finish (replay)")

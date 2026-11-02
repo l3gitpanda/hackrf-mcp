@@ -93,6 +93,14 @@ asyncio.run(main())
   pager redaction for both the live log and `hackrf_decode`.
 - `src/hackrf_mcp/live_log.py` — the SQLite log: schema, writer (size/age
   pruning, free-space floor) and the read side the MCP tools use.
+- `src/hackrf_mcp/live_spectrum.py` — the spectrum history beside the log
+  (`spectrum.db`): `SpectrumTap` (512-point FFTs over every block a
+  `Source` delivers, one mean+peak row per second of samples),
+  `SpectrumRecorder` (a segment per pipeline run, the per-minute roll-up,
+  live sinks), `SpectrumWriter` (written from `LogPump`'s thread; own size
+  and age limits) and the read side. Sources call the tap through
+  `Source._deliver()`, which counts its errors and never lets it stop
+  decoding; protocol modules don't see it.
 - `src/hackrf_mcp/live_client.py` — the MCP server's side of the socket.
   `_run_on_device()` pauses the live service around every device call.
 
@@ -130,6 +138,10 @@ asyncio.run(main())
 - The live service never transmits and never turns on bias-tee power.
 - `iq.py` imports matplotlib only inside the PNG renderers, so the live
   service doesn't load it. Keep it that way.
+- The spectrum tap runs in each source's thread on every block, so keep it
+  cheap: it uses `scipy.fft` (several times faster than `numpy.fft` on
+  complex64), and on the QNAP's Celeron it must stay a few percent of a
+  core at `HACKRF_LIVE_SPECTRUM_DUTY=1`.
 - The socket tests in `tests/test_live_service.py` need `AF_UNIX`; a
   sandbox that blocks it fails them with `PermissionError`.
 

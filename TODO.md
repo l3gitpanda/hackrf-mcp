@@ -43,13 +43,10 @@ views should drop in the way new decoders drop into `protocols/`. Wanted:
 
 ### What has to be added first, because it shapes the data
 
-- **Spectrum history.** A retrospective waterfall needs spectra recorded now;
-  nothing stores them yet. The live service already holds the I/Q stream
-  for every profile except AIS. One averaged spectrum row per second, about
-  512 bins quantised to one byte each, is about 44 MB a day: more than the
-  rest of the log, so it needs its own table or files and its own limits
-  next to `HACKRF_LIVE_MAX_DB_MB`. Recording it per profile, with the
-  tuning, lets the UI label the frequency axis.
+- **Spectrum history.** Done in milestone 1: `live_spectrum.py` records
+  mean and peak power in 512 bins per second of samples, and per minute,
+  in `spectrum.db` with its own limits (`HACKRF_LIVE_SPECTRUM_*`); see the
+  README's "Spectrum history".
 - **AIS spectrum.** AIS-catcher opens the HackRF itself, so there is no
   stream to take a spectrum from. Either feed it from `hackrf_transfer` (it
   reads CS8 on stdin, which `decode_ais` already uses) and accept the Python
@@ -61,6 +58,37 @@ views should drop in the way new decoders drop into `protocols/`. Wanted:
 - **The live waterfall's source.** Only `hackrf-live` holds samples, so the
   UI's backend talks to it (a second socket command, or a sink that
   publishes FFT rows), not to `hackrf-mcp`.
+
+### Milestones (agreed 2026-11-01)
+
+One branch and one PR against `homelab` each; deployed to the QNAP only
+after the owner approves.
+
+1. **Spectrum history** (`webui-1-spectrum`): the tap, `spectrum.db`, limits,
+   status. Mean and peak per bin (the owner chose both over mean only).
+2. **AIS through `hackrf_transfer`**: CS8 at 2 MS/s on AIS-catcher's stdin
+   (`-r CS8 . -s 2000000`, as `decode_ais` does), so AIS gets spectrum and
+   the stall/input checks. Compare messages and stations per 10-minute
+   slot with earlier AIS slots before keeping it.
+3. **Positions**: a `positions` table in `live.db` (time, profile, subject,
+   lat, lon, altitude, speed, track), one per subject at most every 10 s,
+   pruned with the log. Not inside the per-minute rows: `positions` there
+   is a count that `summarise()` adds up, and `hackrf_live_search` prints
+   those fields.
+4. **Backend**: a third unit, `hackrf-web` (Starlette/uvicorn, already in
+   the lock file), with its own limits. hackrf-live publishes rows, events
+   and live FFT rows on a second Unix socket (`feed.sock`, bounded queue per
+   subscriber, slow ones dropped); control goes over `control.sock` as the
+   MCP tools do. JSON API over the log, events, spectrum and positions;
+   websockets for the feed and FFT rows; `/api/registry` from `PROFILES`,
+   `DECODERS` and `available()`, with views declared by protocol modules
+   (a `views` field on `Profile`). Pager text stripped on read as well.
+   Port 8766 behind ufw (source IPs to confirm with the owner), its own token
+   (digest), the browser exchanging it once for an HttpOnly SameSite=Strict
+   cookie; websockets check the Origin.
+5. **Live screen**, 6. **Log screen**, 7. **Map** (Leaflet over
+   `positions`; tar1090 is GPL and live-ADS-B-only, so at most a link),
+   then History, Summaries, Alerts and Plugins.
 
 ### Constraints
 

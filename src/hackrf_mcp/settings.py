@@ -147,10 +147,33 @@ class LiveSettings:
     # Default receive gains for profiles that don't set their own.
     lna_gain_db: int | None = None
     vga_gain_db: int | None = None
+    # Spectrum history (live_spectrum.py): one row per second and one per
+    # minute of mean and peak power per bin, in spectrum.db beside the log,
+    # with limits of its own. Second rows go after spectrum_max_age_days,
+    # minute rows after spectrum_minute_days, and the oldest second rows
+    # first when the file passes spectrum_max_mb.
+    spectrum: bool = True
+    spectrum_max_mb: float = 1024.0
+    spectrum_max_age_days: float = 7.0
+    spectrum_minute_days: float = 90.0
+    # The share of the samples the spectrum is computed from (0-1]; 1 is
+    # every sample, so the peak catches every burst.
+    spectrum_duty: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not 0 < self.spectrum_duty <= 1:
+            raise ValueError(f"HACKRF_LIVE_SPECTRUM_DUTY must be above 0 and at most 1, not {self.spectrum_duty:g}")
+        for name in ("spectrum_max_mb", "spectrum_max_age_days", "spectrum_minute_days"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be above 0, not {getattr(self, name):g}")
 
     @property
     def db_path(self) -> Path:
         return self.live_dir / "live.db"
+
+    @property
+    def spectrum_db_path(self) -> Path:
+        return self.live_dir / "spectrum.db"
 
     @property
     def socket_path(self) -> Path:
@@ -185,6 +208,16 @@ class LiveSettings:
         for name, key in (("lna_gain_db", "HACKRF_LIVE_LNA_GAIN"), ("vga_gain_db", "HACKRF_LIVE_VGA_GAIN")):
             if v := env.get(key):
                 kwargs[name] = int(v)
+        if v := env.get("HACKRF_LIVE_SPECTRUM"):
+            kwargs["spectrum"] = parse_bool(v)
+        for name, key in (
+            ("spectrum_max_mb", "HACKRF_LIVE_SPECTRUM_MAX_MB"),
+            ("spectrum_max_age_days", "HACKRF_LIVE_SPECTRUM_MAX_AGE_DAYS"),
+            ("spectrum_minute_days", "HACKRF_LIVE_SPECTRUM_MINUTE_DAYS"),
+            ("spectrum_duty", "HACKRF_LIVE_SPECTRUM_DUTY"),
+        ):
+            if v := env.get(key):
+                kwargs[name] = float(v)
         return cls(**kwargs)
 
 

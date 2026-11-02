@@ -269,6 +269,20 @@ space given back to the disk; nothing is written while free disk is below
 `HACKRF_MCP_MIN_FREE_MB`. Starts, stops, pauses and errors go to an
 `events` table, so gaps in coverage can be seen.
 
+**Spectrum history.** Beside the log, `$HACKRF_LIVE_DIR/spectrum.db` keeps
+what the band looked like while each profile ran, for a waterfall of any
+past period ([`live_spectrum.py`](src/hackrf_mcp/live_spectrum.py)). Every
+block of samples a profile reads from the HackRF also goes through 512-point
+FFTs, and each second of samples becomes one row of two values per bin: the
+mean power and the peak (the strongest single FFT frame, so short bursts
+show). Values are one byte each, in 0.5 dB steps from -130 to -2.5 dBFS. A
+run of a profile (a start, a switch, a resume after a pause) is a segment
+recording the profile, tuning, gains and scale. Second rows are also rolled
+up into one row per clock minute, kept longer, for day and week views.
+Mean and peak take about 1 KB a second, 88 MB a day. AIS has none, because
+AIS-catcher opens the HackRF itself. `hackrf_live_status` shows its size
+and limits.
+
 | Variable | Default | |
 |---|---|---|
 | `HACKRF_LIVE_DIR` | `~/.local/state/hackrf-mcp/live` | log, control socket and saved profile; set it for both services |
@@ -277,6 +291,11 @@ space given back to the disk; nothing is written while free disk is below
 | `HACKRF_MCP_PAGER_CONTENT` | `false` | store and show pager message text (live log and `hackrf_decode`) |
 | `HACKRF_LIVE_RECEIVER` | none | `LAT,LON`, so dump1090 can resolve more positions |
 | `HACKRF_LIVE_LNA_GAIN`, `HACKRF_LIVE_VGA_GAIN` | 32, 40 | default gains (a start call can set its own) |
+| `HACKRF_LIVE_SPECTRUM` | `true` | record the spectrum history |
+| `HACKRF_LIVE_SPECTRUM_MAX_MB` | `1024` | the oldest second rows (then minute rows) beyond this are deleted |
+| `HACKRF_LIVE_SPECTRUM_MAX_AGE_DAYS` | `7` | second rows older than this are deleted |
+| `HACKRF_LIVE_SPECTRUM_MINUTE_DAYS` | `90` | minute rows older than this are deleted |
+| `HACKRF_LIVE_SPECTRUM_DUTY` | `1` | share of the samples transformed (0-1]; below 1 the peak can miss short bursts |
 
 The unit limits the service to `MemoryMax=512M` and 1.5 cores
 (`CPUQuota=150%`), and gives way under contention (`CPUWeight=50`,
@@ -287,6 +306,10 @@ or reboot. To check a profile against a recording instead of the radio:
 python -m hackrf_mcp.live_service --replay capture.cs8 --profile acars \
     --rate 2000000 --center 130800000 --db /tmp/replay.db --fast
 ```
+
+A replay also records the spectrum (to `--spectrum-db`, by default
+`replay-spectrum.db` beside `--db`) and prints the noise floor and the
+strongest bins, to check a recording against a known signal.
 
 ## Adding a decoder
 

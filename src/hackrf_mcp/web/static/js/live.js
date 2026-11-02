@@ -209,6 +209,7 @@ function renderStatus(st) {
   }
   renderAppBar(reachable);
   if (!S.status) return;
+  fillBandChannels();
   renderControl();
   renderRotation();
   renderBanner();
@@ -263,6 +264,18 @@ function renderControl() {
   $('t-amp').textContent = det ? (det.amp ? 'on' : 'off') : '—';
   $('btn-stop').disabled = !l.desired && l.state !== 'running';
   updateStartLabel();
+}
+
+// After a switch the first FFT rows can arrive before the status that
+// names the new channels: add them once the status catches up.
+function fillBandChannels() {
+  const det = live().tuning_detail;
+  const b = S.wf && S.wf.band;
+  if (!det || !b || det.center_hz !== b.center_hz || det.sample_rate_hz !== b.sample_rate_hz) return;
+  if ((b.freqs_hz || []).join() === det.freqs_hz.join()) return;
+  const band = { ...b, freqs_hz: det.freqs_hz };
+  S.wf.setBand(band);
+  renderBandHeader(band);
 }
 
 function renderBandHeader(band) {
@@ -724,7 +737,7 @@ function itemEl(it, fresh) {
       it.label ? h('span', { class: 'lbl' }, it.label) : null,
       h('span', { class: 'kind muted' }, it.kind),
     ),
-    h('span', { class: 'l2' }, summary, h('span', { class: 'mono muted' }, `${it.freq_hz ? mhz(it.freq_hz) : '—'} MHz · ${it.level_db ?? '—'} dB`)),
+    h('span', { class: 'l2' }, summary, h('span', { class: 'mono muted' }, `${it.freq_hz ? mhz(it.freq_hz) : '—'} MHz · ${it.level_db == null ? '—' : Number(it.level_db).toFixed(1)} dB`)),
   );
   btn.addEventListener('click', () => {
     const open = btn.getAttribute('aria-expanded') === 'true';

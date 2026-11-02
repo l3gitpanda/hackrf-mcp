@@ -65,12 +65,13 @@ export class AutoLevel {
     this.floor = null;
   }
 
-  get lo() {
-    return (this.floor ?? -100) - this.below;
+  // 0 dBFS is full scale, so the top stops there however high the floor.
+  get hi() {
+    return Math.min(0, (this.floor ?? -100) - this.below + this.span);
   }
 
-  get hi() {
-    return this.lo + this.span;
+  get lo() {
+    return Math.min((this.floor ?? -100) - this.below, this.hi - 20);
   }
 }
 

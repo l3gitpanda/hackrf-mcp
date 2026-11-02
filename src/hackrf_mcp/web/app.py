@@ -64,6 +64,7 @@ SECURITY_HEADERS = [
 ]
 CGROUP = Path("/sys/fs/cgroup/system.slice")
 STATUS_PUSH_S = 3.0
+STATUS_CACHE_S = 2.0
 
 
 # --- Reading helpers -----------------------------------------------------------
@@ -319,7 +320,17 @@ def create_app(
     def api_registry(request: Request) -> Response:
         return JSONResponse(registry_json(live))
 
+    status_cache: dict = {"at": 0.0, "value": None}
+
     def status_json() -> dict:
+        # Every open browser asks every few seconds; share one answer.
+        if status_cache["value"] is not None and time.monotonic() - status_cache["at"] < STATUS_CACHE_S:
+            return status_cache["value"]
+        value = _status_json()
+        status_cache.update(at=time.monotonic(), value=value)
+        return value
+
+    def _status_json() -> dict:
         try:
             st = control({"cmd": "status"}, timeout=5)
         except live_client.Unavailable as exc:

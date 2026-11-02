@@ -240,12 +240,15 @@ def test_spectrum_segments_and_a_downsampled_waterfall(env):
     assert minute["tier"] == TIER_MINUTE and minute["rows"] == 1
 
 
-def test_status_has_the_service_and_its_cgroup(env):
+def test_status_has_the_service_and_its_cgroup(env, monkeypatch):
     _, gate, control = env
     st = TestClient(gate).get("/api/status", headers=BEARER).json()
     assert st["live"]["state"] == "running" and control.requests == [{"cmd": "status"}]
     assert st["service"] == {"memory_bytes": 83107840, "memory_max": 536870912, "cpu_usec": 19403696576}
     assert st["web"] is None and st["feed"]["connected"] is False
+    TestClient(gate).get("/api/status", headers=BEARER)
+    assert len(control.requests) == 1  # a second ask within 2 s shares the answer
+    monkeypatch.setattr(web_app, "STATUS_CACHE_S", 0.0)
     control.fail = live_client.Unavailable("the live decoder service is not running")
     st = TestClient(gate).get("/api/status", headers=BEARER).json()
     assert st["live"]["state"] == "unreachable"

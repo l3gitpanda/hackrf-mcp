@@ -2,9 +2,9 @@
 second, kept beside the decoded log so a detection can be seen as it was on
 the air.
 
-Every profile that reads the HackRF through a live_profiles.Source (all of
-them except AIS, whose decoder opens the device itself) has its sample
-blocks passed to a SpectrumTap before the decoders get them. The tap runs
+Every profile that reads the HackRF through a live_profiles.Source (all
+the built-in ones; a decoder that opened the device itself would get none)
+has its sample blocks passed to a SpectrumTap before the decoders get them. The tap runs
 512-point FFTs (Hann window) over the blocks and, for each second of
 samples, keeps two values per bin: the mean power over the second and the
 peak, the strongest single FFT frame. The mean shows steady carriers and

@@ -736,13 +736,17 @@ def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:
     path = Path(args.replay)
     spec = Spec(profile=args.profile, freqs_hz=tuple(args.freqs or ()))
     tuning = live_profiles.resolve(spec, live)
-    if tuning.profile.name != "ais":
-        tuning = replace(tuning, center_hz=args.center, sample_rate_hz=args.rate)
-        reach = live_profiles.usable_hz(args.rate)
-        outside = [f for f in tuning.freqs_hz if abs(f - args.center) > reach]
-        if outside:
-            print(f"channels outside the capture: {outside}", file=sys.stderr)
-            return 2
+    # A profile with a fixed tuning (adsb, ais) replays a capture made there.
+    center = args.center or tuning.profile.center_hz
+    if not center:
+        print(f"--replay of {tuning.profile.name} needs --center, the capture's center frequency", file=sys.stderr)
+        return 2
+    tuning = replace(tuning, center_hz=center, sample_rate_hz=args.rate)
+    reach = live_profiles.usable_hz(args.rate)
+    outside = [f for f in tuning.freqs_hz if abs(f - center) > reach]
+    if outside:
+        print(f"channels outside the capture: {outside}", file=sys.stderr)
+        return 2
     db = Path(args.db)
     writer = LiveLogWriter(db, 365 * 86400, 1 << 40, 0)
     spectrum_db = Path(args.spectrum_db) if args.spectrum_db else db.with_name(db.stem + "-spectrum.db")
@@ -764,7 +768,14 @@ def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:
     ctx.replay_rate = args.rate
     pipeline = live_profiles.make_pipeline(tuning, ctx)
     started = time.monotonic()
-    pipeline.start()
+    try:
+        pipeline.start()
+    except Exception as exc:
+        print(f"could not start {tuning.profile.name}: {exc}", file=sys.stderr)
+        pipeline.stop()
+        recorder.end()
+        pump.stop()
+        return 2
     print(f"replaying {path} as {tuning.describe()}", flush=True)
     while not pipeline.finished():
         if f := pipeline.failure():
@@ -834,8 +845,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error(f"invalid configuration: {exc}")
     settings.configure_live(live)
     if args.replay:
-        if not (args.profile and args.rate and (args.center or args.profile == "ais") and args.db):
-            parser.error("--replay needs --profile, --rate, --center and --db")
+        if not (args.profile and args.rate and args.db):
+            parser.error("--replay needs --profile, --rate and --db (and --center unless the profile has a fixed one)")
         sys.exit(replay(live, args))
     serve(live)
 

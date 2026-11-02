@@ -1,7 +1,9 @@
+import hashlib
 import json
 import sys
 import threading
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -158,6 +160,68 @@ def test_ais_aggregator_summarises_positions_and_keeps_other_messages():
     assert ship.fields["types"] == [1, 3] and ship.freq_hz == 161_975_000
     aton = next(r for r in rows if r.subject == "993692036")
     assert aton.kind == "aid-to-navigation" and aton.label == "LB"
+
+
+def test_ais_runs_on_hackrf_transfer_samples_at_2_ms_s():
+    tuning = lp.resolve(Spec("ais"), _live(), _found)
+    assert (tuning.center_hz, tuning.sample_rate_hz) == (ais.AIS_CENTER_HZ, 2_000_000)
+    assert "at 2 MS/s" in tuning.describe()
+
+
+def test_ais_pipeline_feeds_the_samples_to_ais_catcher_unchanged(tmp_path):
+    # A stand-in for AIS-catcher: notes its arguments and what it read, then
+    # prints a position report and a static message as AIS-catcher's JSON.
+    fake = tmp_path / "fake-ais-catcher"
+    seen = tmp_path / "seen.json"
+    position = json.dumps(_ais(367000001, 1, lat=33.5, lon=-118.0, speed=3.7))
+    static = json.dumps(_ais(367000001, 5, shipname="KILLEEN", callsign="WDA1234"))
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import hashlib, json, sys\n"
+        "data = sys.stdin.buffer.read()\n"
+        f"open({str(seen)!r}, 'w').write(json.dumps([sys.argv[1:], len(data), hashlib.sha256(data).hexdigest()]))\n"
+        "print('AIS-catcher banner', flush=True)\n"
+        f"print({static!r}, flush=True)\n"
+        f"print({position!r}, flush=True)\n"
+    )
+    fake.chmod(0o755)
+    capture = tmp_path / "c.cs8"
+    capture.write_bytes(np.random.default_rng(0).integers(-40, 40, 2 * 300_000, dtype=np.int8).tobytes())
+    rows, taps = [], []
+    live = _live(live_dir=tmp_path / "live")
+    tuning = lp.resolve(Spec("ais"), live, lambda p: str(fake))
+
+    def make_source(tu):
+        src = lp.FileSource(capture, tu.sample_rate_hz, realtime=False)
+        src.tap = lambda buf: taps.append(len(buf))  # as the spectrum history's tap
+        return src
+
+    ctx = lp.Context(settings=live, emit=rows.append, count=lambda n: None, run_dir=tmp_path / "run", make_source=make_source)
+    pipe = lp.make_pipeline(tuning, ctx)
+    pipe.start()
+    deadline = time.monotonic() + 10
+    while not pipe.finished() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    pipe.procs[0].proc.stdin.close()  # end of input: the fake answers and exits
+    pipe.procs[0].proc.wait(timeout=10)
+    time.sleep(0.2)
+    pipe.stop()
+    args, n, digest = json.loads(seen.read_text())
+    assert args == ["-r", "CS8", ".", "-s", "2000000", "-o", "5"]
+    assert n == capture.stat().st_size and digest == hashlib.sha256(capture.read_bytes()).hexdigest()
+    assert sum(taps) == capture.stat().st_size
+    kinds = sorted(r.kind for r in rows)
+    assert kinds == ["ais", "vessel"]
+    vessel = next(r for r in rows if r.kind == "vessel")
+    assert vessel.label == "KILLEEN" and vessel.fields["lat"] == 33.5
+    assert pipe.health()["bytes"] == capture.stat().st_size
+
+
+def test_ais_pipeline_refuses_samples_not_centred_on_162_mhz(tmp_path):
+    tuning = lp.resolve(Spec("ais"), _live(), _found)
+    ctx = lp.Context(settings=_live(), emit=lambda r: None, count=lambda n: None, run_dir=tmp_path, make_source=None)
+    with pytest.raises(ValueError, match="162.0 MHz"):
+        lp.make_pipeline(replace(tuning, center_hz=161_000_000), ctx).start()
 
 
 # --- Line parsers ------------------------------------------------------------

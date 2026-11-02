@@ -219,20 +219,24 @@ how an assistant moves the receiver to another band, and search the log.
 | Profile | Decoder | Tuning | Logged as |
 |---|---|---|---|
 | `adsb` | `dump1090-mutability` | 1090 MHz, 2.4 MS/s | one row per aircraft per minute: callsign, squawk, altitude range, last position, speed, track, messages, strongest RSSI |
-| `ais` | `AIS-catcher` (opens the HackRF itself) | 162.0 MHz | one row per ship, base station or aid to navigation per minute for position reports; one row per other message (static/voyage data, safety text) |
+| `ais` | `AIS-catcher` | 162.0 MHz, 2 MS/s | one row per ship, base station or aid to navigation per minute for position reports; one row per other message (static/voyage data, safety text) |
 | `acars` | `acarsdec` | 130.8 MHz, 2 MS/s: 130.025–131.550 MHz | one row per message |
 | `vdl2` | `dumpvdl2` | 136.8125 MHz, 2.1 MS/s: 136.650–136.975 MHz | one row per frame |
 | `flex`, `pocsag` | `multimon-ng` | the channels given, 2.205 MS/s | one row per page: time, channel, capcode, message type (see below) |
 | `aprs` | `multimon-ng` | 144.390 MHz, 2.205 MS/s | one row per packet |
 | `eas` | `multimon-ng` | the seven NOAA Weather Radio channels, 162.400–162.550 MHz | one row per SAME header |
 
-Except for AIS, the service reads `hackrf_transfer -r -` and streams the
-samples to the decoder: dump1090 and dumpvdl2 take them as they are (cu8);
+The service reads `hackrf_transfer -r -` and streams the samples to the
+decoder: AIS-catcher takes them as they are (cs8, on its stdin since
+milestone 2 of the web UI plan; before, it opened the HackRF itself),
+dump1090 and dumpvdl2 converted to cu8;
 for acarsdec and multimon-ng one shared FFT per block cuts every channel
 out at once (`iq.FFTChannelizer`), which costs about what a single
 per-channel filter would. Measured on a 2-core Celeron J4025: ADS-B about
 15% of one core in total, ACARS (five channels) about 35%, VDL2 (nine
-channels) about 45%, FLEX about 35%, AIS 12%. `hackrf_live_status` warns
+channels) about 45%, FLEX about 35%, AIS 12% (measured on 2026-10-29,
+before the spectrum history, whose FFTs add about 8% of a core, and while
+AIS-catcher still opened the HackRF itself). `hackrf_live_status` warns
 when samples arrive below the sample rate, which means some are being lost.
 
 **Tools.** `hackrf_live_start` (a profile, or a `schedule` that rotates
@@ -279,8 +283,7 @@ show). Values are one byte each, in 0.5 dB steps from -130 to -2.5 dBFS. A
 run of a profile (a start, a switch, a resume after a pause) is a segment
 recording the profile, tuning, gains and scale. Second rows are also rolled
 up into one row per clock minute, kept longer, for day and week views.
-Mean and peak take about 1.4 KB a second on disk (SQLite pages included), so about 120 MB a day while a profile runs all day. AIS has none, because
-AIS-catcher opens the HackRF itself. `hackrf_live_status` shows its size
+Mean and peak take about 1.4 KB a second on disk (SQLite pages included), so about 120 MB a day while a profile runs all day. `hackrf_live_status` shows its size
 and limits.
 
 | Variable | Default | |

@@ -47,10 +47,9 @@ views should drop in the way new decoders drop into `protocols/`. Wanted:
   mean and peak power in 512 bins per second of samples, and per minute,
   in `spectrum.db` with its own limits (`HACKRF_LIVE_SPECTRUM_*`); see the
   README's "Spectrum history".
-- **AIS spectrum.** AIS-catcher opens the HackRF itself, so there is no
-  stream to take a spectrum from. Either feed it from `hackrf_transfer` (it
-  reads CS8 on stdin, which `decode_ais` already uses) and accept the Python
-  in the loop, or show no waterfall while AIS runs.
+- **AIS spectrum.** Done in milestone 2: AIS-catcher now reads
+  `hackrf_transfer`'s samples on stdin at 2 MS/s like the other decoders,
+  so AIS has a spectrum history, input-rate and stall checks too.
 - **Tracks.** ADS-B and AIS rows are per minute, with the last position in
   the minute. A map with smooth tracks wants positions more often, e.g.
   every 10 s in a separate positions table, or the per-minute row extended

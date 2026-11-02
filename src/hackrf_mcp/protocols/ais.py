@@ -1,11 +1,12 @@
 """AIS ships, base stations and aids to navigation on 161.975/162.025 MHz,
 with AIS-catcher: offline decoding and the live `ais` profile, in which
-AIS-catcher opens the HackRF itself."""
+AIS-catcher reads hackrf_transfer's samples on its stdin, like every other
+live decoder, so AIS gets the spectrum history and the stall and input-rate
+checks too."""
 
 from __future__ import annotations
 
 import json
-import signal
 import threading
 import time
 from pathlib import Path
@@ -187,33 +188,39 @@ class AisAggregator(MinuteAggregator):
         )
 
 
+# The live profile's tuning: midway between the two channels, 25 kHz from
+# each, so neither sits on the HackRF's DC spike. AIS-catcher assumes its
+# input is centred here.
+AIS_CENTER_HZ = 162_000_000
+# 2 MS/s is the lowest rate the HackRF filters well, and AIS-catcher decodes
+# it (hackrf_decode's AIS results were at 2 MS/s).
+AIS_LIVE_RATE = 2_000_000
+
+
 class AisPipeline(Pipeline):
-    """AIS-catcher on the HackRF directly (or on a replayed file)."""
+    """hackrf_transfer's int8 samples, passed unchanged to AIS-catcher's
+    stdin as CS8 (`-r CS8 .`, the input hackrf_decode already uses)."""
 
     def start(self) -> None:
         t = self.tuning
+        if t.center_hz != AIS_CENTER_HZ:
+            raise ValueError(
+                f"AIS-catcher needs its samples centred on {AIS_CENTER_HZ / 1e6:.1f} MHz, "
+                f"not {t.center_hz / 1e6:.4f} MHz"
+            )
         self.agg = AisAggregator(self.ctx.emit)
         self._lock = threading.Lock()
-        if self.ctx.replay_path is not None:
-            rate = int(self.ctx.replay_rate)
-            args = [t.program, "-r", "CS8", str(self.ctx.replay_path), "-s", str(rate), "-o", "5"]
-        else:
-            args = [
-                t.program,
-                "-d:0",
-                "-gf",
-                "LNA",
-                str(t.lna_gain_db),
-                "VGA",
-                str(t.vga_gain_db),
-                "PREAMP",
-                "on" if t.amp else "off",
-                "-o",
-                "5",
-            ]
-        self.decoder = Proc("AIS-catcher", line_buffered(args), on_line=self._line)
+        args = [t.program, "-r", "CS8", ".", "-s", str(t.sample_rate_hz), "-o", "5"]
+        self.decoder = Proc("AIS-catcher", line_buffered(args), stdin=True, on_line=self._line)
         self.procs.append(self.decoder)
+        self.source = self.ctx.make_source(t)
         self.started = time.time()
+
+        def feed(buf: bytes) -> None:
+            if not self.decoder.write(buf):
+                raise BrokenPipeError("AIS-catcher stopped reading")
+
+        self.source.start(feed)
         self._thread(self._tick, "ais-tick")
 
     def _line(self, line: str) -> None:
@@ -235,28 +242,10 @@ class AisPipeline(Pipeline):
             with self._lock:
                 self.agg._roll(time.time())
 
-    def stop(self) -> None:
-        self._stop.set()
-        # SIGINT lets AIS-catcher close the HackRF before it exits.
-        self.decoder.stop(signal.SIGINT, grace_s=6.0)
-        for t in self._threads:
-            t.join(timeout=6)
-        self.finish()
-
     def finish(self) -> None:
-        with self._lock:
-            self.agg.flush()
-
-    def failure(self) -> str | None:
-        if self.ctx.replay_path is not None and self.decoder.poll() == 0:
-            return None
-        return self.decoder.failure()
-
-    def finished(self) -> bool:
-        return self.decoder.poll() is not None
-
-    def health(self) -> dict:
-        return {}
+        if hasattr(self, "agg"):
+            with self._lock:
+                self.agg.flush()
 
 
 decoders.register(
@@ -278,14 +267,13 @@ live_profiles.register(
         "position reports as one row per ship per minute, other messages one row each",
         ("AIS-catcher",),
         AisPipeline,
-        0,  # AIS-catcher picks its own rate
-        162_000_000,
+        AIS_LIVE_RATE,
+        AIS_CENTER_HZ,
         (161_975_000, 162_025_000),
         fixed_freqs=True,
         help="""  ais    - ships, base stations and aids to navigation, 161.975 and
-           162.025 MHz (AIS-catcher, which opens the HackRF itself);
-           position reports one row per ship per minute, other AIS
-           messages one row each.""",
+           162.025 MHz at 2 MS/s (AIS-catcher); position reports one row
+           per ship per minute, other AIS messages one row each.""",
         summary_kinds=("vessel", "base-station", "aid-to-navigation", "sar-aircraft", "ais"),
         summary_fields=("name", "callsign", "shiptype", "aid_type", "destination", "status", "lat", "lon", "speed", "messages"),
     )

@@ -42,6 +42,15 @@ def test_scripts_import_only_files_that_exist():
             assert (f.parent / ref).resolve().is_file(), f"{f.name} imports missing {ref}"
 
 
+def test_scripts_never_parse_text_as_html():
+    # Subjects, labels and raw lines arrive over the air: they may only ever
+    # become text nodes.
+    for f in SCRIPTS:
+        text = f.read_text()
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "DOMParser", "createContextualFragment"):
+            assert sink not in text, f"{f.name} uses {sink}"
+
+
 def test_scripts_name_no_protocol():
     # Profiles come from /api/registry; the UI must not hard-code them.
     for f in SCRIPTS:

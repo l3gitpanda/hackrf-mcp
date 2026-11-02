@@ -149,6 +149,8 @@ function onSocket(state) {
 function onMessage(m) {
   switch (m.type) {
     case 'status':
+      S.mpm.push(m.live && m.live.decoded_1m != null ? m.live.decoded_1m : 0);
+      if (S.mpm.length > 60) S.mpm.shift();
       renderStatus(m);
       break;
     case 'fft':
@@ -390,15 +392,17 @@ function renderHealth() {
     ),
   );
   const p = hl.input_power_dbfs;
+  // hackrf_transfer reports the average; peaks run several dB above it.
+  const hot = p != null && p > -5;
   box.append(
     card(
-      p != null && p > -10 ? 'warn' : '',
+      hot ? 'warn' : '',
       'Input power',
       p == null ? '—' : p.toFixed(1),
       'dBFS',
       p == null ? null : ((p + 60) / 60) * 100,
-      p != null && p > -10 ? 'var(--warn)' : 'var(--text2)',
-      p == null ? '' : p > -10 ? 'Hot: close to clipping at 0 dBFS. A lower gain may decode better.' : 'Clips at 0 dBFS.',
+      hot ? 'var(--warn)' : 'var(--text2)',
+      p == null ? '' : hot ? 'Clipping likely (0 dBFS is full scale): try a lower gain.' : p > -10 ? 'Strong; full scale is 0 dBFS.' : 'Full scale is 0 dBFS.',
     ),
   );
   const levels = hl.channel_levels_dbfs;
@@ -416,8 +420,6 @@ function renderHealth() {
   const chCard = card('', 'Channel levels', '', '', null, null, '', lv);
   chCard.querySelector('.big').remove();
   box.append(chCard);
-  S.mpm.push(l.decoded_1m || 0);
-  if (S.mpm.length > 60) S.mpm.shift();
   const max = Math.max(1, ...S.mpm);
   const pts = S.mpm.map((v, i) => `${(i / Math.max(1, S.mpm.length - 1)) * 120},${26 - (v / max) * 24}`).join(' ');
   const svgNS = 'http://www.w3.org/2000/svg';

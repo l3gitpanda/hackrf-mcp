@@ -114,6 +114,24 @@ def test_rows_are_cut_at_exact_sample_counts_however_blocks_fall():
     assert sum(r.frames for r in rows) == -(-3 * RATE // BINS)
 
 
+def test_rows_after_a_stall_are_stamped_when_their_samples_arrived():
+    rows = []
+    fed = [0]
+    stall = [0.0]
+    tap = SpectrumTap(RATE, rows.append, clock=lambda: 1000.0 + fed[0] / RATE + stall[0])
+    data = cs8(noise(int(3.3 * RATE)))
+    for i in range(0, len(data), 2 * BLOCK):
+        if fed[0] >= 1.5 * RATE:
+            stall[0] = 3.0  # the stream stopped for 3 s here
+        tap(data[i : i + 2 * BLOCK])
+        fed[0] += len(data[i : i + 2 * BLOCK]) // 2
+    assert len(rows) == 3
+    assert rows[0].ts == pytest.approx(1000.0, abs=0.01)
+    assert rows[1].ts == pytest.approx(1001.0, abs=0.01)
+    # The third second's samples came after the stall.
+    assert rows[2].ts == pytest.approx(1005.0, abs=0.01)
+
+
 def test_a_change_mid_batch_lands_in_the_right_row():
     rows = []
     tap = SpectrumTap(RATE, rows.append)

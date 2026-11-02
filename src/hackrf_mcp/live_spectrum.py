@@ -231,8 +231,12 @@ class SpectrumTap:
                 self._live.reset(ts)
         self._add(power[pos:])
         # Carry the samples after the last whole frame into the next batch.
+        # Its time comes from the clock again when its next block arrives,
+        # not from counting samples: after a stall in the stream (the source
+        # delivering nothing for seconds), counting would stamp every later
+        # row too early for the rest of the segment.
         tail = data[2 * frames * b :]
-        self._batch_ts = self._ts_at(end)
+        self._batch_ts = None
         self._batch_start = end
         self._pending = [tail] if tail else []
         self._pending_samples = len(tail) // 2

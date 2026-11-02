@@ -163,6 +163,9 @@ class SpectrumTap:
         self._next_row = self.row_samples
         self._next_live = self.live_samples
         self.rows = 0
+        # CPU time spent transforming, for hackrf_live_status.
+        self.cpu_s = 0.0
+        self.started = time.monotonic()
 
     def __call__(self, buf: bytes) -> None:
         n = len(buf) // 2
@@ -173,7 +176,9 @@ class SpectrumTap:
         self._pending.append(buf[: 2 * n])
         self._pending_samples += n
         if self._pending_samples >= self.batch_samples:
+            t0 = time.thread_time()
             self._process()
+            self.cpu_s += time.thread_time() - t0
 
     def _ts_at(self, sample: int) -> float:
         return (self._batch_ts or 0.0) + (sample - self._batch_start) / self.sample_rate_hz
@@ -389,8 +394,8 @@ class SpectrumRecorder:
             self._end_locked(ts)
 
     def status(self) -> dict:
-        seg = self.segment
-        return {
+        seg, tap = self.segment, self.tap
+        out = {
             "segment": None
             if seg is None
             else {k: seg[k] for k in ("profile", "center_hz", "sample_rate_hz", "ts_start")},
@@ -399,6 +404,12 @@ class SpectrumRecorder:
             "duty": self.duty,
             "bins": self.bins,
         }
+        if tap is not None:
+            # The tap's share of one core since its segment began.
+            wall = max(time.monotonic() - tap.started, 1e-9)
+            out["tap_cpu_s"] = round(tap.cpu_s, 2)
+            out["tap_cpu_share"] = round(tap.cpu_s / wall, 4)
+        return out
 
 
 # --- The database ------------------------------------------------------------

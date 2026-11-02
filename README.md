@@ -279,7 +279,7 @@ show). Values are one byte each, in 0.5 dB steps from -130 to -2.5 dBFS. A
 run of a profile (a start, a switch, a resume after a pause) is a segment
 recording the profile, tuning, gains and scale. Second rows are also rolled
 up into one row per clock minute, kept longer, for day and week views.
-Mean and peak take about 1 KB a second, 88 MB a day. AIS has none, because
+Mean and peak take about 1.4 KB a second on disk (SQLite pages included), so about 120 MB a day while a profile runs all day. AIS has none, because
 AIS-catcher opens the HackRF itself. `hackrf_live_status` shows its size
 and limits.
 

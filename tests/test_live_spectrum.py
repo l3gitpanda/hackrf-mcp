@@ -379,6 +379,7 @@ def test_the_service_records_one_segment_per_run(tmp_path):
     assert svc.pipeline.source.finished.wait(10)
     st = svc.status()["spectrum"]
     assert st["enabled"] and st["segment"]["profile"] == "vdl2" and st["rows_recorded"] >= 4
+    assert st["tap_cpu_s"] > 0 and 0 < st["tap_cpu_share"]
     svc.handle({"cmd": "stop"})
     pump.drain()
     conn = live_spectrum.open_reader(live.spectrum_db_path)
@@ -470,8 +471,11 @@ def test_live_status_reports_the_spectrum_history():
             rows_recorded=42,
             last_row_at=time.time() - 1,
             segment={"profile": "adsb", "center_hz": 1_090_000_000, "sample_rate_hz": RATE, "ts_start": 0},
+            tap_cpu_s=12.5,
+            tap_cpu_share=0.0452,
         )
     )
+    assert "its FFTs using 4.5% of a core" in out
     assert "Spectrum history: /var/lib/hackrf-mcp/live/spectrum.db, 3.0 MiB of 1024 MiB" in out
     assert "42 seconds recorded" in out and "recording adsb at 1090.0000 MHz, 2.4 MS/s wide" in out
     out = server._format_live_status(_status(enabled=True, max_mb=1024, max_age_days=7, minute_days=90, segment=None))

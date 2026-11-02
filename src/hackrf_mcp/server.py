@@ -1374,7 +1374,12 @@ def _format_live_status(st: dict) -> str:
             f"started, last {_ago(sp.get('last_row_at'), now)}"
             + (
                 f"; recording {seg['profile']} at {seg['center_hz'] / 1e6:.4f} MHz, "
-                f"{seg['sample_rate_hz'] / 1e6:g} MS/s wide."
+                f"{seg['sample_rate_hz'] / 1e6:g} MS/s wide"
+                + (
+                    f", its FFTs using {sp['tap_cpu_share']:.1%} of a core."
+                    if sp.get("tap_cpu_share") is not None
+                    else "."
+                )
                 if seg
                 else (
                     f"; not recording: {st['profile']}'s decoder opens the HackRF itself."

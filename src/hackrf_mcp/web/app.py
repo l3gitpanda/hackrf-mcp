@@ -42,6 +42,8 @@ from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from urllib.parse import parse_qs
 
+import anyio
+import anyio.abc
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -229,7 +231,7 @@ class Gate:
                 h += SECURITY_HEADERS
                 if path.startswith("/api/"):
                     h.append((b"cache-control", b"no-store"))
-                elif path in ("/", "/log", "/map", "/login") or path.startswith("/static/"):
+                elif path in ("/", "/log", "/map", "/history", "/login") or path.startswith("/static/"):
                     # Revalidate every time, so a deploy reaches browsers at once.
                     h.append((b"cache-control", b"no-cache"))
                 message = {**message, "headers": h}
@@ -311,6 +313,9 @@ def create_app(
 
     async def map_page(request: Request) -> Response:
         return FileResponse(STATIC / "map.html")
+
+    async def history_page(request: Request) -> Response:
+        return FileResponse(STATIC / "history.html")
 
     basemap_path = web.state_path(live) / basemap.FILENAME
 
@@ -605,15 +610,23 @@ def create_app(
                 if isinstance(msg, dict) and "fft" in msg:
                     client.fft = bool(msg["fft"])
 
-        tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(listen())]
+        # Both halves in one anyio task group (Starlette's own concurrency), so
+        # the server stopping or the client leaving unwinds them together.
+        # Either half ending ends the session: listen when the client goes,
+        # pump when a send fails.
+        async def half(tg: anyio.abc.TaskGroup, fn) -> None:
+            try:
+                await fn()
+            except (WebSocketDisconnect, RuntimeError, OSError, anyio.ClosedResourceError):
+                pass  # the client is gone
+            finally:
+                tg.cancel_scope.cancel()
+
         try:
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        except WebSocketDisconnect:
-            pass
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(half, tg, pump)
+                tg.start_soon(half, tg, listen)
         finally:
-            for t in tasks:
-                t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
             hub.unsubscribe(client)
 
     async def lifespan(app):
@@ -626,6 +639,7 @@ def create_app(
         Route("/", index),
         Route("/log", log_page),
         Route("/map", map_page),
+        Route("/history", history_page),
         Route("/login", login_page),
         Route("/auth/login", login, methods=["POST"]),
         Route("/auth/logout", logout, methods=["POST"]),

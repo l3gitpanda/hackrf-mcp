@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>History · hackrf-live</title>
+<link rel="stylesheet" href="/static/hl.css">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/js/history.js"></script>
+</head>
+<body>
+<div class="hl page">
+  <div class="abwrap">
+    <header class="appbar">
+      <a class="brand" href="/">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <span>hackrf-live</span>
+        <small>home station</small>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/">Live</a>
+        <a href="/map">Map</a>
+        <a href="/log">Log</a>
+        <a href="/history" aria-current="page">History</a>
+        <a aria-disabled="true" title="Coming in a later milestone">Summaries</a>
+      </nav>
+      <div class="ab-r">
+        <span class="chip st st-idle" id="ab-state" role="status"><span class="dot"></span><span id="ab-state-text">Connecting…</span></span>
+        <span class="chip" id="ab-prof" hidden><span class="sw"></span><span class="mono" id="ab-prof-text"></span></span>
+        <span class="chip mono" id="ab-clock" aria-label="Station clock, UTC">--:--:-- UTC</span>
+        <form method="post" action="/auth/logout"><button type="submit" class="btn sm ghost">Sign out</button></form>
+      </div>
+    </header>
+  </div>
+  <main class="main">
+    <section class="panel" aria-label="Period">
+      <div class="htool">
+        <div class="row">
+          <span class="muted">Day (UTC)</span>
+          <button type="button" class="btn sm" id="d-prev" aria-label="Previous day">←</button>
+          <input id="d-date" class="inp mono" type="date" aria-label="Day, UTC">
+          <button type="button" class="btn sm" id="d-next" aria-label="Next day">→</button>
+        </div>
+        <div class="row">
+          <button type="button" class="btn sm" id="s-prev" aria-label="Previous step">◀ Step</button>
+          <span class="mono" id="s-label">—</span>
+          <button type="button" class="btn sm" id="s-next" aria-label="Next step">Step ▶</button>
+        </div>
+        <div class="row">
+          <span class="muted">Views</span>
+          <span class="seg" role="group" aria-label="Views">
+            <button type="button" data-view="wf" aria-pressed="true">Waterfall</button>
+            <button type="button" data-view="list" aria-pressed="true">Decoded</button>
+            <button type="button" data-view="lvl" aria-pressed="true">Channel level</button>
+            <button type="button" data-view="rate" aria-pressed="true">Message rate</button>
+          </span>
+          <span class="seg" role="group" aria-label="Layout">
+            <button type="button" data-layout="side" aria-pressed="true">Side by side</button>
+            <button type="button" data-layout="stack" aria-pressed="false">Stacked</button>
+          </span>
+        </div>
+      </div>
+      <div class="dayl" id="day" aria-label="Rotation steps of the day: click one">
+        <div class="dlane" id="dlane"></div>
+        <div class="dticks mono" id="dticks"></div>
+      </div>
+      <p class="mapnote2" id="daynote">The waterfall is recorded per tuning, so a period is one rotation step.</p>
+    </section>
+    <p class="ctl-err" id="herr" role="alert" hidden></p>
+    <div class="hgrid" id="hgrid">
+      <section class="panel" id="p-wf" aria-label="Waterfall">
+        <div class="ph">
+          <span class="pbadge" id="w-prof"></span>
+          <span class="mono" id="w-title">—</span>
+          <span class="sp"></span>
+          <span class="muted" id="w-sub">newest at top · markers are decoded rows</span>
+        </div>
+        <div class="hwf" id="hwf">
+          <div class="fscale mono" id="w-freqs"></div>
+          <div class="hwbox" id="w-box">
+            <canvas id="w-canvas"></canvas>
+            <div class="tscale mono" id="w-times"></div>
+          </div>
+        </div>
+        <p class="mapnote2" id="w-note"></p>
+      </section>
+      <aside class="col" aria-label="Decoded">
+        <section class="panel" id="p-list">
+          <div class="ph"><h2>Decoded</h2><span class="muted" id="l-count"></span><span class="sp"></span><a class="btn sm" id="l-log" href="/log">Open period in log</a></div>
+          <div class="hsel" id="sel" hidden>
+            <div class="row"><span class="pbadge" id="d-prof"></span><span class="mono" id="d-subj"></span><span id="d-label"></span><span class="sp"></span><button type="button" class="btn sm ghost" id="d-close" aria-label="Close">×</button></div>
+            <dl class="kv" id="d-fields"></dl>
+            <div class="row"><a class="btn sm" id="d-log" href="/log">Open in log</a><a class="btn sm" id="d-map" href="/map" hidden>Show on map</a></div>
+          </div>
+          <div class="hlist" id="list" role="list"></div>
+        </section>
+      </aside>
+      <section class="panel" id="p-lvl" aria-label="Channel level">
+        <div class="ph"><h2>Channel level</h2><span class="muted">strongest bin in each channel, and the noise floor (dBFS)</span><span class="sp"></span><span class="legend" id="lv-legend"></span></div>
+        <svg class="hchart" id="lv" viewBox="0 0 600 170" preserveAspectRatio="none" aria-label="Channel level over the step"></svg>
+        <div class="tscale2 mono" id="lv-times"></div>
+      </section>
+      <section class="panel" id="p-rate" aria-label="Message rate">
+        <div class="ph"><h2>Message rate</h2><span class="muted" id="rt-sub"></span></div>
+        <svg class="hchart" id="rt" viewBox="0 0 600 110" preserveAspectRatio="none" aria-label="Rows logged over the step"></svg>
+        <div class="tscale2 mono" id="rt-times"></div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

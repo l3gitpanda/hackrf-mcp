@@ -369,6 +369,16 @@ ranges at `/api/basemap.pmtiles` and the browser draws it with the vendored
 (BSD-3-Clause). Map data © OpenStreetMap contributors (ODbL), shown on the
 map. Without the file the map has the grid alone.
 
+The **History** screen (`/history`) shows the past in signal form. The
+spectrum history is recorded per tuning, so a period is one rotation step:
+a day's steps sit on a lane (hatched where the receiver was paused or
+failing), and the chosen step shows its recorded waterfall with every row
+decoded during it marked at its time and frequency, the gaps in coverage,
+the decoded rows with their fields, each channel's level against the noise
+floor, and the rows logged over time. Rows link to the Log, and those of
+map-capable profiles to the Map at that moment (`/map?at=…&profile=…&subject=…`);
+the Log's detail panel links back to History.
+
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,

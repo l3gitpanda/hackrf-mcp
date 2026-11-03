@@ -411,6 +411,10 @@ function openDetail(r) {
   for (const [k, v] of Object.entries(r.fields || {})) kv.append(h('dt', {}, k), h('dd', { class: 'mono' }, fmtValue(v)));
   $('d-raw').textContent = r.raw || '';
   $('d-subj').disabled = !r.subject;
+  $('d-hist').setAttribute('href', `/history?at=${Math.round(r.ts)}`);
+  const mapped = r.subject && (S.profiles[r.profile].views || []).some((v) => v.name === 'map');
+  $('d-map').hidden = !mapped;
+  $('d-map').setAttribute('href', `/map?${new URLSearchParams({ at: String(Math.round(r.ts)), profile: r.profile, subject: r.subject || '' })}`);
   drawThumb(r);
 }
 

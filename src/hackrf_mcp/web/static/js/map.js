@@ -69,7 +69,10 @@ async function init() {
   loadBasemap();
   pollStatus();
   setInterval(pollStatus, 10000);
-  await loadRange(NOW() - Number($('trail').value), null);
+  const u = new URLSearchParams(location.search);
+  const at = Number(u.get('at'));
+  if (at > 0) await openAt(at, u.get('profile') || '', u.get('subject') || '');
+  else await loadRange(NOW() - Number($('trail').value), null);
   new LiveSocket(onMessage, () => {});
   setInterval(tick, 1000);
 }
@@ -202,15 +205,35 @@ function setMode(mode) {
   $('hist-range').hidden = mode !== 'history';
   $('scrub').hidden = mode !== 'history';
   stopPlay();
-  if (mode === 'live') {
-    loadRange(NOW() - Number($('trail').value), null);
-  } else {
-    if (!$('h-from').value) {
-      $('h-from').value = fmtUtc(NOW() - 3600);
-      $('h-to').value = fmtUtc(NOW());
-    }
-    loadHistory();
+  if (mode === 'live') return loadRange(NOW() - Number($('trail').value), null);
+  if (!$('h-from').value) {
+    $('h-from').value = fmtUtc(NOW() - 3600);
+    $('h-to').value = fmtUtc(NOW());
   }
+  return loadHistory();
+}
+
+// Opened from a row on another screen (/map?at=&profile=&subject=): History
+// for the half hour either side, the cursor at that moment, the target
+// picked and centred.
+async function openAt(at, profile, subject) {
+  $('h-from').value = fmtUtc(at - 1800);
+  // Times are typed to the minute; an empty "to" is now, so a moment in the
+  // last half hour isn't cut off.
+  $('h-to').value = at + 1800 < NOW() ? fmtUtc(at + 1800) : '';
+  await setMode('history');
+  if (!(S.until > S.since)) return;
+  S.cursor = Math.min(Math.max(at, S.since), S.until);
+  $('cursor').value = String(Math.round(((S.cursor - S.since) / (S.until - S.since)) * 1000));
+  renderCursorLabel();
+  const key = targetKey(profile, subject);
+  const t = S.targets.get(key);
+  if (t) {
+    S.sel = key;
+    const p = positionAt(t.track, S.cursor) || t.track[t.track.length - 1];
+    if (p) S.map.setView([p.lat, p.lon], Math.max(S.map.getZoom(), 9));
+  }
+  render();
 }
 
 async function loadHistory() {

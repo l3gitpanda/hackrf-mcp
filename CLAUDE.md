@@ -116,9 +116,11 @@ asyncio.run(main())
   adds the security headers (a strict CSP: no inline scripts or styles).
   Pager text is removed on read through each profile's `redact`.
   The UI in `web/static/` is plain ES modules (`js/live.js`, `js/log.js`,
-  `js/map.js`, `js/maputil.js`, `js/waterfall.js`, `js/appbar.js`,
-  `js/util.js`, `js/api.js`), one HTML page per screen (`index.html`,
-  `log.html`, `map.html`), and `hl.css` from the mockup plus `app.css`.
+  `js/map.js`, `js/maputil.js`, `js/history.js`, `js/historyutil.js`,
+  `js/waterfall.js`, `js/appbar.js`, `js/util.js`, `js/api.js`), one HTML
+  page per screen (`index.html`, `log.html`, `map.html`, `history.html`),
+  and `hl.css` from the mockup plus `app.css`. Pure functions go in the
+  `*util.js` modules so `tests/js/webui.test.mjs` can run them.
   `vendor/leaflet/` (Leaflet 1.9.4) and `vendor/protomaps-leaflet/`
   (5.1.0) are as published on npm, unmodified, with their licences and
   digests (checked by `tests/test_web_static.py`); the rules that follow apply to

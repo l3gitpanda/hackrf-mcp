@@ -162,9 +162,16 @@ owner's Docker stack doing everything else.
   status with `last_client_seen`), `RemoteSource`, `HACKRF_LIVE_AGENT`,
   `deploy/hackrf-agent.service`, `tools/fake_hackrf_transfer.py` and
   `webui_demo.py --agent`. Not deployed.
-- **W2:** the worker image (Python app plus dump1090, AIS-catcher,
-  acarsdec, dumpvdl2, multimon-ng, direwolf, rtl_433) and a compose file
-  with CPU and memory limits; built by CI into a registry.
+- **W2:** the worker image (`Dockerfile`: Ubuntu 24.04, dump1090-mutability,
+  multimon-ng and rtl_433 packaged; AIS-catcher 0.66, acarsdec 3.7 and
+  dumpvdl2 2.6.0 with libacars 2.2 from source, the versions the original
+  station ran), `hackrf_mcp.selfcheck`, `deploy/worker/compose.yaml` (live,
+  web and MCP services sharing `/data`, each with CPU and memory limits),
+  and `.forgejo/workflows/image.yaml` (built on a Forgejo pull mirror of
+  this fork, self-checked, pushed as `:sha-<12>` and `:homelab`). The
+  owner sets up the mirror and its `PACKAGERUNNER_TOKEN` secret. The uat
+  (dump978) and rds (redsea) capture decoders stay out, as on the
+  original station.
 - **W3:** the MCP server's device tools through the agent: info, sweep and
   captures (a capture's bytes come back to the worker, where the analysis
   tools read them). Transmitting through the agent needs its own approval:

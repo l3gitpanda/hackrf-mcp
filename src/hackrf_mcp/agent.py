@@ -14,10 +14,12 @@ Protocol, over one TCP connection per request:
         "amp": false}
    or  {"token": "...", "cmd": "status"}
    or  {"token": "...", "cmd": "run", "tool": "info" | "sweep" | "capture", ...}
+   or  {"token": "...", "cmd": "run", "tool": "transmit", "bytes": n,
+        "sha256": "...", "frequency_hz", "sample_rate_hz", ...}
    or  {"token": "...", "cmd": "export", "since": {"messages": id, ...}}
    Requests are typed fields, never a command line: the agent builds the
-   command itself from checked values, and only ever receives (the tools
-   are hackrf_transfer -r, hackrf_sweep and hackrf_info).
+   command itself from checked values (hackrf_transfer -r or -t,
+   hackrf_sweep, hackrf_info).
 2. The agent answers in frames: a 4-byte big-endian payload length, a type
    byte, then the payload. Type 1 is samples (int8 I/Q, as hackrf_transfer
    writes them); type 2 is a notice, one JSON object:
@@ -31,7 +33,15 @@ Protocol, over one TCP connection per request:
        {"type": "done", "max_ids", "last_ids", "more"}  an "export" finished
    Type 3 is a tool's output (a sweep's CSV, a capture's samples,
    hackrf_info's text), sent as it is written, before "done".
-3. A "run" holds the HackRF until its tool exits (or its timeout): a
+3. "transmit" is two-phase: after checking the request, the agent answers
+   {"type": "ready"} and the client sends exactly `bytes` bytes of int8 I/Q,
+   nothing framed. The agent checks their SHA-256, then its own transmit
+   policy (HACKRF_AGENT_TX_MODE, off by default; with allowed-bands, the
+   file's measured occupied bandwidth and the carrier must fit one allowed
+   band), and only then takes the HackRF. Every attempt, allowed or not, is
+   written to its audit log (HACKRF_AGENT_TX_LOG). The worker's MCP server
+   applies its own policy first, so a transmission needs both to allow it.
+4. A "run" holds the HackRF until its tool exits (or its timeout): a
    stream in progress is ended first, and later requests wait their turn.
    A stream runs until the client closes the connection or the agent ends
    it with an "end" notice: a new stream preempts the old one (there is one
@@ -46,6 +56,13 @@ pause leases; after HACKRF_AGENT_FALLBACK_AFTER_S (120) without one, it
 lets go and the machine decodes on its own. The lease is short and
 renewed, so if the agent itself dies the local service resumes within
 three minutes. "export" hands the worker what was logged meanwhile.
+
+Transmitting (HACKRF_AGENT_TX_*): off by default. The settings mirror the
+MCP server's HACKRF_MCP_TX_* (mode, band sets, extra ranges, longest
+transmission) plus the largest file it takes; the audit log is
+HACKRF_AGENT_TX_LOG, by default tx-audit.jsonl in the unit's
+StateDirectory, and the agent refuses to start with transmitting on and
+nowhere to log it.
 
 Only addresses in HACKRF_AGENT_ALLOW may connect, and every request needs a
 token whose SHA-256 is in HACKRF_AGENT_TOKEN_SHA256 (or that is in
@@ -69,12 +86,16 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
-from hackrf_mcp import live_client  # standard library only, like this module
+# Standard library only, like this module (numpy is imported lazily, for
+# measuring a transmission, and only if it is there).
+from hackrf_mcp import live_client, policy, settings as hsettings
 
 FRAME = struct.Struct(">IB")
 SAMPLES = 1
@@ -146,6 +167,15 @@ class AgentSettings:
     # This machine's own live service, decoding while no worker is around.
     fallback_live_dir: Path | None = None
     fallback_after_s: float = 120.0
+    # Transmitting: off unless the operator turns it on here, whatever the
+    # worker allows. The same modes and band sets as HACKRF_MCP_TX_*.
+    tx_mode: str = "off"
+    tx_band_sets: tuple[str, ...] = ("ism",)
+    tx_extra_ranges: tuple[tuple[float, float], ...] = ()
+    bands_file: Path | None = None
+    max_tx_seconds: float = 60.0
+    max_tx_mb: int = 512
+    tx_log: Path | None = None
     digests: list[bytes] = field(default_factory=list)
 
     @classmethod
@@ -163,9 +193,41 @@ class AgentSettings:
             allow_bias_tee=env.get("HACKRF_AGENT_ALLOW_BIAS_TEE", "").strip().lower() in ("1", "true", "yes", "on"),
             fallback_live_dir=Path(env["HACKRF_AGENT_FALLBACK_LIVE_DIR"]) if env.get("HACKRF_AGENT_FALLBACK_LIVE_DIR") else None,
             fallback_after_s=float(env.get("HACKRF_AGENT_FALLBACK_AFTER_S", "120")),
+            tx_mode=(env.get("HACKRF_AGENT_TX_MODE") or "off").strip().lower(),
+            tx_band_sets=hsettings.parse_band_set_names(env["HACKRF_AGENT_TX_BANDS"]) if env.get("HACKRF_AGENT_TX_BANDS") else ("ism",),
+            tx_extra_ranges=hsettings.parse_mhz_ranges(env["HACKRF_AGENT_TX_EXTRA_RANGES"]) if env.get("HACKRF_AGENT_TX_EXTRA_RANGES") else (),
+            bands_file=Path(env["HACKRF_AGENT_BANDS_FILE"]) if env.get("HACKRF_AGENT_BANDS_FILE") else None,
+            max_tx_seconds=float(env.get("HACKRF_AGENT_MAX_TX_SECONDS", "60")),
+            max_tx_mb=int(env.get("HACKRF_AGENT_MAX_TX_MB", "512")),
+            tx_log=Path(env["HACKRF_AGENT_TX_LOG"])
+            if env.get("HACKRF_AGENT_TX_LOG")
+            else (Path(env["STATE_DIRECTORY"].split(":")[0]) / "tx-audit.jsonl" if env.get("STATE_DIRECTORY") else None),
         )
+        s.check_tx_settings()
         s.digests = s.load_digests()
         return s
+
+    def tx_policy(self) -> hsettings.Settings:
+        """The transmit settings in the form policy.check_tx takes."""
+        return hsettings.Settings(
+            tx_mode=self.tx_mode,
+            tx_band_sets=self.tx_band_sets,
+            tx_extra_ranges=self.tx_extra_ranges,
+            bands_file=self.bands_file,
+            max_tx_seconds=self.max_tx_seconds,
+        )
+
+    def check_tx_settings(self) -> None:
+        """Refuse to start with transmit settings that can't work."""
+        p = self.tx_policy()  # an unknown mode raises here
+        if self.tx_mode == "off":
+            return
+        if self.tx_log is None:
+            raise ValueError("transmitting needs an audit log: set HACKRF_AGENT_TX_LOG (or run under systemd with StateDirectory=)")
+        if self.tx_mode == "allowed-bands":
+            policy.allowed_bands(p)  # an unknown band set raises here
+        if not 0 < self.max_tx_seconds <= TOOL_TIMEOUT_S["transmit"]:
+            raise ValueError(f"HACKRF_AGENT_MAX_TX_SECONDS must be 1-{TOOL_TIMEOUT_S['transmit']:g}")
 
     def load_digests(self) -> list[bytes]:
         out = []
@@ -219,7 +281,7 @@ def check_stream(req: dict) -> dict:
 
 SERIAL_RE = re.compile(r"[0-9a-fA-F]{1,32}")
 # The longest each tool may hold the HackRF (a worker clamps to these).
-TOOL_TIMEOUT_S = {"info": 15.0, "sweep": 300.0, "capture": 900.0}
+TOOL_TIMEOUT_S = {"info": 15.0, "sweep": 300.0, "capture": 900.0, "transmit": 600.0}
 
 
 def _gain_args(req: dict) -> list[str]:
@@ -346,6 +408,128 @@ def run_child(sock: socket.socket, args: list[str], timeout_s: float, limit: int
         "over_limit": state.get("over_limit", False),
         "bytes": sent,
     }
+
+
+# --- transmitting ---------------------------------------------------------
+
+
+def check_transmit(req: dict, s: AgentSettings) -> dict:
+    """The typed fields of a transmit request, checked; ValueError otherwise.
+    Returns the command line (without the file), its timeout and the upload's
+    size and digest."""
+    f, rate = int(req["frequency_hz"]), int(req["sample_rate_hz"])
+    if not MIN_HZ <= f <= MAX_HZ:
+        raise ValueError(f"frequency_hz {f} is outside {MIN_HZ}-{MAX_HZ}")
+    if not MIN_RATE <= rate <= MAX_RATE:
+        raise ValueError(f"sample_rate_hz {rate} is outside {MIN_RATE}-{MAX_RATE}")
+    n = int(req["bytes"])
+    if not (0 < n <= s.max_tx_mb << 20 and n % 2 == 0):
+        raise ValueError(f"a {n}-byte file is not whole I/Q pairs within this agent's {s.max_tx_mb} MB limit")
+    digest = req.get("sha256")
+    if not (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise ValueError("sha256 is the file's SHA-256 in lowercase hex")
+    args = ["-f", str(f), "-s", str(rate)]
+    if req.get("txvga_gain_db") is not None:
+        x = int(req["txvga_gain_db"])
+        if not 0 <= x <= 47:
+            raise ValueError(f"txvga_gain_db must be 0-47, not {x}")
+        args += ["-x", str(x)]
+    flags = {k: req.get(k, False) for k in ("amp", "antenna_enable", "repeat")}
+    if not all(isinstance(v, bool) for v in flags.values()):
+        raise ValueError("amp, antenna_enable and repeat are true or false")
+    if flags["antenna_enable"] and not s.allow_bias_tee:
+        raise ValueError("bias-tee power is locked on this agent (HACKRF_AGENT_ALLOW_BIAS_TEE is off)")
+    args += (["-a", "1"] if flags["amp"] else []) + (["-p", "1"] if flags["antenna_enable"] else [])
+    args += ["-R"] if flags["repeat"] else []
+    serial = req.get("device_serial")
+    if serial is not None and not (isinstance(serial, str) and SERIAL_RE.fullmatch(serial)):
+        raise ValueError("device_serial is a hex serial number")
+    args += ["-d", serial] if serial else []
+    timeout = min(_timeout(req, TOOL_TIMEOUT_S["transmit"]), s.max_tx_seconds)
+    return {
+        "args": args,
+        "timeout_s": timeout,
+        "bytes": n,
+        "sha256": digest,
+        "frequency_hz": f,
+        "sample_rate_hz": rate,
+        "txvga_gain_db": req.get("txvga_gain_db"),
+        "amp_enable": flags["amp"],
+        "antenna_enable": flags["antenna_enable"],
+        "repeat_tx": flags["repeat"],
+    }
+
+
+def measure_occupied(path: Path, sample_rate_hz: float, fft_size: int = 4096, segments: int = 16, seg_samples: int = 1 << 18) -> tuple[float, float] | None:
+    """The band (low, high offsets from the carrier, Hz) holding 99% of an
+    int8 I/Q file's power, as the MCP server measures it (iq.power_bandwidth
+    over an averaged spectrum of evenly spaced segments), but with numpy
+    alone: SciPy would not fit the agent's memory limit. None if numpy isn't
+    there or the file holds no power; the caller then assumes the whole
+    sample-rate bandwidth is occupied."""
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    raw = np.memmap(path, dtype=np.int8, mode="r")
+    total = raw.size // 2
+    if total < fft_size:
+        return None
+    seg_len = min(seg_samples, total)
+    window = np.hanning(fft_size).astype(np.float32)
+    acc = np.zeros(fft_size)
+    for start in np.unique(np.linspace(0, total - seg_len, num=segments).astype(np.int64)):
+        seg = np.asarray(raw[2 * start : 2 * (start + seg_len)], dtype=np.float32) / 128.0
+        x = seg[0::2] + 1j * seg[1::2]
+        blocks = x[: (x.size // fft_size) * fft_size].reshape(-1, fft_size)
+        # Each block's mean removed, as welch's default detrend does: a
+        # bare carrier (DC) is no evidence of a narrow signal.
+        blocks = (blocks - blocks.mean(axis=1, keepdims=True)) * window
+        acc += (np.abs(np.fft.fft(blocks, axis=1)) ** 2).mean(axis=0)
+    power = np.fft.fftshift(acc)
+    freqs = np.fft.fftshift(np.fft.fftfreq(fft_size, d=1.0 / sample_rate_hz))
+    total_power = float(power.sum())
+    if total_power <= 0:
+        return None
+    cumulative = np.cumsum(power) / total_power
+    tail = 0.005  # (1 - 0.99) / 2 from each side
+    lo = int(np.searchsorted(cumulative, tail))
+    hi = min(int(np.searchsorted(cumulative, 1.0 - tail)), fft_size - 1)
+    bin_hz = sample_rate_hz / fft_size
+    return float(freqs[lo]) - bin_hz / 2, float(freqs[hi]) + bin_hz / 2
+
+
+def audit_tx(s: AgentSettings, record: dict) -> None:
+    """One transmit attempt, allowed or refused, appended to the audit log."""
+    if s.tx_log is None:
+        return
+    s.tx_log.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), **record}
+    with open(s.tx_log, "a") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+
+
+def _receive_file(sock: socket.socket, n: int) -> tuple[Path, str]:
+    """Exactly n bytes from the client into a private temporary file; the
+    path and the SHA-256 of what came. Raises ConnectionError if the client
+    stops short."""
+    fd, name = tempfile.mkstemp(prefix="hackrf-tx-", suffix=".iq")
+    h = hashlib.sha256()
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            left = n
+            buf = bytearray(1 << 16)
+            while left:
+                got = sock.recv_into(buf, min(left, len(buf)))
+                if not got:
+                    raise ConnectionError(f"the upload ended {left} bytes short")
+                fh.write(buf[:got])
+                h.update(buf[:got])
+                left -= got
+    except BaseException:
+        os.unlink(name)
+        raise
+    return Path(name), h.hexdigest()
 
 
 # --- fallback: this machine's own live service -------------------------------
@@ -651,6 +835,9 @@ class Agent:
         s.pump()
 
     def run(self, sock: socket.socket, peer: str, req: dict) -> None:
+        if req.get("tool") == "transmit":
+            self.transmit(sock, peer, req)
+            return
         try:
             name, args, timeout_s, limit = check_run(req, self.settings)
         except (KeyError, TypeError, ValueError) as exc:
@@ -683,6 +870,85 @@ class Agent:
             except OSError:
                 pass
 
+    def transmit(self, sock: socket.socket, peer: str, req: dict) -> None:
+        """A transmission: check the request and this agent's policy, take
+        the file, run hackrf_transfer -t. Every attempt is audited."""
+        s = self.settings
+        record: dict = {"client": peer, "tx_mode": s.tx_mode, "allowed": False}
+
+        def refuse(reason: str) -> None:
+            record["reason"] = reason
+            audit_tx(s, record)
+            sock.sendall(notice({"type": "error", "error": reason}))
+
+        try:
+            t = check_transmit(req, s)
+        except (KeyError, TypeError, ValueError) as exc:
+            refuse(f"bad request: {exc}")
+            return
+        record.update({k: v for k, v in t.items() if k not in ("args", "timeout_s", "sha256")}, file_sha256=t["sha256"])
+        if s.tx_mode == "off":
+            refuse("transmit is disabled on this agent (HACKRF_AGENT_TX_MODE=off)")
+            return
+        sock.sendall(notice({"type": "ready"}))
+        try:
+            path, digest = _receive_file(sock, t["bytes"])
+        except OSError as exc:  # ConnectionError, a timeout, a full disk
+            record["reason"] = f"upload failed: {exc}"
+            audit_tx(s, record)
+            return
+        try:
+            if digest != t["sha256"]:
+                refuse("the file that arrived does not match its sha256")
+                return
+            occupied = None
+            if s.tx_mode == "allowed-bands":
+                try:
+                    occupied = measure_occupied(path, t["sample_rate_hz"])
+                except (OSError, ValueError):
+                    occupied = None
+            margin_hz = 4 * t["sample_rate_hz"] / 4096  # as the MCP server allows
+            try:
+                decision = policy.check_tx(s.tx_policy(), t["frequency_hz"], t["sample_rate_hz"], occupied, margin_hz)
+            except ValueError as exc:
+                decision = policy.TxDecision(False, f"transmit policy error: {exc}")
+            record.update(span_hz=decision.span_hz, measured=occupied is not None)
+            if not decision.allowed:
+                refuse(decision.reason)
+                return
+            record.update(allowed=True, reason=decision.reason)
+            args = [s.binary, "-t", str(path), *t["args"]]
+            with self.start_lock:
+                if not self._hold_fallback(sock):
+                    record.update(allowed=False, reason="this machine's own live service did not let go of the HackRF")
+                    audit_tx(s, record)
+                    return
+                with self.lock:
+                    old = self.current
+                if old is not None:
+                    old.finish(f"preempted by a transmission from {peer}")
+                    old.stop_child()
+                with self.lock:
+                    self.tool = {"name": "hackrf_transfer (transmit)", "since": time.time(), "client": peer}
+                try:
+                    done = run_child(sock, args, t["timeout_s"], 1 << 20)
+                except OSError as exc:
+                    record["result"] = f"could not run: {exc}"
+                    audit_tx(s, record)
+                    sock.sendall(notice({"type": "error", "error": f"could not run hackrf_transfer: {exc}"}))
+                    return
+                finally:
+                    with self.lock:
+                        self.tool = None
+            record.update(result="timed out" if done["timed_out"] else "ran", exit_code=done["exit_code"])
+            audit_tx(s, record)
+            try:
+                sock.sendall(notice({**done, "allowed_reason": decision.reason, "measured": occupied is not None}))
+            except OSError:
+                pass
+        finally:
+            path.unlink(missing_ok=True)
+
     def _hold_fallback(self, sock: socket.socket) -> bool:
         """Before the HackRF is opened: make this machine's own live service
         let go of it. False (and the client told) if it won't."""
@@ -710,6 +976,7 @@ class Agent:
             "tool": self.tool,
             "last_heartbeat": self.last_heartbeat,
             "fallback": self.fallback.status() if self.fallback else None,
+            "tx": {"mode": self.settings.tx_mode, "bands": list(self.settings.tx_band_sets), "max_tx_seconds": self.settings.max_tx_seconds},
             "last_client_seen": self.last_client_seen,
             "agent_started": self.started,
             "binary": self.settings.binary,
@@ -791,12 +1058,22 @@ class AgentRefused(Exception):
     """The agent refused a request (an "error" notice)."""
 
 
-def run_tool(address: tuple[str, int], token: str, req: dict, sink, wait_s: float = 1200.0) -> dict:
+def run_tool(address: tuple[str, int], token: str, req: dict, sink, wait_s: float = 1200.0, upload: Path | None = None) -> dict:
     """Ask the agent to run a tool; its output goes to `sink` as it comes,
     and the "done" notice is returned. The request may wait for the device
-    while another tool runs, hence the long `wait_s`."""
+    while another tool runs, hence the long `wait_s`. With `upload` (a
+    transmission), the file is sent once the agent says it is ready."""
     with request(address, token, {**req, "cmd": "run"}) as sock:
         sock.settimeout(wait_s)
+        if upload is not None:
+            got = read_frame(sock)
+            msg = json.loads(got[1]) if got is not None and got[0] == NOTICE else {}
+            if msg.get("type") == "error":
+                raise AgentRefused(msg["error"])
+            if msg.get("type") != "ready":
+                raise ConnectionError("the hackrf-agent did not get ready for the upload")
+            with open(upload, "rb") as fh:
+                sock.sendfile(fh)
         while True:
             got = read_frame(sock)
             if got is None:

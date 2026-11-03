@@ -141,8 +141,10 @@ asyncio.run(main())
   is installed. `tools/webui_demo.py` runs it all on simulated data.
 - `src/hackrf_mcp/agent.py` — hackrf-agent, the split station's half next
   to the HackRF: owns it and streams framed I/Q to a worker. Standard
-  library only (it must stay importable without numpy); typed receive-only
-  requests, never argv. `live_profiles.RemoteSource` is its client, used
+  library only (it must stay importable without numpy; measuring a file
+  to transmit imports numpy lazily); typed requests, never argv, and
+  transmitting only under its own `HACKRF_AGENT_TX_*` policy
+  (`tests/test_agent_tx.py`). `live_profiles.RemoteSource` is its client, used
   when `HACKRF_LIVE_AGENT` is set. `tests/test_agent.py` runs both over
   loopback TCP with a fake `hackrf_transfer` (run unsandboxed). Its
   `Fallback` keeps the agent machine's own hackrf-live paused while a

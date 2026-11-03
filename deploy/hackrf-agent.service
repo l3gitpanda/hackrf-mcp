@@ -19,6 +19,18 @@
 #   HACKRF_AGENT_TOOLS_DIR=/usr/local/bin    # hackrf_info and hackrf_sweep
 #   HACKRF_AGENT_FALLBACK_LIVE_DIR=/var/lib/hackrf-mcp/live   # see below
 #   HACKRF_AGENT_FALLBACK_AFTER_S=120        # no worker for this long: decode here
+#   HACKRF_AGENT_TX_MODE=off                 # off, allowed-bands or unrestricted
+#   HACKRF_AGENT_TX_BANDS=ism                # with allowed-bands: ism, amateur
+#   HACKRF_AGENT_TX_EXTRA_RANGES=            # more ranges, MHz: 144-148,420-421
+#   HACKRF_AGENT_MAX_TX_SECONDS=60           # longest transmission, repeat too
+#   HACKRF_AGENT_MAX_TX_MB=512               # largest file it takes to transmit
+#   HACKRF_AGENT_TX_LOG=                     # default /var/lib/hackrf-agent/tx-audit.jsonl
+#
+# Transmitting: the worker's MCP server checks its own transmit policy, then
+# sends the file here, and the agent checks again with these settings (the
+# file's measured bandwidth must fit an allowed band) before hackrf_transfer
+# -t runs. Both must allow it; every attempt is in both audit logs. Off
+# unless HACKRF_AGENT_TX_MODE says otherwise.
 #
 # Allow the port in the firewall for the worker's address only: there is
 # no TLS, and the samples carry everything the radio hears.
@@ -46,11 +58,14 @@ EnvironmentFile=/etc/hackrf-mcp/agent.env
 # The fallback reads the local live log; SQLite needs its shared-memory
 # file writable for that even read-only. Ignored when the path is missing.
 ReadWritePaths=-/var/lib/hackrf-mcp/live
+# The transmit audit log. Files to transmit wait in the private /tmp.
+StateDirectory=hackrf-agent
 ExecStart=/opt/hackrf-mcp/.venv/bin/python -m hackrf_mcp.agent
 Restart=always
 RestartSec=5
 
 # hackrf_transfer and the copy to the network; no decoding happens here.
+# Measuring a file before transmitting it takes about 60 MiB at most.
 MemoryHigh=96M
 MemoryMax=160M
 CPUQuota=100%

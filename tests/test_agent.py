@@ -24,6 +24,16 @@ if os.environ.get("FAKE_FAIL"):
     sys.stderr.write("hackrf_open() failed: Resource busy (-1000)\\n"); sys.exit(1)
 block = bytes(range(256)) * 256
 args = sys.argv[1:]
+if "-t" in args:
+    # A transmission: note what was sent, then (with -R) repeat until stopped.
+    import hashlib, json
+    data = open(args[args.index("-t") + 1], "rb").read()
+    with open(os.environ["FAKE_TX_LOG"], "a") as fh:
+        fh.write(json.dumps({"args": args, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}) + "\\n")
+    while "-R" in args:
+        time.sleep(0.05)
+    sys.stderr.write("call hackrf_set_txvga_gain(0)\\nExiting... hackrf_is_streaming() result: streaming terminated (-1004)\\n")
+    sys.exit(0)
 if "-n" in args:
     # A capture: exactly 2 * n bytes, then hackrf_transfer's summary, then exit.
     left = 2 * int(args[args.index("-n") + 1])
@@ -294,7 +304,8 @@ def test_runs_are_typed_and_the_agent_keeps_its_own_limits(server):
             agent.run_tool(addr(server), TOKEN, req, lambda b: None)
         return str(e.value)
 
-    assert "unknown tool" in refused({"tool": "transmit"})
+    assert "unknown tool" in refused({"tool": "flash"})
+    assert refused({"tool": "transmit"}).startswith("bad request")  # typed like the rest (test_agent_tx.py)
     assert "unknown tool" in refused({"tool": "clock"})
     assert "device_serial" in refused({"tool": "info", "device_serial": "; rm -rf /"})
     assert "bias-tee power is locked" in refused({"tool": "capture", "frequency_hz": 98_000_000, "sample_rate_hz": 2_000_000, "num_samples": 10, "antenna_enable": True})
@@ -334,7 +345,9 @@ def test_what_the_agent_does_not_do_is_refused_on_a_split_station(split, tmp_pat
     from hackrf_mcp import server as mcp
 
     (tmp_path / "tone.iq").write_bytes(bytes(4096))
-    assert mcp.hackrf_transfer(direction="tx", file_path="tone.iq", frequency_hz=433_920_000).startswith("REFUSED: this server's HackRF is on another machine")
+    # Transmitting goes through the agent now, but this server's own policy
+    # (off by default) still decides first.
+    assert mcp.hackrf_transfer(direction="tx", file_path="tone.iq", frequency_hz=433_920_000).startswith("REFUSED: transmit is disabled on this server")
     assert "clock settings" in mcp.hackrf_clock(read_all=True)
     assert "Opera Cake" in mcp.hackrf_operacake(list_boards=True)
     assert mcp.hackrf_biast(immediate_mode=False).startswith("REFUSED:")

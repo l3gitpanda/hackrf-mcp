@@ -445,8 +445,13 @@ class Fallback:
         JSON lines in DATA frames ({"table", "row"}), then "done" with each
         table's highest id. Rows go as stored: pager text that wasn't logged
         isn't there to send."""
-        since = req.get("since") or {}
-        limit = max(1, min(int(req.get("limit", 5000)), 20_000))
+        try:
+            raw_since = req.get("since") or {}
+            since = {t: int(raw_since.get(t, 0)) for t in EXPORT_TABLES}
+            limit = max(1, min(int(req.get("limit", 5000)), 20_000))
+        except (AttributeError, TypeError, ValueError) as exc:
+            sock.sendall(notice({"type": "error", "error": f"bad request: {exc}"}))
+            return
         db = self.live_dir / "live.db"
         if not db.exists():
             sock.sendall(notice({"type": "done", "max_ids": {t: 0 for t in EXPORT_TABLES}, "last_ids": {}, "more": False}))
@@ -465,8 +470,7 @@ class Fallback:
             more = False
             if not max_only:
                 for t in EXPORT_TABLES:
-                    after = int(since.get(t, 0))
-                    rows = conn.execute(f"SELECT * FROM {t} WHERE id > ? ORDER BY id LIMIT ?", (after, limit + 1)).fetchall()
+                    rows = conn.execute(f"SELECT * FROM {t} WHERE id > ? ORDER BY id LIMIT ?", (since[t], limit + 1)).fetchall()
                     more = more or len(rows) > limit
                     batch = []
                     for row in rows[:limit]:
@@ -858,6 +862,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         server.serve_forever()
     finally:
+        # The hold on the local live service is left to run out (within
+        # FALLBACK_LEASE_S) rather than released: a restart a few seconds
+        # later would otherwise hand the HackRF back and forth.
         halt.set()
         with server.agent.lock:
             cur = server.agent.current

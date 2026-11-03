@@ -338,3 +338,31 @@ def socket_free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def test_export_answers_bad_fields_with_an_error(exporter):
+    srv, _ = exporter
+    with pytest.raises(agent.AgentRefused, match="bad request"):
+        agent.export(addr(srv), TOKEN, {"messages": "many"})
+    with pytest.raises(agent.AgentRefused, match="bad request"):
+        agent.export(addr(srv), TOKEN, ["not", "a", "dict"])
+
+
+def test_the_link_outlives_a_reply_it_cannot_read(here, monkeypatch):
+    tok = here / "agent-token"
+    tok.write_text(TOKEN)
+    calls = []
+
+    def odd(*a, **kw):
+        calls.append(1)
+        raise TypeError("list indices must be integers or slices, not str")
+
+    monkeypatch.setattr(live_import.agent, "status", odd)
+    monkeypatch.setattr(live_import, "MAX_RETRY_S", 0.05)
+    link = live_import.AgentLink(FakePump(), ("127.0.0.1", 9), tok, Path("agent-import.json"))
+    link.start()
+    try:
+        assert wait_for(lambda: len(calls) >= 3)
+        assert link.is_alive() and "list indices" in link.status()["error"]
+    finally:
+        link.stop()

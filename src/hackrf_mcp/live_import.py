@@ -210,7 +210,9 @@ class AgentLink(threading.Thread):
                 self.round()
                 failures = 0
                 delay = self.every_s
-            except (OSError, ValueError, KeyError, agent.AgentRefused) as exc:
+            except Exception as exc:  # noqa: BLE001 - the heartbeat must outlive a bad reply
+                if not isinstance(exc, (OSError, agent.AgentRefused)):
+                    print(f"hackrf-live: agent link: {exc!r}", file=sys.stderr, flush=True)
                 failures += 1
                 with self.lock:
                     self.state.update(error=str(exc) or repr(exc), error_at=time.time())

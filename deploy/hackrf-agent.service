@@ -30,6 +30,8 @@
 # HACKRF_AGENT_FALLBACK_AFTER_S; the worker imports what it logged. That
 # hackrf-live must NOT have HACKRF_LIVE_AGENT set: it opens this machine's
 # HackRF itself. Without the setting, don't run a hackrf-live here at all.
+# Stopping the agent leaves the local service paused until its lease runs
+# out (up to 3 minutes), so a restart doesn't hand the HackRF back and forth.
 
 [Unit]
 Description=hackrf-agent (the HackRF's samples for a worker elsewhere)

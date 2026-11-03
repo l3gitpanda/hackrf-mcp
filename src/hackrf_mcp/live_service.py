@@ -102,7 +102,8 @@ class LogPump(threading.Thread):
 
     def after_write(self, fn) -> None:
         """Call fn on the pump's thread once everything queued before it is
-        written (not if the write fails)."""
+        written; not if the write raises. Rows the writer drops for low disk
+        space count as written, as the service's own rows do."""
         self.q.put(("call", fn))
 
     def position(self, position: Position) -> None:

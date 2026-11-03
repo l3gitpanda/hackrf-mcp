@@ -194,7 +194,13 @@ owner's Docker stack doing everything else.
   `HACKRF_LIVE_AGENT`.
 - **W5:** cutover, with the owner's approval: the agent's port allowed to
   the worker only, the data copied to the worker's volume, the web and MCP
-  addresses moved.
+  addresses moved. Order matters for the log, since the worker's first
+  contact records the QNAP's ids and imports nothing: stop the QNAP's
+  hackrf-live, copy live.db (and spectrum.db), start the agent and the
+  worker so its first contact sees the ids the copy has, then start the
+  QNAP's hackrf-live again as the fallback. Rows logged on the QNAP between
+  the copy and the first contact would reach neither side; a worker started
+  before the copy would import rows the copy also has.
 
 ### Constraints
 

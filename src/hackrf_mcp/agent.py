@@ -224,6 +224,12 @@ class AgentSettings:
             return
         if self.tx_log is None:
             raise ValueError("transmitting needs an audit log: set HACKRF_AGENT_TX_LOG (or run under systemd with StateDirectory=)")
+        try:  # a log it can't write must stop the start, not the first transmission
+            self.tx_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.tx_log, "a"):
+                pass
+        except OSError as exc:
+            raise ValueError(f"the transmit audit log {self.tx_log} can't be written: {exc}") from exc
         if self.tx_mode == "allowed-bands":
             policy.allowed_bands(p)  # an unknown band set raises here
         if not 0 < self.max_tx_seconds <= TOOL_TIMEOUT_S["transmit"]:

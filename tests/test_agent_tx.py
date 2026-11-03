@@ -194,6 +194,9 @@ def test_transmit_settings_from_the_environment(tmp_path):
     assert s.tx_log == tmp_path / "tx-audit.jsonl" and s.tx_band_sets == ("ism", "amateur")
     with pytest.raises(ValueError, match="unknown band set"):
         agent.AgentSettings.from_env({**base, "HACKRF_AGENT_TX_MODE": "allowed-bands", "HACKRF_AGENT_TX_BANDS": "cb", "STATE_DIRECTORY": str(tmp_path)})
+    (tmp_path / "a-file").write_text("")
+    with pytest.raises(ValueError, match="can't be written"):
+        agent.AgentSettings.from_env({**base, "HACKRF_AGENT_TX_MODE": "unrestricted", "HACKRF_AGENT_TX_LOG": str(tmp_path / "a-file" / "tx.jsonl")})
     with pytest.raises(ValueError, match="tx_mode must be one of"):
         agent.AgentSettings.from_env({**base, "HACKRF_AGENT_TX_MODE": "loud"})
 

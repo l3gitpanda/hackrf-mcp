@@ -95,7 +95,10 @@ after the owner approves.
    half of a rotation, so it would be empty half the time), then History,
    Summaries, Alerts and Plugins. History could add a per-minute roll-up of
    positions: thinning a week of fixes reads all of them (about a second
-   on a desktop, several on the QNAP).
+   on a desktop, several on the QNAP). On real data the Map's labels pile
+   up over a busy approach at the zoom that fits the whole area; hiding
+   labels that would overlap (keeping the selected and the moving ones)
+   would fix it.
 
 ### Constraints
 

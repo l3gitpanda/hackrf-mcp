@@ -21,7 +21,7 @@ from fastmcp.utilities.types import Audio, Image
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from hackrf_mcp import __version__, decoders, iq, live_client, live_log, live_profiles, policy, settings, storage
+from hackrf_mcp import __version__, agent, decoders, iq, live_client, live_log, live_profiles, policy, settings, storage
 from hackrf_mcp import protocols  # noqa: F401  (registers every decoder and live profile)
 from hackrf_mcp.cli import run, set_bin_dir
 from hackrf_mcp.live_log import parse_when
@@ -146,6 +146,102 @@ def _refused(reason: object) -> str:
     return f"REFUSED: {reason}"
 
 
+# --- a split station: the HackRF behind a hackrf-agent ---------------------
+
+
+def _agent() -> tuple[tuple[str, int], str] | None:
+    """The hackrf-agent's address and token when this server's HackRF is on
+    another machine (HACKRF_LIVE_AGENT), else None."""
+    live = settings.get_live()
+    if live.agent is None:
+        return None
+    return live.agent, live.agent_token_file.read_text().strip()
+
+
+def _agent_line() -> str:
+    """Where the HackRF is, for hackrf_server_status."""
+    a = _agent()
+    if a is None:
+        return "on this machine"
+    (host, port), token = a
+    try:
+        st = agent.status((host, port), token, timeout=3)
+    except (OSError, PermissionError, ValueError) as exc:
+        return f"behind the hackrf-agent at {host}:{port}, which did not answer ({exc})"
+    if st.get("tool"):
+        doing = f"running {st['tool']['name']}"
+    elif st.get("stream"):
+        doing = f"streaming {st['stream']['center_hz'] / 1e6:.4f} MHz at {st['stream']['sample_rate_hz'] / 1e6:g} MS/s"
+    else:
+        doing = "idle"
+    return (
+        f"behind the hackrf-agent at {host}:{port} ({doing}); transmitting, bias-tee, clock "
+        "and Opera Cake control are not available through it, and the agent's own limits apply "
+        f"(sweeps up to {agent.TOOL_TIMEOUT_S['sweep']:.0f} s, captures up to "
+        f"{agent.TOOL_TIMEOUT_S['capture']:.0f} s and its HACKRF_AGENT_MAX_CAPTURE_MB)"
+    )
+
+
+def _split_refused(what: str) -> str:
+    return _refused(
+        "this server's HackRF is on another machine, behind a hackrf-agent, which runs only "
+        f"hackrf_info, hackrf_sweep and receive captures; {what} is not available through it"
+    )
+
+
+def _run_remote(owner: str, req: dict, sink, timeout: float) -> dict | str:
+    """_run_on_device for a split station: pause the live service, have the
+    agent run the tool (its output to `sink`), resume. Returns the agent's
+    "done" notice with a "note" about the pause, or a message (busy, refused,
+    unreachable) to return as it is."""
+    if not _device_lock.acquire(blocking=False):
+        return DEVICE_BUSY
+    try:
+        try:
+            hold = live_client.pause(owner, timeout + 30)
+        except live_client.Unavailable:
+            hold = None
+        except live_client.LiveError as exc:
+            return _refused(
+                f"the live decoder service holds the HackRF and did not release it ({exc}); "
+                "stop it with hackrf_live_stop and try again"
+            )
+        started = time.monotonic()
+        address, token = _agent()
+        timeout = min(timeout, agent.TOOL_TIMEOUT_S[req["tool"]])  # the agent's own ceiling
+        try:
+            done = agent.run_tool(address, token, {**req, "timeout_s": timeout}, sink, wait_s=timeout + 330)
+        except agent.AgentRefused as exc:
+            return _refused(f"the hackrf-agent refused: {exc}")
+        except OSError as exc:
+            return f"Could not run {owner} through the hackrf-agent at {address[0]}:{address[1]}: {exc}"
+        finally:
+            if hold is not None:
+                live_client.resume(hold["token"])
+        done["note"] = (
+            f"(Live decoding of {hold['paused_profile']} was paused for this call, "
+            f"{time.monotonic() - started:.0f} s, and has resumed.)"
+            if hold is not None and hold.get("paused_profile")
+            else ""
+        )
+        return done
+    finally:
+        _device_lock.release()
+
+
+def _remote_text(done: dict, stdout: str = "", timeout: float | None = None) -> str:
+    """An agent's "done" as cli.run would have put it."""
+    out = stdout
+    if done.get("stderr"):
+        out += f"\n--- stderr ---\n{done['stderr']}"
+    if done.get("timed_out"):
+        out = f"Command timed out after {timeout}s and was terminated.\n{out}"
+    elif done.get("exit_code"):
+        out += f"\n--- exit code: {done['exit_code']} ---"
+    out = out.strip()
+    return f"{out}\n{done['note']}" if done.get("note") else out
+
+
 BIAS_TEE_LOCKED = (
     "bias-tee power is locked on this server (HACKRF_MCP_ALLOW_BIAS_TEE is "
     "off); DC on the antenna port can damage equipment that isn't built for it"
@@ -161,6 +257,10 @@ def hackrf_info(device_serial: str | None = None) -> str:
         device_serial: Serial number of a specific HackRF, if multiple are
             connected.
     """
+    if _agent() is not None:
+        buf = bytearray()
+        done = _run_remote("hackrf_info", {"tool": "info", "device_serial": device_serial}, buf.extend, 15)
+        return done if isinstance(done, str) else _remote_text(done, buf.decode(errors="replace"), 15)
     args = []
     if device_serial:
         args += ["-d", device_serial]
@@ -239,10 +339,29 @@ def hackrf_sweep(
         out_path = Path(tmp.name)
 
     try:
-        args += ["-r", str(out_path)]
-        log = _run_on_device("hackrf_sweep", args, timeout=timeout_seconds)
-        if log == DEVICE_BUSY:
-            return log
+        if _agent() is not None:
+            req = {
+                "tool": "sweep",
+                "freq_min_mhz": freq_min_mhz,
+                "freq_max_mhz": freq_max_mhz,
+                "bin_width_hz": bin_width_hz,
+                "one_shot": one_shot,
+                "num_sweeps": num_sweeps,
+                "lna_gain_db": lna_gain_db,
+                "vga_gain_db": vga_gain_db,
+                "amp": amp_enable,
+                "device_serial": device_serial,
+            }
+            with open(out_path, "wb") as fh:
+                done = _run_remote("hackrf_sweep", req, fh.write, timeout_seconds)
+            if isinstance(done, str):
+                return done
+            log = _remote_text(done, timeout=timeout_seconds)
+        else:
+            args += ["-r", str(out_path)]
+            log = _run_on_device("hackrf_sweep", args, timeout=timeout_seconds)
+            if log == DEVICE_BUSY:
+                return log
         data = out_path.read_text(errors="replace")
     finally:
         out_path.unlink(missing_ok=True)
@@ -360,6 +479,8 @@ def hackrf_transfer(
         path = storage.resolve(file_path, must_exist=(direction == "tx"))
     except storage.PathNotAllowed as exc:
         return _refused(exc)
+    if _agent() is not None and direction == "tx":
+        return _split_refused("transmitting")
 
     if direction == "rx":
         if num_samples is None:
@@ -375,6 +496,11 @@ def hackrf_transfer(
             storage.check_capture_space(2 * num_samples)
         except storage.CaptureRefused as exc:
             return _refused(exc)
+        if _agent() is not None:
+            return _capture_remote(
+                path, frequency_hz, sample_rate_hz, num_samples, lna_gain_db, vga_gain_db,
+                amp_enable, antenna_enable, device_serial, timeout_seconds,
+            )  # fmt: skip
         args += ["-r", str(path), "-n", str(num_samples)]
     else:
         occupied = None
@@ -437,6 +563,42 @@ def hackrf_transfer(
     return result
 
 
+def _capture_remote(
+    path: Path, frequency_hz: int, sample_rate_hz: int, num_samples: int, lna_gain_db: int | None,
+    vga_gain_db: int | None, amp_enable: bool, antenna_enable: bool, device_serial: str | None, timeout_seconds: float,
+) -> str:  # fmt: skip
+    """A receive capture through the hackrf-agent, written to `path` here as
+    the samples arrive; a partial file is removed."""
+    req = {
+        "tool": "capture",
+        "frequency_hz": frequency_hz,
+        "sample_rate_hz": sample_rate_hz,
+        "num_samples": num_samples,
+        "lna_gain_db": lna_gain_db,
+        "vga_gain_db": vga_gain_db,
+        "amp": amp_enable,
+        "antenna_enable": antenna_enable,
+        "device_serial": device_serial,
+    }
+    try:
+        with open(path, "wb") as fh:
+            done = _run_remote("hackrf_transfer", req, fh.write, timeout_seconds)
+    except OSError as exc:
+        path.unlink(missing_ok=True)
+        return f"Could not write {path.name}: {exc}"
+    if isinstance(done, str):
+        path.unlink(missing_ok=True)
+        return done
+    text = _remote_text(done, timeout=timeout_seconds)
+    got = path.stat().st_size if path.exists() else 0
+    if got == 0:
+        path.unlink(missing_ok=True)
+        return f"No samples arrived; nothing was written.\n{text}"
+    if got < 2 * num_samples:
+        text += f"\n(The capture is short: {got // 2} of {num_samples} samples arrived.)"
+    return text
+
+
 @mcp.tool(annotations=CONFIG)
 def hackrf_clock(
     read_clock: int | None = None,
@@ -482,6 +644,8 @@ def hackrf_clock(
         args += ["-c", clkin_ctrl]
     if device_serial:
         args += ["-d", device_serial]
+    if _agent() is not None:
+        return _split_refused("the clock settings")
     return _run_on_device("hackrf_clock", args, timeout=15)
 
 
@@ -539,6 +703,8 @@ def hackrf_operacake(
         args += ["-w", str(default_dwell)]
     if device_serial:
         args += ["-d", device_serial]
+    if _agent() is not None:
+        return _split_refused("the Opera Cake")
     return _run_on_device("hackrf_operacake", args, timeout=15)
 
 
@@ -590,6 +756,8 @@ def hackrf_biast(
         args += ["-o", off_mode]
     if device_serial:
         args += ["-d", device_serial]
+    if _agent() is not None:
+        return _split_refused("bias-tee control")
     return _run_on_device("hackrf_biast", args, timeout=15)
 
 
@@ -1168,6 +1336,7 @@ def hackrf_server_status() -> str:
         f"{s.min_free_mb:g} MiB kept free; tx {s.max_tx_seconds:g}s per transmission",
         f"Bias-tee power: {'allowed' if s.allow_bias_tee else 'locked'}",
         f"Device: {'busy' if _device_lock.locked() else 'idle'}",
+        f"HackRF: {_agent_line()}",
         f"Transmit audit log: {s.tx_log_path}",
         "Decoders (hackrf_decode): "
         + ", ".join(

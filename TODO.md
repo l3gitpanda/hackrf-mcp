@@ -172,11 +172,16 @@ owner's Docker stack doing everything else.
   owner sets up the mirror and its `PACKAGERUNNER_TOKEN` secret. The uat
   (dump978) and rds (redsea) capture decoders stay out, as on the
   original station.
-- **W3:** the MCP server's device tools through the agent: info, sweep and
-  captures (a capture's bytes come back to the worker, where the analysis
-  tools read them). Transmitting through the agent needs its own approval:
-  the transmit policy and its audit log would move to the agent, the only
-  thing touching the device.
+- **W3 (done):** the MCP server's `hackrf_info`, `hackrf_sweep` and receive
+  captures through the agent: a typed "run" request (info, sweep, capture)
+  whose output comes back in DATA frames and is written to the worker's
+  capture directory. The agent enforces its own capture-size cap and
+  bias-tee lock, holds the device for the tool's run (a stream is
+  preempted with a reason), and stops a tool at its timeout or when its
+  client goes. Transmitting, bias-tee control, clock and Opera Cake stay
+  refused on a split station; transmitting through the agent needs its
+  own approval, since the transmit policy and its audit log would move
+  to the agent, the only thing touching the device.
 - **W4:** fallback. The agent starts local decoding when no worker has
   been seen for about 2 minutes (`last_client_seen`), and stops it when one
   asks for a stream; the worker imports the rows and positions logged

@@ -3,6 +3,7 @@ hackrf_transfer that writes a known byte pattern, prints power lines like
 the real one, and exits cleanly on SIGINT."""
 
 import hashlib
+from pathlib import Path
 import json
 import socket
 import sys
@@ -22,6 +23,16 @@ signal.signal(signal.SIGINT, lambda *a: (open(os.environ.get("FAKE_LOG", "/dev/n
 if os.environ.get("FAKE_FAIL"):
     sys.stderr.write("hackrf_open() failed: Resource busy (-1000)\\n"); sys.exit(1)
 block = bytes(range(256)) * 256
+args = sys.argv[1:]
+if "-n" in args:
+    # A capture: exactly 2 * n bytes, then hackrf_transfer's summary, then exit.
+    left = 2 * int(args[args.index("-n") + 1])
+    while left:
+        chunk = block[: min(left, len(block))]
+        sys.stdout.buffer.write(chunk); left -= len(chunk)
+    sys.stdout.buffer.flush()
+    sys.stderr.write("Exiting... hackrf_is_streaming() result: streaming terminated (-1004)\\n")
+    sys.exit(0)
 t = 0
 while True:
     sys.stdout.buffer.write(block); sys.stdout.buffer.flush()
@@ -41,9 +52,38 @@ def fake(tmp_path):
     return path
 
 
+INFO = """\
+import sys
+print("hackrf_info version: 2026.01.3")
+print("Found HackRF")
+print("Serial number: 0000000000000000a06063c8234e925f")
+"""
+
+SWEEP = """\
+import sys, time
+if "-f" in sys.argv and sys.argv[sys.argv.index("-f") + 1] == "1:2":
+    time.sleep(60)  # hangs, for the timeout test
+for lo in range(int(sys.argv[sys.argv.index("-f") + 1].split(":")[0]), 3):
+    print(f"2026-11-03, 21:00:00.0, {lo * 1000000}, {(lo + 1) * 1000000}, 1000000.00, 20, -60.1, -55.2")
+sys.stderr.write("Sweeping from 0 MHz to 3 MHz\\n")
+"""
+
+
 @pytest.fixture
-def server(fake):
-    s = agent.AgentSettings(host="127.0.0.1", port=0, token_sha256=(hashlib.sha256(TOKEN.encode()).hexdigest(),), binary=str(fake))
+def tools(tmp_path, fake):
+    d = tmp_path / "tools"
+    d.mkdir()
+    for name, body in (("hackrf_info", INFO), ("hackrf_sweep", SWEEP)):
+        (d / name).write_text(f"#!{sys.executable}\n" + body)
+        (d / name).chmod(0o755)
+    return d
+
+
+@pytest.fixture
+def server(fake, tools):
+    s = agent.AgentSettings(
+        host="127.0.0.1", port=0, token_sha256=(hashlib.sha256(TOKEN.encode()).hexdigest(),), binary=str(fake), tools_dir=str(tools)
+    )
     s.digests = s.load_digests()
     srv = agent.AgentServer(s)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -212,3 +252,151 @@ def test_a_refusal_reaches_the_remote_source(server):
     assert wait_for(lambda: src.failure() is not None)
     assert "not authorised" in src.failure()
     src.stop()
+
+
+# --- running tools through the agent (W3) ---------------------------------
+
+
+def test_run_info_sweep_and_a_capture(server):
+    out = bytearray()
+    done = agent.run_tool(addr(server), TOKEN, {"tool": "info"}, out.extend)
+    assert done["exit_code"] == 0 and "Found HackRF" in out.decode()
+    out = bytearray()
+    done = agent.run_tool(addr(server), TOKEN, {"tool": "sweep", "freq_min_mhz": 0, "freq_max_mhz": 3, "one_shot": True}, out.extend)
+    assert done["exit_code"] == 0 and out.decode().count("\n") == 3 and "Sweeping" in done["stderr"]
+    out = bytearray()
+    req = {"tool": "capture", "frequency_hz": 98_000_000, "sample_rate_hz": 2_000_000, "num_samples": 300_000}
+    done = agent.run_tool(addr(server), TOKEN, req, out.extend)
+    assert done["exit_code"] == 0 and len(out) == 600_000 and done["bytes"] == 600_000
+    assert bytes(out[:256]) == bytes(range(256))
+    assert agent.status(addr(server), TOKEN)["tool"] is None
+
+
+def test_a_run_preempts_a_stream_and_says_so(server):
+    src = RemoteSource(addr(server), TOKEN, 1_090_000_000, 2_400_000, 32, 40, False)
+    src.start(lambda b: None)
+    assert wait_for(lambda: server.agent.current is not None)
+    agent.run_tool(addr(server), TOKEN, {"tool": "info"}, lambda b: None)
+    assert wait_for(lambda: src.failure() is not None)
+    assert "preempted by hackrf_info" in src.failure()
+    src.stop()
+
+
+def test_a_tool_that_hangs_is_stopped_at_its_timeout(server):
+    t0 = time.monotonic()
+    done = agent.run_tool(addr(server), TOKEN, {"tool": "sweep", "freq_min_mhz": 1, "freq_max_mhz": 2, "timeout_s": 1}, lambda b: None)
+    assert done["timed_out"] and time.monotonic() - t0 < 10
+
+
+def test_runs_are_typed_and_the_agent_keeps_its_own_limits(server):
+    def refused(req):
+        with pytest.raises(agent.AgentRefused) as e:
+            agent.run_tool(addr(server), TOKEN, req, lambda b: None)
+        return str(e.value)
+
+    assert "unknown tool" in refused({"tool": "transmit"})
+    assert "unknown tool" in refused({"tool": "clock"})
+    assert "device_serial" in refused({"tool": "info", "device_serial": "; rm -rf /"})
+    assert "bias-tee power is locked" in refused({"tool": "capture", "frequency_hz": 98_000_000, "sample_rate_hz": 2_000_000, "num_samples": 10, "antenna_enable": True})
+    assert "MB limit" in refused({"tool": "capture", "frequency_hz": 98_000_000, "sample_rate_hz": 2_000_000, "num_samples": 2_000_000_000})
+    assert "0-7250" in refused({"tool": "sweep", "freq_min_mhz": 100, "freq_max_mhz": 99})
+    assert "timeout_s" in refused({"tool": "sweep", "freq_min_mhz": 0, "freq_max_mhz": 3, "timeout_s": 5000})
+    with pytest.raises(agent.AgentRefused, match="not authorised"):
+        agent.run_tool(addr(server), "wrong", {"tool": "info"}, lambda b: None)
+
+
+# --- the MCP server's device tools on a split station ----------------------
+
+
+@pytest.fixture
+def split(server, tmp_path, isolated_settings):
+    tok = tmp_path / "agent-token"
+    tok.write_text(TOKEN)
+    host, port = addr(server)
+    settings.configure_live(settings.LiveSettings(live_dir=tmp_path / "live", min_free_mb=0, agent=(host, port), agent_token_file=tok))
+    return server
+
+
+def test_device_tools_go_through_the_agent(split, tmp_path):
+    from hackrf_mcp import server as mcp
+
+    assert "Found HackRF" in mcp.hackrf_info()
+    out = mcp.hackrf_sweep(freq_min_mhz=0, freq_max_mhz=3)
+    assert "--- sweep data ---" in out and out.count("-60.1") == 3
+    r = mcp.hackrf_transfer(direction="rx", file_path="cap.iq", frequency_hz=98_000_000, sample_rate_hz=2_000_000, num_samples=250_000)
+    assert "streaming terminated" in r
+    assert (tmp_path / "cap.iq").stat().st_size == 500_000  # written here, on the worker
+    status = mcp.hackrf_server_status()
+    assert "behind the hackrf-agent at 127.0.0.1" in status and "(idle)" in status
+
+
+def test_what_the_agent_does_not_do_is_refused_on_a_split_station(split, tmp_path):
+    from hackrf_mcp import server as mcp
+
+    (tmp_path / "tone.iq").write_bytes(bytes(4096))
+    assert mcp.hackrf_transfer(direction="tx", file_path="tone.iq", frequency_hz=433_920_000).startswith("REFUSED: this server's HackRF is on another machine")
+    assert "clock settings" in mcp.hackrf_clock(read_all=True)
+    assert "Opera Cake" in mcp.hackrf_operacake(list_boards=True)
+    assert mcp.hackrf_biast(immediate_mode=False).startswith("REFUSED:")
+    # A capture the agent refuses leaves no file behind.
+    r = mcp.hackrf_transfer(direction="rx", file_path="big.iq", frequency_hz=98_000_000, sample_rate_hz=20_000_000, duration_seconds=1, lna_gain_db=33)
+    assert r.startswith("REFUSED") and not (tmp_path / "big.iq").exists()
+
+
+def test_a_stream_asked_for_while_a_tool_runs_is_refused_not_queued(server):
+    threading.Thread(
+        target=agent.run_tool,
+        args=(addr(server), TOKEN, {"tool": "sweep", "freq_min_mhz": 1, "freq_max_mhz": 2, "timeout_s": 3}, lambda b: None),
+        daemon=True,
+    ).start()
+    assert wait_for(lambda: agent.status(addr(server), TOKEN)["tool"] is not None)
+    t0 = time.monotonic()
+    src = RemoteSource(addr(server), TOKEN, 98_000_000, 2_000_000, 32, 40, False)
+    src.start(lambda b: None)
+    assert wait_for(lambda: src.failure() is not None, timeout=3)
+    assert "running hackrf_sweep" in src.failure() and time.monotonic() - t0 < 3
+    src.stop()
+    # Once the tool is done, a stream starts as usual.
+    assert wait_for(lambda: agent.status(addr(server), TOKEN)["tool"] is None, timeout=10)
+    got = bytearray()
+    again = RemoteSource(addr(server), TOKEN, 98_000_000, 2_000_000, 32, 40, False)
+    again.start(got.extend)
+    assert wait_for(lambda: len(got) > 0)
+    again.stop()
+
+
+def test_a_device_tool_pauses_a_live_service_streaming_from_the_agent(server, tmp_path, monkeypatch):
+    """The cycle W3 exists for: the live service streams from the agent; an
+    MCP device tool pauses it, runs through the agent, and it resumes."""
+    from hackrf_mcp import server as mcp
+    from hackrf_mcp.live_service import ControlServer
+
+    monkeypatch.chdir(tmp_path)  # a short relative path for the control socket
+    tok = tmp_path / "agent-token"
+    tok.write_text(TOKEN)
+    Path("live").mkdir()
+    live = settings.LiveSettings(live_dir=Path("live"), min_free_mb=0, agent=addr(server), agent_token_file=tok)
+    settings.configure_live(live)
+    svc = LiveService(live, None, program_finder=lambda p: "/bin/true")
+    events = []
+    record = svc._event
+    svc._event = lambda event, profile=None, detail=None: (events.append(event), record(event, profile, detail))
+    ctl = ControlServer(live.socket_path, svc)
+    threading.Thread(target=ctl.serve_forever, daemon=True).start()
+    threading.Thread(target=svc.serve_forever, kwargs={"interval_s": 0.1}, daemon=True).start()
+    try:
+        assert svc.handle({"cmd": "watch", "center_hz": 98_000_000, "sample_rate_hz": 2_000_000})["state"] == "running"
+        assert wait_for(lambda: svc.pipeline is not None and svc.pipeline.source.bytes_read > 0)
+        first = svc.pipeline
+        out = mcp.hackrf_info()
+        assert "Found HackRF" in out and "Live decoding of watch was paused for this call" in out
+        # It comes back with a fresh stream from the agent.
+        assert wait_for(lambda: svc.pipeline is not None and svc.pipeline is not first and svc.pipeline.source.bytes_read > 0)
+        assert "pause" in events and "resume" in events and "error" not in events
+        assert events.count("start") == 2  # the watch, and the watch again after the tool
+    finally:
+        svc.shutdown.set()
+        ctl.shutdown()
+        ctl.server_close()
+        with svc.lock:
+            svc._stop_pipeline("test over")

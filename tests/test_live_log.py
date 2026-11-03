@@ -127,3 +127,61 @@ def test_events_between_two_times(tmp_path):
     conn = live_log.open_reader(w.path)
     assert [r["ts"] for r in live_log.events(conn, since=15, until=25)] == [20.0]
     assert [r["ts"] for r in live_log.events(conn, limit=2)] == [30.0, 20.0]
+
+
+def test_search_pages_backwards_and_takes_several_profiles(tmp_path):
+    w = _writer(tmp_path)
+    w.write([Row(ts=float(t), profile=("adsb", "ais", "flex")[t % 3], kind="x", fields={}, subject=f"S{t}") for t in range(10)])
+    conn = live_log.open_reader(w.path)
+    first = live_log.search(conn, limit=4)
+    assert [r["ts"] for r in first] == [9.0, 8.0, 7.0, 6.0]
+    nxt = live_log.search(conn, limit=4, before_id=first[-1]["id"])
+    assert [r["ts"] for r in nxt] == [5.0, 4.0, 3.0, 2.0]
+    two = live_log.search(conn, profiles=("adsb", "flex"), limit=20)
+    assert {r["profile"] for r in two} == {"adsb", "flex"} and len(two) == 7
+
+
+def test_histogram_counts_rows_per_bucket_and_profile(tmp_path):
+    w = _writer(tmp_path)
+    w.write([Row(ts=float(t), profile="adsb" if t < 50 else "ais", kind="x", fields={}, subject="S") for t in range(100)])
+    conn = live_log.open_reader(w.path)
+    out = live_log.histogram(conn, 0.0, 100.0, buckets=4)
+    assert out["bucket_s"] == 25.0
+    assert out["counts"] == [{"adsb": 25}, {"adsb": 25}, {"ais": 25}, {"ais": 25}]
+    only = live_log.histogram(conn, 0.0, 100.0, buckets=2, profiles=("ais",))
+    assert only["counts"] == [{}, {"ais": 50}]
+
+
+def test_coverage_rebuilds_what_the_receiver_was_doing(tmp_path):
+    w = _writer(tmp_path)
+    ev = [
+        (5.0, "service-start", None, "pid 1"),
+        (10.0, "start", "adsb", "tuned"),
+        (100.0, "stop", "adsb", "switching"),
+        (100.001, "start", "ais", "tuned"),
+        (200.0, "stop", "ais", "paused for hackrf_transfer"),
+        (230.0, "start", "ais", "tuned"),
+        (300.0, "stop", "ais", "failed"),
+        (300.0, "error", "ais", "hackrf_transfer exited; retrying in 2 s"),
+        (305.0, "start", "ais", "tuned"),
+        (400.0, "stop", "ais", "stopped on request"),
+        (450.0, "service-stop", None, None),
+    ]
+    for ts, e, p, d in ev:
+        w.event(e, p, d, ts=ts)
+    conn = live_log.open_reader(w.path)
+    cov = live_log.coverage(conn, 0.0, 500.0)
+    assert [(c["state"], c["profile"], c["from"], c["to"]) for c in cov] == [
+        ("down", None, 0.0, 5.0),
+        ("idle", None, 5.0, 10.0),
+        ("running", "adsb", 10.0, 100.0),
+        ("running", "ais", 100.001, 200.0),
+        ("paused", None, 200.0, 230.0),
+        ("running", "ais", 230.0, 300.0),
+        ("error", None, 300.0, 305.0),
+        ("running", "ais", 305.0, 400.0),
+        ("idle", None, 400.0, 450.0),
+        ("down", None, 450.0, 500.0),
+    ]
+    # A range that starts mid-run knows what was running from before it.
+    assert live_log.coverage(conn, 150.0, 180.0) == [{"state": "running", "profile": "ais", "from": 150.0, "to": 180.0}]

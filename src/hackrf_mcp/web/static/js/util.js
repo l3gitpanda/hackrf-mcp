@@ -34,6 +34,18 @@ export function utc(ts, withSeconds = true) {
   return withSeconds ? s.slice(11, 19) : s.slice(11, 16);
 }
 
+// "2026-11-02 18:00" for a Unix time (UTC, to the minute).
+export function fmtUtc(ts) {
+  return new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ');
+}
+
+// "2026-11-02 18:00" (UTC), seconds optional; a date alone is midnight.
+export function parseUtc(text) {
+  const m = /^\s*(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?\s*Z?\s*$/.exec(text);
+  if (!m) throw new Error(`"${text}" is not a UTC time like 2026-11-02 18:00`);
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)) / 1000;
+}
+
 export function ago(ts, now) {
   if (ts == null) return 'never';
   const s = Math.max(0, now - ts);

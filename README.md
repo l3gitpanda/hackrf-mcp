@@ -329,7 +329,14 @@ running profile and its tuning, a waterfall and spectrum of its band
 history), the decoded feed with per-profile filters, the rotation and an
 editor for it, start, switch and stop, and a health strip (input rate and
 power, channel levels, messages a minute, CPU and memory of both services,
-log and spectrum sizes). It never opens the HackRF. It reads the live log and the spectrum history, relays the live
+log and spectrum sizes). The **Log** screen (`/log`) searches the log by
+time range, subject, free text, frequency and profiles (the search lives in
+the address, so it can be bookmarked, and Live's feed links rows to it),
+shows a timeline of detections per profile with the receiver's coverage
+under it (which profile ran, and hatched gaps for paused, error, stopped and
+service down), pages through the results, opens a row with all its fields,
+its raw text and the waterfall of the minute around it, and exports CSV.
+It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,
 switches and stops profiles over the control socket, as the MCP tools do.
@@ -338,7 +345,8 @@ switches and stops profiles over the control socket, as the MCP tools do.
 |---|---|
 | `GET /api/registry` | profiles and decoders from the registries, with each profile's views (map, table, timeline) |
 | `GET /api/status` | the live service's status, and the memory and CPU of `hackrf-live` and `hackrf-web` |
-| `GET /api/log`, `/api/summary`, `/api/events` | the log, as `hackrf_live_search` and `hackrf_live_summary` read it |
+| `GET /api/log`, `/api/summary`, `/api/events` | the log, as `hackrf_live_search` and `hackrf_live_summary` read it; `/api/log` takes several `profiles` and pages with `before_id` |
+| `GET /api/log/histogram`, `/api/coverage` | matching rows per time bucket and profile; what the receiver was doing (running which profile, paused, error, stopped, down), rebuilt from the events |
 | `GET /api/positions` | map-track points |
 | `GET /api/spectrum/segments`, `/api/spectrum?segment=` | spectrum history, downsampled to the buckets asked for |
 | `POST /api/live/start`, `/api/live/stop` | the same requests as `hackrf_live_start` / `hackrf_live_stop` |

@@ -4,6 +4,7 @@
 // nothing here names a protocol.
 
 import { api, post, LiveSocket } from './api.js';
+import { paintAppBar, paintClock } from './appbar.js';
 import { Waterfall } from './waterfall.js';
 import { ago, assignColors, clear, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
 
@@ -218,35 +219,8 @@ function renderStatus(st) {
   $('feed-rate').textContent = `${l.decoded_1m ?? '—'} msg/min`;
 }
 
-function stateOf(l) {
-  if (S.socket === 'closed') return ['st-stopped', 'Disconnected'];
-  switch (l.state) {
-    case 'running':
-      return l.falling_behind ? ['st-behind', 'Falling behind'] : ['st-running', 'Running'];
-    case 'paused':
-      return ['st-paused', 'Paused'];
-    case 'waiting':
-      return ['st-error', 'Waiting to retry'];
-    case 'starting':
-      return ['st-idle', 'Starting'];
-    case 'idle':
-      return ['st-idle', 'Idle'];
-    default:
-      return ['st-stopped', 'Service not running'];
-  }
-}
-
 function renderAppBar() {
-  const l = live();
-  const [cls, text] = stateOf(l);
-  $('ab-state').className = `chip st ${cls}`;
-  $('ab-state-text').textContent = text;
-  const det = l.tuning_detail;
-  $('ab-prof').hidden = !det;
-  if (det) {
-    $('ab-prof').style.setProperty('--pc', profileColor(det.profile));
-    $('ab-prof-text').textContent = `${det.profile} · ${mhz(det.center_hz, 3)}`;
-  }
+  paintAppBar(live(), profileColor, S.socket);
 }
 
 function renderControl() {
@@ -750,7 +724,17 @@ function itemEl(it, fresh) {
     }
     const kv = h('dl', { class: 'kv' });
     for (const [k, v] of Object.entries(fields)) kv.append(h('dt', {}, k), h('dd', { class: 'mono' }, fmtValue(v)));
-    wrap.append(h('div', { class: 'fdet' }, kv, it.raw ? h('pre', { class: 'raw' }, it.raw) : null));
+    const q = new URLSearchParams({ profiles: it.profile, around: String(Math.round(it.ts)) });
+    if (it.subject) q.set('subject', it.subject);
+    wrap.append(
+      h(
+        'div',
+        { class: 'fdet' },
+        kv,
+        it.raw ? h('pre', { class: 'raw' }, it.raw) : null,
+        h('div', { class: 'acts' }, h('a', { class: 'btn sm', href: `/log?${q}` }, it.subject ? 'Open in log' : 'Open the log here')),
+      ),
+    );
   });
   wrap.append(btn);
   return wrap;
@@ -790,7 +774,7 @@ async function prefillWaterfall() {
 // --- Every second ------------------------------------------------------------------------
 
 function tick() {
-  $('ab-clock').textContent = `${utc(now())} UTC`;
+  paintClock(now());
   if (!S.status) return;
   renderRotation();
   renderBanner();

@@ -85,7 +85,8 @@ after the owner approves.
    (digest), the browser exchanging it once for an HttpOnly SameSite=Strict
    cookie; websockets check the Origin.
 5. **Live screen** (done: `web/static/`, checked in headless Chromium
-   against `tools/webui_demo.py`), 6. **Log screen**, 7. **Map** (Leaflet over
+   against `tools/webui_demo.py`), 6. **Log screen** (done: `/log`,
+   `log.js`, `/api/log/histogram`, `/api/coverage`), 7. **Map** (Leaflet over
    `positions`; tar1090 is GPL and live-ADS-B-only, so at most a link),
    then History, Summaries, Alerts and Plugins.
 

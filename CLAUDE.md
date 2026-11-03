@@ -115,8 +115,9 @@ asyncio.run(main())
   checks the token or cookie, the Origin of changes and websockets, and
   adds the security headers (a strict CSP: no inline scripts or styles).
   Pager text is removed on read through each profile's `redact`.
-  The UI in `web/static/` is plain ES modules (`js/live.js`,
-  `js/waterfall.js`, `js/util.js`, `js/api.js`) and `hl.css` from the
+  The UI in `web/static/` is plain ES modules (`js/live.js`, `js/log.js`,
+  `js/waterfall.js`, `js/appbar.js`, `js/util.js`, `js/api.js`), one HTML
+  page per screen (`index.html`, `log.html`), and `hl.css` from the
   mockup plus `app.css`. Rules: no inline scripts, styles, style attributes
   or event handlers (the CSP forbids them; set styles through the CSSOM),
   nothing from other origins, and no protocol names: everything about

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Log · hackrf-live</title>
+<link rel="stylesheet" href="/static/hl.css">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/js/log.js"></script>
+</head>
+<body>
+<div class="hl page">
+  <div class="abwrap">
+    <header class="appbar">
+      <a class="brand" href="/">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <span>hackrf-live</span>
+        <small>home station</small>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/">Live</a>
+        <a aria-disabled="true" title="Coming in a later milestone">Map</a>
+        <a href="/log" aria-current="page">Log</a>
+        <a aria-disabled="true" title="Coming in a later milestone">History</a>
+        <a aria-disabled="true" title="Coming in a later milestone">Summaries</a>
+      </nav>
+      <div class="ab-r">
+        <span class="chip st st-idle" id="ab-state" role="status"><span class="dot"></span><span id="ab-state-text">Connecting…</span></span>
+        <span class="chip" id="ab-prof" hidden><span class="sw"></span><span class="mono" id="ab-prof-text"></span></span>
+        <span class="chip mono" id="ab-clock" aria-label="Station clock, UTC">--:--:-- UTC</span>
+        <form method="post" action="/auth/logout"><button type="submit" class="btn sm ghost">Sign out</button></form>
+      </div>
+    </header>
+  </div>
+  <main class="main">
+    <section class="panel" aria-label="Search">
+      <div class="ph"><h2>Search the log</h2><span class="sp"></span><span class="muted" id="logstats"></span></div>
+      <form class="sform" id="sform">
+        <div class="fld">
+          <label for="range">Time range</label>
+          <select id="range" class="inp">
+            <option value="900">Last 15 minutes</option>
+            <option value="3600" selected>Last hour</option>
+            <option value="21600">Last 6 hours</option>
+            <option value="86400">Last 24 hours</option>
+            <option value="604800">Last 7 days</option>
+            <option value="custom">From – to</option>
+          </select>
+        </div>
+        <div class="fld">
+          <label for="from">From (UTC)</label>
+          <input id="from" class="inp mono" placeholder="2026-11-02 18:00">
+        </div>
+        <div class="fld">
+          <label for="to">To (UTC)</label>
+          <input id="to" class="inp mono" placeholder="now">
+        </div>
+        <div class="fld">
+          <label for="subj">Subject</label>
+          <input id="subj" class="inp mono" placeholder="ICAO, MMSI, capcode, callsign" autocomplete="off">
+        </div>
+        <div class="fld">
+          <label for="txt">Free text</label>
+          <input id="txt" class="inp" placeholder="Words in fields or raw text" autocomplete="off">
+        </div>
+        <div class="fld">
+          <label for="freq">Frequency (MHz, ±12.5 kHz)</label>
+          <input id="freq" class="inp mono" placeholder="e.g. 162.025" autocomplete="off">
+        </div>
+        <div class="fld wide">
+          <span class="lb">Profiles</span>
+          <div class="row wr" id="pchips" role="group" aria-label="Profiles"></div>
+        </div>
+        <div class="wide row wr">
+          <button type="submit" class="btn primary">Search</button>
+          <button type="button" class="btn" id="reset">Reset</button>
+          <button type="button" class="btn" id="csv">Export CSV</button>
+          <span class="ctl-err" id="serr" role="alert" hidden></span>
+        </div>
+      </form>
+    </section>
+    <section class="panel" aria-label="Detection timeline">
+      <div class="ph">
+        <h2>Detections</h2>
+        <span class="mono muted" id="tl-title"></span>
+        <span class="sp"></span>
+        <div class="legend" id="tl-legend"></div>
+      </div>
+      <div class="tlw">
+        <div class="tl lab2" id="tl" role="group" aria-label="Rows per time bucket"></div>
+        <div class="covlane" id="covlane" title="Which profile was running"></div>
+        <div class="tlx" id="tlx"></div>
+        <div class="row" id="bucket" hidden><span class="tag" id="bucket-label"></span><button type="button" class="btn sm ghost" id="bucket-clear">Clear time filter</button></div>
+      </div>
+    </section>
+    <div class="g-log closed" id="glog">
+      <section class="panel" aria-label="Results">
+        <div class="ph">
+          <h2>Results</h2>
+          <span class="mono muted" id="count"></span>
+          <span class="sp"></span>
+          <span class="muted" id="rownote">ADS-B and AIS positions are one row per target per minute.</span>
+        </div>
+        <div class="tscroll" id="tscroll">
+          <table class="tbl">
+            <thead><tr><th>Start</th><th>End</th><th>Profile</th><th>Kind</th><th class="r">MHz</th><th class="r">dB</th><th>Subject</th><th>Label</th><th>Decoded</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="empty" hidden><b>No rows match</b><span id="empty-why"></span><span class="muted" id="empty-cover"></span></div>
+        <div class="more" id="more" hidden><button type="button" class="btn" id="more-btn">Load more</button></div>
+      </section>
+      <section class="panel drawerp" id="detail" aria-label="Row detail" hidden>
+        <div class="ph">
+          <span class="pbadge" id="d-profile"></span>
+          <span class="kind muted" id="d-kind"></span>
+          <span class="sp"></span>
+          <button type="button" class="btn sm icon ghost" id="d-close" aria-label="Close detail">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg>
+          </button>
+        </div>
+        <div class="pb col">
+          <div class="col">
+            <span class="row wr"><span class="mono big" id="d-subject"></span><b id="d-label"></b></span>
+            <span class="mono muted" id="d-when"></span>
+          </div>
+          <div class="col"><span class="cap">Decoded fields</span><dl class="kv" id="d-fields"></dl></div>
+          <div class="col"><span class="cap">Raw decoder text</span><pre class="raw" id="d-raw"></pre></div>
+          <div class="col">
+            <span class="cap">On the waterfall</span>
+            <div class="thumb" id="d-thumb"><canvas id="d-canvas"></canvas></div>
+            <span class="thumbcap" id="d-thumbcap"></span>
+          </div>
+          <div class="row wr">
+            <button type="button" class="btn sm" id="d-subj">Search this subject</button>
+            <a class="btn sm" href="/">Live</a>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

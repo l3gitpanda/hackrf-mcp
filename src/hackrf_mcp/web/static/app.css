@@ -47,3 +47,19 @@ body{margin:0;background:#0a0e13}
   .wfp .wf{height:300px}
   .ctl-act{margin-left:0}
 }
+/* The Log screen (the mockup's Log artboard). */
+.sform{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:10px 12px;padding:12px}
+.sform .wide{grid-column:1 / -1}
+.ex{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:12px;color:var(--muted)}
+.tl.lab2{padding-top:22px}
+.covlane{position:relative;height:6px;margin-top:3px;border-radius:2px;background:var(--panel2);overflow:hidden}
+.covlane span{position:absolute;top:0;bottom:0;background:var(--pc)}
+.thumbcap{font-size:11.5px;color:var(--muted)}
+.drawerp{position:sticky;top:12px}
+.thumb{position:relative;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:#05080f;height:150px}
+.thumb canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.thumb .band{position:absolute;left:0;right:0;border-top:1px solid rgba(255,255,255,.7);border-bottom:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.08);pointer-events:none}
+.thumb .fmark{position:absolute;top:0;width:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:6px solid #fff;transform:translateX(-4px)}
+.more{display:flex;justify-content:center;padding:10px}
+.tbl tbody tr td .pbadge{vertical-align:middle}
+#tscroll{max-height:min(560px,70vh)}

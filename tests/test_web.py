@@ -224,6 +224,27 @@ def test_events_positions_and_bad_parameters(env):
     assert c.get("/api/spectrum", params={"segment": "99"}, headers=BEARER).status_code == 404
 
 
+def test_log_paging_histogram_coverage_and_the_log_page(env):
+    _, gate, _ = env
+    c = TestClient(gate)
+    first = c.get("/api/log", params={"since": "0", "limit": 1}, headers=BEARER).json()
+    assert len(first["rows"]) == 1 and first["more"] is True
+    rest = c.get("/api/log", params={"since": "0", "limit": 5, "before_id": first["rows"][0]["id"]}, headers=BEARER).json()
+    assert len(rest["rows"]) == 1 and rest["more"] is False
+    assert rest["rows"][0]["id"] != first["rows"][0]["id"]
+    only = c.get("/api/log", params={"since": "0", "profiles": "adsb"}, headers=BEARER).json()["rows"]
+    assert {r["profile"] for r in only} == {"adsb"}
+    hist = c.get("/api/log/histogram", params={"since": "900", "until": "1100", "buckets": 2}, headers=BEARER).json()
+    assert hist["counts"] == [{}, {"adsb": 1, "flex": 1}]
+    assert c.get("/api/log/histogram", params={"until": "1100"}, headers=BEARER).status_code == 400
+    cov = c.get("/api/coverage", params={"since": "990", "until": "1100"}, headers=BEARER).json()["coverage"]
+    assert cov[-1] == {"state": "running", "profile": "adsb", "from": 999.0, "to": 1100.0}
+    r = TestClient(gate, follow_redirects=False).get("/log")
+    assert r.status_code == 303  # needs sign-in
+    page = c.get("/log", headers=BEARER)
+    assert page.status_code == 200 and "log.js" in page.text and page.headers["cache-control"] == "no-cache"
+
+
 def test_spectrum_segments_and_a_downsampled_waterfall(env):
     _, gate, _ = env
     c = TestClient(gate)

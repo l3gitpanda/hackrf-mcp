@@ -353,8 +353,7 @@ def normalise_subject(value: str) -> str:
     return v.upper()
 
 
-def search(
-    conn: sqlite3.Connection,
+def _where(
     since: float | None = None,
     until: float | None = None,
     profile: str | None = None,
@@ -363,12 +362,8 @@ def search(
     text: str | None = None,
     freq_hz: int | None = None,
     freq_tolerance_hz: int = 5_000,
-    limit: int = 50,
-) -> list[sqlite3.Row]:
-    """Rows matching every filter given, newest first. `subject` matches
-    the subject or the label exactly (case-insensitive), so an ICAO address,
-    MMSI, capcode, callsign, flight or ship name all work; `text` is a
-    substring of the raw text, the fields JSON, the subject or the label."""
+    profiles: tuple[str, ...] | None = None,
+) -> tuple[list[str], list]:
     where, args = [], []
     if since is not None:
         # A row covers at most a minute (ts..ts_end), so the ts index can
@@ -381,6 +376,9 @@ def search(
     if profile:
         where.append("profile = ?")
         args.append(profile)
+    if profiles:
+        where.append(f"profile IN ({', '.join('?' * len(profiles))})")
+        args += list(profiles)
     if kind:
         where.append("kind = ?")
         args.append(kind)
@@ -396,12 +394,133 @@ def search(
     if freq_hz is not None:
         where.append("freq_hz BETWEEN ? AND ?")
         args += [freq_hz - freq_tolerance_hz, freq_hz + freq_tolerance_hz]
+    return where, args
+
+
+def search(
+    conn: sqlite3.Connection,
+    since: float | None = None,
+    until: float | None = None,
+    profile: str | None = None,
+    kind: str | None = None,
+    subject: str | None = None,
+    text: str | None = None,
+    freq_hz: int | None = None,
+    freq_tolerance_hz: int = 5_000,
+    limit: int = 50,
+    profiles: tuple[str, ...] | None = None,
+    before_id: int | None = None,
+) -> list[sqlite3.Row]:
+    """Rows matching every filter given, newest first. `subject` matches
+    the subject or the label exactly (case-insensitive), so an ICAO address,
+    MMSI, capcode, callsign, flight or ship name all work; `text` is a
+    substring of the raw text, the fields JSON, the subject or the label.
+    `profiles` keeps any of several profiles; `before_id` continues a
+    previous page after its last row."""
+    where, args = _where(since, until, profile, kind, subject, text, freq_hz, freq_tolerance_hz, profiles)
+    if before_id is not None:
+        where.append("(ts, id) < (SELECT ts, id FROM messages WHERE id = ?)")
+        args.append(int(before_id))
     sql = "SELECT * FROM messages"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY ts DESC, id DESC LIMIT ?"
     args.append(max(1, int(limit)))
     return conn.execute(sql, args).fetchall()
+
+
+def histogram(
+    conn: sqlite3.Connection,
+    since: float,
+    until: float,
+    buckets: int = 96,
+    **filters,
+) -> dict:
+    """How many rows match per time bucket and profile, for a timeline:
+    {"bucket_s": width, "counts": [{profile: n, ...} per bucket]}. A row
+    counts in the bucket of its start. Takes search()'s filters."""
+    buckets = max(1, min(int(buckets), 2000))
+    width = max((until - since) / buckets, 1e-9)
+    where, args = _where(since=None, until=until, **filters)
+    where.append("ts >= ?")
+    args.append(since)
+    sql = (
+        "SELECT CAST((ts - ?) / ? AS INTEGER) AS b, profile, count(*) FROM messages WHERE "
+        + " AND ".join(where)
+        + " GROUP BY b, profile"
+    )
+    counts: list[dict] = [{} for _ in range(buckets)]
+    for b, profile, n in conn.execute(sql, [since, width, *args]):
+        counts[min(max(int(b), 0), buckets - 1)][profile] = n
+    return {"since": since, "until": until, "bucket_s": width, "counts": counts}
+
+
+# How a stop event's detail begins, and the gap it opens.
+_GAP_OF_STOP = (("paused", "paused"), ("failed", "error"), ("service stopping", "down"), ("switching", "switching"))
+
+
+def coverage(conn: sqlite3.Connection, since: float, until: float) -> list[dict]:
+    """What the receiver was doing over [since, until], from the events
+    table: {"state", "profile", "from", "to"} in time order, where state is
+    "running" (with its profile), or a gap: "paused" (lent to a device
+    tool), "error" (a profile failed and is being retried), "idle"
+    (stopped on request) or "down" (the service wasn't running). Switches
+    (a stop straight followed by the next start) leave no gap."""
+    start_ev = conn.execute(
+        "SELECT ts, event, profile, detail FROM events WHERE ts < ? AND event IN "
+        "('start', 'stop', 'service-start', 'service-stop') ORDER BY ts DESC, id DESC LIMIT 1",
+        (since,),
+    ).fetchone()
+    state, profile = "down", None
+    if start_ev is not None:
+        state, profile = _after(start_ev[1], start_ev[2], start_ev[3], "down")
+    out: list[dict] = []
+    t = since
+    rows = conn.execute(
+        "SELECT ts, event, profile, detail FROM events WHERE ts >= ? AND ts <= ? AND event IN "
+        "('start', 'stop', 'service-start', 'service-stop', 'error') ORDER BY ts, id",
+        (since, until),
+    ).fetchall()
+    for ts, event, ev_profile, detail in rows:
+        new_state, new_profile = _after(event, ev_profile, detail, state)
+        if event == "error" and state == "running":
+            continue  # an error while running is followed by its stop event
+        if (new_state, new_profile) == (state, profile):
+            continue
+        if ts > t:
+            out.append({"state": state, "profile": profile, "from": t, "to": ts})
+        t, state, profile = ts, new_state, new_profile
+    if until > t:
+        out.append({"state": state, "profile": profile, "from": t, "to": until})
+    # A switch's stop and start are milliseconds apart: no gap to show.
+    merged: list[dict] = []
+    for seg in out:
+        if seg["state"] == "switching":
+            continue
+        if merged and merged[-1]["state"] == seg["state"] and merged[-1]["profile"] == seg["profile"]:
+            merged[-1]["to"] = seg["to"]
+        else:
+            merged.append(seg)
+    return merged
+
+
+def _after(event: str, profile: str | None, detail: str | None, state: str) -> tuple[str, str | None]:
+    """The state an event leaves the receiver in."""
+    if event == "start":
+        return "running", profile
+    if event == "stop":
+        d = (detail or "").lower()
+        for prefix, gap in _GAP_OF_STOP:
+            if d.startswith(prefix):
+                return gap, None
+        return "idle", None
+    if event == "service-stop":
+        return "down", None
+    if event == "service-start":
+        return "idle", None
+    if event == "error":
+        return "error", None
+    return state, None
 
 
 def positions(

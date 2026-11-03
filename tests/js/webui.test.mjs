@@ -2,7 +2,7 @@
 // `node --test` when node is installed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PALETTE, assignColors, decodeRow, mhz, mhzShort, parseFreqs, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
+import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
 import { AutoLevel, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
@@ -21,6 +21,14 @@ test('frequencies and times', () => {
   assert.throws(() => parseFreqs('931.75 abc'), /not a frequency/);
   assert.equal(utc(0), '00:00:00');
   assert.equal(utc(3661, false), '01:01');
+});
+
+test('UTC times typed into the Log search', () => {
+  assert.equal(parseUtc('2026-11-02 18:00'), Date.UTC(2026, 10, 2, 18, 0) / 1000);
+  assert.equal(parseUtc('2026-11-02T18:00:30Z'), Date.UTC(2026, 10, 2, 18, 0, 30) / 1000);
+  assert.equal(parseUtc('2026-11-02'), Date.UTC(2026, 10, 2) / 1000);
+  assert.throws(() => parseUtc('yesterday'), /not a UTC time/);
+  assert.equal(fmtUtc(parseUtc('2026-11-02 18:05')), '2026-11-02 18:05');
 });
 
 test('spectrum rows decode on their scale', () => {

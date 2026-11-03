@@ -4,7 +4,11 @@ and the static UI.
   GET  /api/registry             profiles and decoders, from the registries
   GET  /api/status               the live service's status, plus the CPU and
                                  memory of hackrf-live and hackrf-web
-  GET  /api/log                  rows matching filters (as hackrf_live_search)
+  GET  /api/log                  rows matching filters (as hackrf_live_search),
+                                 newest first, paged with before_id
+  GET  /api/log/histogram        matching rows per time bucket and profile
+  GET  /api/coverage             what the receiver was doing over a range:
+                                 running (which profile), paused, error, idle
   GET  /api/summary              one entry per subject (as hackrf_live_summary)
   GET  /api/events               starts, stops, pauses, errors
   GET  /api/positions            map-track points
@@ -217,7 +221,7 @@ class Gate:
                 h += SECURITY_HEADERS
                 if path.startswith("/api/"):
                     h.append((b"cache-control", b"no-store"))
-                elif path == "/" or path.startswith("/static/") or path == "/login":
+                elif path in ("/", "/log", "/login") or path.startswith("/static/"):
                     # Revalidate every time, so a deploy reaches browsers at once.
                     h.append((b"cache-control", b"no-cache"))
                 message = {**message, "headers": h}
@@ -294,6 +298,9 @@ def create_app(
     async def index(request: Request) -> Response:
         return FileResponse(STATIC / "index.html")
 
+    async def log_page(request: Request) -> Response:
+        return FileResponse(STATIC / "log.html")
+
     async def login_page(request: Request) -> Response:
         return FileResponse(STATIC / "login.html")
 
@@ -351,23 +358,58 @@ def create_app(
     def api_status(request: Request) -> Response:
         return JSONResponse(status_json())
 
+    def log_filters(request: Request) -> dict:
+        q = request.query_params
+        freq = q.get("freq_hz")
+        tol = q.get("freq_tolerance_hz")
+        profiles = tuple(p for p in (q.get("profiles") or "").split(",") if p)
+        return {
+            "profile": q.get("profile") or None,
+            "profiles": profiles or None,
+            "kind": q.get("kind") or None,
+            "subject": q.get("subject") or None,
+            "text": q.get("text") or None,
+            "freq_hz": int(float(freq)) if freq else None,
+            "freq_tolerance_hz": int(float(tol)) if tol else 5_000,
+        }
+
     @guarded
     def api_log(request: Request) -> Response:
         now = time.time()
-        freq = request.query_params.get("freq_hz")
+        before = request.query_params.get("before_id")
+        limit = _int(request, "limit", 200, 1, 2000)
         with closing(reader()) as conn:
             rows = live_log.search(
                 conn,
                 since=_when(request, "since", now),
                 until=_when(request, "until", now),
-                profile=request.query_params.get("profile") or None,
-                kind=request.query_params.get("kind") or None,
-                subject=request.query_params.get("subject") or None,
-                text=request.query_params.get("text") or None,
-                freq_hz=int(freq) if freq else None,
-                limit=_int(request, "limit", 200, 1, 2000),
+                limit=limit + 1,
+                before_id=int(before) if before else None,
+                **log_filters(request),
             )
-            return JSONResponse({"rows": [redact(row_json(r)) for r in rows]})
+            more = len(rows) > limit
+            return JSONResponse({"rows": [redact(row_json(r)) for r in rows[:limit]], "more": more})
+
+    @guarded
+    def api_histogram(request: Request) -> Response:
+        now = time.time()
+        since = _when(request, "since", now)
+        until = _when(request, "until", now) or now
+        if since is None or since >= until:
+            raise ValueError("since (before until) is required")
+        with closing(reader()) as conn:
+            out = live_log.histogram(conn, since, until, _int(request, "buckets", 96, 1, 2000), **log_filters(request))
+        return JSONResponse(out)
+
+    @guarded
+    def api_coverage(request: Request) -> Response:
+        now = time.time()
+        since = _when(request, "since", now)
+        until = _when(request, "until", now) or now
+        if since is None or since >= until:
+            raise ValueError("since (before until) is required")
+        with closing(reader()) as conn:
+            return JSONResponse({"since": since, "until": until, "coverage": live_log.coverage(conn, since, until)})
 
     @guarded
     def api_summary(request: Request) -> Response:
@@ -546,12 +588,15 @@ def create_app(
 
     routes = [
         Route("/", index),
+        Route("/log", log_page),
         Route("/login", login_page),
         Route("/auth/login", login, methods=["POST"]),
         Route("/auth/logout", logout, methods=["POST"]),
         Route("/api/registry", api_registry),
         Route("/api/status", api_status),
         Route("/api/log", api_log),
+        Route("/api/log/histogram", api_histogram),
+        Route("/api/coverage", api_coverage),
         Route("/api/summary", api_summary),
         Route("/api/events", api_events),
         Route("/api/positions", api_positions),

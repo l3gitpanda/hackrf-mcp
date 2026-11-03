@@ -379,6 +379,33 @@ floor, and the rows logged over time. Rows link to the Log, and those of
 map-capable profiles to the Map at that moment (`/map?at=…&profile=…&subject=…`);
 the Log's detail panel links back to History.
 
+**Band plan.** Every waterfall (Live, History and the Log's thumbnail) has a
+strip along the top naming the bands it shows, coloured by kind of service
+(broadcast, aviation, marine, amateur, land mobile and public safety,
+mobile broadband, satellite, navigation, radar, unlicensed, federal,
+weather, science). Overlapping bands sit in lanes, broadest on top, and
+pointing at the strip (or tapping it) lists every band at that frequency
+with its FCC rule part. The plan is data, `web/static/bandplan-us.json`: a
+practical United States plan of about 135 bands compiled from FCC rules,
+with coarse edges where the real structure is intricate. Under the plan's
+bands the readout gives the **official allocation** at that frequency, Non-Federal and
+Federal, with the FCC rule parts: the United States part of the FCC's Online
+Table of Frequency Allocations (47 CFR 2.106, revised 2022-07-01; the eCFR
+prints it only as images), parsed from the FCC's PDF by
+`tools/fcc_us_table.py` and compacted by `tools/fcc_web_json.py` into
+`web/static/fcc-us-allocations.json`. Live's **Bands** button hides the
+strip, and History has a view toggle.
+
+**Watching a range.** The Live screen's **Watch a range** takes any range
+the HackRF receives (1 MHz-6 GHz), up to 10 MHz at once: type from and to
+in MHz, and it tunes there with the waterfall only, nothing decoded.
+**Lower** and **Higher**, or dragging the waterfall sideways, scroll by
+half the width. The receiver is lent, not given: after the chosen time
+(15 minutes by default, at most 60, **+15 min** to extend) the live service
+goes back to the rotation by itself, page open or not, and a restart does
+the same. Device tools pause a watch as they pause decoding. What was
+watched is recorded in the spectrum history as profile `watch`.
+
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,

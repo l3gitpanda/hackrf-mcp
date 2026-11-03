@@ -10,6 +10,7 @@ import { api } from './api.js';
 import { paintAppBar, paintClock } from './appbar.js';
 import { assignColors, clear, h, mhz, utc } from './util.js';
 import { AutoLevel, makeLut, resample, ticks } from './waterfall.js';
+import { BandStrip } from './bandstrip.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from './historyutil.js';
 
 const $ = (id) => document.getElementById(id);
@@ -29,13 +30,14 @@ const S = {
   rows: [],
   sel: null,
   wf: null, // { seg, ts: [], rows: [Float32Array], bucket_s, tier }
-  views: new Set(['wf', 'list', 'lvl', 'rate']),
+  views: new Set(['wf', 'bands', 'list', 'lvl', 'rate']),
   layout: 'side',
   want: null, // a time to open at, from the address
   token: 0, // drops answers for a step no longer shown
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
+const STRIP = new BandStrip($('w-bands'));
 const hasMap = (profile) => ((S.profiles[profile] || {}).views || []).some((v) => v.name === 'map');
 
 // --- Start-up ------------------------------------------------------------------------------
@@ -115,6 +117,7 @@ function applyViews() {
   for (const b of document.querySelectorAll('[data-view]')) b.setAttribute('aria-pressed', String(S.views.has(b.dataset.view)));
   for (const b of document.querySelectorAll('[data-layout]')) b.setAttribute('aria-pressed', String(S.layout === b.dataset.layout));
   $('p-wf').hidden = !S.views.has('wf');
+  $('w-bands').classList.toggle('off', !S.views.has('bands'));
   $('p-list').hidden = !S.views.has('list');
   $('p-lvl').hidden = !S.views.has('lvl');
   $('p-rate').hidden = !S.views.has('rate');
@@ -277,6 +280,7 @@ function drawWaterfall() {
   const s = S.steps[S.idx];
   if (!s || !S.wf || !S.views.has('wf')) {
     $('w-note').textContent = '';
+    STRIP.show(null, null);
     return;
   }
   const { seg, ts, rows } = S.wf;
@@ -310,6 +314,7 @@ function drawWaterfall() {
   g.putImageData(img, 0, 0);
   const lo = seg.center_hz - seg.sample_rate_hz / 2;
   const xPct = (f) => ((f - lo) / seg.sample_rate_hz) * 100;
+  STRIP.show(lo, lo + seg.sample_rate_hz);
   // Frequency scale and the profile's channels.
   for (const t of ticks(seg.center_hz, seg.sample_rate_hz)) {
     const el = h('span', {}, t.label);

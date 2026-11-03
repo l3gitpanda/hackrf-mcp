@@ -3,6 +3,7 @@ that exist, and (with node installed) the JavaScript's syntax and pure
 functions."""
 
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -88,3 +89,44 @@ def test_pure_functions_with_node():
     test = Path(__file__).parent / "js" / "webui.test.mjs"
     r = subprocess.run([node, "--test", str(test)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_band_plan_is_well_formed():
+    plan = json.loads((STATIC / "bandplan-us.json").read_text())
+    cats = plan["categories"]
+    assert plan["name"] and plan["about"] and plan["updated"]
+    for c in cats.values():
+        assert re.fullmatch(r"#[0-9a-f]{6}", c["color"]) and c["label"]
+    keys = [(b["lo"], -b["hi"]) for b in plan["bands"]]
+    assert keys == sorted(keys), "bands are kept in frequency order"
+    for b in plan["bands"]:
+        assert isinstance(b["lo"], int) and isinstance(b["hi"], int) and 0 < b["lo"] < b["hi"] <= 7_125_000_000, b
+        assert b["cat"] in cats and b["name"], b
+    names = {b["name"] for b in plan["bands"]}
+    # What the station's own profiles listen to is named.
+    for n in ("ADS-B / Mode S 1090 MHz", "AIS 1 (161.975 MHz)", "AIS 2 (162.025 MHz)", "NOAA Weather Radio", "Paging"):
+        assert n in names
+
+
+def test_the_official_table_tiles_the_spectrum_and_reads_right():
+    data = json.loads((STATIC / "fcc-us-allocations.json").read_text())
+    assert data["revised"] and data["url"].startswith("https://")
+    for col in ("federal", "non_federal"):
+        rows = data[col]
+        assert rows[0]["lo"] <= 1_000_000 and rows[-1]["hi"] >= 6_000_000_000, col
+        for a, b in zip(rows, rows[1:]):
+            assert a["hi"] == b["lo"], (col, a, b)  # no gaps, no overlaps
+        for r in rows:
+            assert r["lo"] < r["hi"] and all(isinstance(s, str) and s for s in r["services"]), r
+
+    def at(col, f):
+        return next(r for r in data[col] if r["lo"] <= f < r["hi"])
+
+    # Read against the PDF when it was parsed.
+    assert at("non_federal", 98e6)["services"] == ["BROADCASTING"]
+    assert "Broadcast Radio (FM)(73)" in at("non_federal", 98e6)["parts"]
+    assert at("federal", 110e6)["services"] == ["AERONAUTICAL RADIONAVIGATION"]
+    assert at("non_federal", 145e6)["services"] == ["AMATEUR", "AMATEUR-SATELLITE"]
+    assert at("non_federal", 156.8e6)["services"][0].startswith("MARITIME MOBILE")
+    assert at("federal", 1090e6)["services"] == ["AERONAUTICAL MOBILE (R)", "AERONAUTICAL RADIONAVIGATION"]
+    assert "RF Devices (15)" in at("non_federal", 915e6)["parts"]

@@ -54,6 +54,10 @@ BACKOFF_S = (2, 5, 10, 30, 60)
 STALL_S = 15
 # Longest pause lease a client may ask for.
 MAX_LEASE_S = 3600
+# A watch lends the receiver for this long unless asked otherwise, and at most
+# for WATCH_MAX_MIN; then the rotation (or profile) resumes by itself.
+WATCH_DEFAULT_MIN = 15
+WATCH_MAX_MIN = 60
 
 
 def _now_iso(ts: float | None) -> str | None:
@@ -203,6 +207,9 @@ class LiveService:
 
         self.desired: dict | None = None  # {"spec": Spec} or {"schedule": [(Spec, minutes)], "anchor": t}
         self.hold: dict | None = None  # {"owner", "until", "token", "since", "stopped"}
+        # A watch in progress: {"spec", "until", "since"}. Not saved: after a
+        # restart the rotation is back, so the receiver is never left parked.
+        self.watch: dict | None = None
         self.pipeline: live_profiles.Pipeline | None = None
         self.tuning: Tuning | None = None
         self.running_spec: Spec | None = None
@@ -300,6 +307,8 @@ class LiveService:
 
     def _target(self, now: float) -> tuple[Spec | None, float | None]:
         """The spec that should be running now, and when that changes."""
+        if self.watch is not None and now < self.watch["until"]:
+            return self.watch["spec"], self.watch["until"]
         if self.desired is None:
             return None, None
         if "spec" in self.desired:
@@ -387,6 +396,9 @@ class LiveService:
             if self.hold is not None and now >= self.hold["until"]:
                 self._event("resume", None, f"pause by {self.hold['owner']} expired")
                 self.hold = None
+            if self.watch is not None and now >= self.watch["until"]:
+                self._event("watch-end", "watch", "time limit reached")
+                self.watch = None
             target, _ = (None, None) if self.hold else self._target(now)
             p = self.pipeline
             if p is not None:
@@ -479,6 +491,10 @@ class LiveService:
                 return self._cmd_start(req)
             if cmd == "stop":
                 return self._cmd_stop()
+            if cmd == "watch":
+                return self._cmd_watch(req)
+            if cmd == "watch-stop":
+                return self._cmd_watch_stop()
             if cmd == "pause":
                 return self._cmd_pause(req)
             if cmd == "resume":
@@ -499,6 +515,55 @@ class LiveService:
             amp=bool(req.get("amp", False)),
         )
 
+    def _decoder_spec(self, req: dict) -> Spec:
+        spec = self._spec_from(req)
+        if spec.profile == live_profiles.WATCH.name:
+            raise SpecError("a watch is started with the watch command, for a limited time, not with start")
+        return spec
+
+    def _end_watch(self, why: str) -> None:
+        if self.watch is not None:
+            self._event("watch-end", "watch", why)
+            self.watch = None
+
+    def _cmd_watch(self, req: dict) -> dict:
+        """Lend the receiver to a watch of one range: the waterfall only,
+        for `minutes` (default WATCH_DEFAULT_MIN), then back to what was
+        running. A watch already in progress is retuned and keeps its time
+        limit unless `minutes` is given."""
+        spec = Spec(
+            profile=live_profiles.WATCH.name,
+            center_hz=int(req["center_hz"]),
+            sample_rate_hz=int(req.get("sample_rate_hz") or live_profiles.WATCH_RATES_HZ[-1]),
+            lna_gain_db=None if req.get("lna_gain_db") is None else int(req["lna_gain_db"]),
+            vga_gain_db=None if req.get("vga_gain_db") is None else int(req["vga_gain_db"]),
+            amp=bool(req.get("amp", False)),
+        )
+        self.resolve(spec)
+        minutes = req.get("minutes")
+        if minutes is not None and not 1 <= float(minutes) <= WATCH_MAX_MIN:
+            raise SpecError(f"a watch lasts 1-{WATCH_MAX_MIN} minutes, not {float(minutes):g}")
+        with self.lock:
+            now = self.clock()
+            if self.watch is None or minutes is not None:
+                until = now + 60 * float(minutes if minutes is not None else WATCH_DEFAULT_MIN)
+            else:
+                until = self.watch["until"]
+            since = self.watch["since"] if self.watch is not None else now
+            self.watch = {"spec": spec, "until": until, "since": since}
+            self.failures = 0
+            self.retry_at = 0.0
+            self.last_error = None
+            self._event("request", None, "watch " + json.dumps(req, default=str)[:300])
+        self.supervise()
+        return {"ok": True, **self.status()}
+
+    def _cmd_watch_stop(self) -> dict:
+        with self.lock:
+            self._end_watch("stopped on request")
+        self.supervise()
+        return {"ok": True, **self.status()}
+
     def _cmd_start(self, req: dict) -> dict:
         now = self.clock()
         if req.get("schedule"):
@@ -507,17 +572,18 @@ class LiveService:
                 minutes = float(e["minutes"])
                 if not 1 <= minutes <= 24 * 60:
                     raise SpecError(f"each schedule entry needs 1-1440 minutes, not {minutes:g}")
-                spec = self._spec_from(e)
+                spec = self._decoder_spec(e)
                 self.resolve(spec)  # refuse a bad entry now, not when its turn comes
                 entries.append((spec, minutes))
             if len(entries) < 2:
                 raise SpecError("a schedule needs at least two entries; start a single profile instead")
             desired = {"schedule": entries, "anchor": now}
         else:
-            spec = self._spec_from(req)
+            spec = self._decoder_spec(req)
             self.resolve(spec)
             desired = {"spec": spec}
         with self.lock:
+            self._end_watch("a profile was started")
             self.desired = desired
             self.failures = 0
             self.retry_at = 0.0
@@ -529,6 +595,7 @@ class LiveService:
 
     def _cmd_stop(self) -> dict:
         with self.lock:
+            self._end_watch("stopped on request")
             self.desired = None
             self._save()
             self._stop_pipeline("stopped on request")
@@ -588,8 +655,19 @@ class LiveService:
                         "anchor": self.desired["anchor"],
                     }
             health = self.pipeline.health() if self.pipeline is not None else {}
+            watch = None
+            if self.watch is not None:
+                w = self.watch["spec"]
+                watch = {
+                    "center_hz": w.center_hz,
+                    "sample_rate_hz": w.sample_rate_hz,
+                    "since": self.watch["since"],
+                    "until": self.watch["until"],
+                    "left_s": max(0.0, self.watch["until"] - now),
+                }
             out = {
                 "state": state,
+                "watch": watch,
                 "profile": self.running_spec.profile if self.running_spec else None,
                 "tuning": self.tuning.describe() if self.tuning else None,
                 "tuning_detail": None

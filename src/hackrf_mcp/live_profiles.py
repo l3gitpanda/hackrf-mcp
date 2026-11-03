@@ -96,6 +96,8 @@ class Profile:
     # applies it on read unless the operator allows the content
     # (HACKRF_MCP_PAGER_CONTENT), in case rows were logged while it was on.
     redact: Callable[[dict], dict] | None = None
+    # A profile that decodes nothing: the waterfall only (WATCH).
+    spectrum_only: bool = False
 
     def ui_views(self) -> tuple[View, ...]:
         if self.views:
@@ -151,15 +153,22 @@ class Spec:
     lna_gain_db: int | None = None
     vga_gain_db: int | None = None
     amp: bool = False
+    # A watch's own tuning (WATCH); decoder profiles tune from their channels.
+    center_hz: int | None = None
+    sample_rate_hz: int | None = None
 
     def to_json(self) -> dict:
-        return {
+        d = {
             "profile": self.profile,
             "freqs_hz": list(self.freqs_hz),
             "lna_gain_db": self.lna_gain_db,
             "vga_gain_db": self.vga_gain_db,
             "amp": self.amp,
         }
+        if self.center_hz is not None:
+            d["center_hz"] = self.center_hz
+            d["sample_rate_hz"] = self.sample_rate_hz
+        return d
 
     @classmethod
     def from_json(cls, d: dict) -> Spec:
@@ -169,6 +178,8 @@ class Spec:
             lna_gain_db=None if d.get("lna_gain_db") is None else int(d["lna_gain_db"]),
             vga_gain_db=None if d.get("vga_gain_db") is None else int(d["vga_gain_db"]),
             amp=bool(d.get("amp", False)),
+            center_hz=None if d.get("center_hz") is None else int(d["center_hz"]),
+            sample_rate_hz=None if d.get("sample_rate_hz") is None else int(d["sample_rate_hz"]),
         )
 
 
@@ -187,6 +198,13 @@ class Tuning:
     amp: bool
 
     def describe(self) -> str:
+        if self.profile.spectrum_only:
+            lo, hi = self.center_hz - self.sample_rate_hz / 2, self.center_hz + self.sample_rate_hz / 2
+            return (
+                f"{self.profile.name}: {lo / 1e6:.3f}-{hi / 1e6:.3f} MHz (tuned {self.center_hz / 1e6:.4f} MHz "
+                f"at {self.sample_rate_hz / 1e6:g} MS/s), LNA {self.lna_gain_db} dB, VGA {self.vga_gain_db} dB, "
+                f"amp {'on' if self.amp else 'off'}"
+            )
         chans = ", ".join(f"{f / 1e6:.4f}" for f in self.freqs_hz)
         rate = f" at {self.sample_rate_hz / 1e6:g} MS/s" if self.sample_rate_hz else ""
         return (
@@ -220,32 +238,35 @@ def choose_center(freqs: tuple[int, ...], sample_rate_hz: int, margin_hz: int = 
 
 def resolve(spec: Spec, settings: LiveSettings, program_finder: Callable[[Profile], str | None] = find_program) -> Tuning:
     load()
-    profile = PROFILES.get(spec.profile)
+    profile = WATCH if spec.profile == WATCH.name else PROFILES.get(spec.profile)
     if profile is None:
         raise SpecError(f"unknown profile {spec.profile!r}; choose one of {', '.join(PROFILES)}")
     program = program_finder(profile)
     if program is None:
         raise SpecError(f"{profile.name} needs {' or '.join(profile.programs)}, which is not installed on this server.")
-    freqs = tuple(spec.freqs_hz) or profile.default_freqs_hz
+    if profile.spectrum_only:
+        center, rate = _watch_tuning(spec)
+    freqs = () if profile.spectrum_only else tuple(spec.freqs_hz) or profile.default_freqs_hz
     if profile.needs_freqs and not freqs:
         raise SpecError(
             f"{profile.name} needs frequencies_hz: the pager channel(s) to decode, e.g. [931750000]."
         )
     if profile.fixed_freqs and spec.freqs_hz and tuple(spec.freqs_hz) != profile.default_freqs_hz:
         raise SpecError(f"{profile.name} has fixed frequencies; leave frequencies_hz out.")
-    rate = profile.sample_rate_hz
-    if profile.center_hz is not None:
-        center = profile.center_hz
-        if spec.freqs_hz and rate:
-            outside = [f for f in freqs if abs(f - center) > usable_hz(rate) - 10_000]
-            if outside:
-                raise SpecError(
-                    f"{profile.name} is tuned to {center / 1e6:.4f} MHz and covers "
-                    f"{(center - usable_hz(rate)) / 1e6:.3f}-{(center + usable_hz(rate)) / 1e6:.3f} MHz; "
-                    f"outside it: {', '.join(f'{f / 1e6:.4f}' for f in outside)} MHz."
-                )
-    else:
-        center = choose_center(freqs, rate)
+    if not profile.spectrum_only:
+        rate = profile.sample_rate_hz
+        if profile.center_hz is not None:
+            center = profile.center_hz
+            if spec.freqs_hz and rate:
+                outside = [f for f in freqs if abs(f - center) > usable_hz(rate) - 10_000]
+                if outside:
+                    raise SpecError(
+                        f"{profile.name} is tuned to {center / 1e6:.4f} MHz and covers "
+                        f"{(center - usable_hz(rate)) / 1e6:.3f}-{(center + usable_hz(rate)) / 1e6:.3f} MHz; "
+                        f"outside it: {', '.join(f'{f / 1e6:.4f}' for f in outside)} MHz."
+                    )
+        else:
+            center = choose_center(freqs, rate)
     lna = spec.lna_gain_db if spec.lna_gain_db is not None else settings.lna_gain_db
     vga = spec.vga_gain_db if spec.vga_gain_db is not None else settings.vga_gain_db
     lna = profile.lna_gain_db if lna is None else lna
@@ -801,3 +822,52 @@ class ChannelPipeline(Pipeline):
 
 def make_pipeline(tuning: Tuning, ctx: Context) -> Pipeline:
     return tuning.profile.pipeline(tuning, ctx)
+
+
+# --- Watching a range ------------------------------------------------------
+
+# Widths a watch may have: the sample rate is the width shown. 10 MS/s is the
+# most the QNAP is sized for (the spectrum tap's cost grows with the rate).
+WATCH_RATES_HZ = (2_000_000, 5_000_000, 8_000_000, 10_000_000)
+WATCH_MIN_HZ = 1_000_000
+WATCH_MAX_HZ = 6_000_000_000
+
+
+def _watch_tuning(spec: Spec) -> tuple[int, int]:
+    if spec.center_hz is None:
+        raise SpecError("watching needs the centre frequency (center_hz)")
+    rate = int(spec.sample_rate_hz or WATCH_RATES_HZ[-1])
+    if rate not in WATCH_RATES_HZ:
+        raise SpecError(f"a watch is {', '.join(f'{r / 1e6:g}' for r in WATCH_RATES_HZ)} MHz wide, not {rate / 1e6:g}")
+    center = int(spec.center_hz)
+    lo, hi = center - rate // 2, center + rate // 2
+    if lo < WATCH_MIN_HZ or hi > WATCH_MAX_HZ:
+        raise SpecError(
+            f"{lo / 1e6:.3f}-{hi / 1e6:.3f} MHz is outside what the HackRF receives "
+            f"({WATCH_MIN_HZ / 1e6:g} MHz to {WATCH_MAX_HZ / 1e9:g} GHz)"
+        )
+    return center, rate
+
+
+class WatchPipeline(Pipeline):
+    """The waterfall only: hackrf_transfer's samples feed the spectrum tap
+    (which the source calls with every block) and go nowhere else."""
+
+    def start(self) -> None:
+        self.source = self.ctx.make_source(self.tuning)
+        self.started = time.time()
+        self.source.start(lambda buf: None)
+
+
+# Not registered with the decoder profiles: it is started by the live
+# service's watch command, for a limited time, never by start or a rotation.
+WATCH = Profile(
+    name="watch",
+    summary="Watching a range: the waterfall only, nothing decoded",
+    programs=("hackrf_transfer",),
+    pipeline=WatchPipeline,
+    sample_rate_hz=WATCH_RATES_HZ[-1],
+    spectrum_only=True,
+    color="#9aa7b7",
+)
+

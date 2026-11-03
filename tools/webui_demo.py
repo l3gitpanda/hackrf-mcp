@@ -153,14 +153,19 @@ def main() -> None:
     def make_source(tuning):
         path = samples / f"{tuning.profile.name}-{tuning.center_hz}.cs8"
         if not path.exists():
-            synth(path, tuning)
+            # A second of samples is plenty at a watch's 10 MS/s.
+            synth(path, tuning, 4.0 if tuning.sample_rate_hz <= 2_400_000 else 1.0)
         return LoopSource(path, tuning.sample_rate_hz, realtime=True)
 
     sw = SpectrumWriter(live.spectrum_db_path, 86400, 86400, 1 << 30, 0)
     pump = LogPump(LiveLogWriter(live.db_path, 86400, 1 << 30, 0), spectrum_writer=sw)
     pump.start()
     rec = SpectrumRecorder(pump.spectrum)
-    svc = LiveService(live, pump, make_pipeline=DemoPipeline, make_source=make_source, program_finder=found, spectrum=rec)
+    def make_pipeline(tuning, ctx):
+        # A watch decodes nothing, so it runs its own pipeline on the simulated source.
+        return tuning.profile.pipeline(tuning, ctx) if tuning.profile.spectrum_only else DemoPipeline(tuning, ctx)
+
+    svc = LiveService(live, pump, make_pipeline=make_pipeline, make_source=make_source, program_finder=found, spectrum=rec)
     svc.attach_feed(live_feed.FeedServer(live.feed_socket_path).start())
     control = ControlServer(live.socket_path, svc)
     threading.Thread(target=control.serve_forever, daemon=True).start()

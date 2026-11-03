@@ -51,6 +51,7 @@
           <span class="muted">Views</span>
           <span class="seg" role="group" aria-label="Views">
             <button type="button" data-view="wf" aria-pressed="true">Waterfall</button>
+            <button type="button" data-view="bands" aria-pressed="true">Band plan</button>
             <button type="button" data-view="list" aria-pressed="true">Decoded</button>
             <button type="button" data-view="lvl" aria-pressed="true">Channel level</button>
             <button type="button" data-view="rate" aria-pressed="true">Message rate</button>
@@ -77,6 +78,7 @@
           <span class="muted" id="w-sub">newest at top · markers are decoded rows</span>
         </div>
         <div class="hwf" id="hwf">
+          <div class="hbands" id="w-bands"></div>
           <div class="fscale mono" id="w-freqs"></div>
           <div class="hwbox" id="w-box">
             <canvas id="w-canvas"></canvas>

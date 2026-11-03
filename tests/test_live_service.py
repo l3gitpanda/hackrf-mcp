@@ -145,6 +145,72 @@ def test_a_schedule_rotates_profiles(svc):
     assert not svc.handle({"cmd": "start", "schedule": [{"profile": "adsb", "minutes": 1}]})["ok"]
 
 
+def test_a_watch_lends_the_receiver_and_the_service_takes_it_back(svc):
+    svc.handle({"cmd": "start", "schedule": [{"profile": "adsb", "minutes": 10}, {"profile": "ais", "minutes": 10}]})
+    r = svc.handle({"cmd": "watch", "center_hz": 98_000_000, "sample_rate_hz": 10_000_000, "minutes": 5})
+    assert r["ok"] and r["state"] == "running" and r["profile"] == "watch"
+    assert r["watch"]["center_hz"] == 98_000_000 and r["watch"]["left_s"] == pytest.approx(300)
+    assert r["tuning_detail"]["center_hz"] == 98_000_000 and r["tuning_detail"]["sample_rate_hz"] == 10_000_000
+    assert "93.000-103.000 MHz" in r["tuning"]
+    assert svc.pipes[0].stopped and svc.pipes[1].tuning.profile.spectrum_only
+    # Scrolling retunes and keeps the time limit.
+    svc.test_clock.t += 120
+    r = svc.handle({"cmd": "watch", "center_hz": 103_000_000, "sample_rate_hz": 10_000_000})
+    assert r["watch"]["left_s"] == pytest.approx(180) and svc.pipes[2].tuning.center_hz == 103_000_000
+    # The limit runs out in the service, page or no page: the rotation is back.
+    svc.test_clock.t += 181
+    svc.supervise()
+    st = svc.status()
+    assert st["watch"] is None and st["profile"] == "adsb" and svc.pipes[2].stopped
+
+
+def test_stop_start_and_watch_stop_end_a_watch(svc):
+    svc.handle({"cmd": "start", "profile": "adsb"})
+    svc.handle({"cmd": "watch", "center_hz": 162_000_000, "sample_rate_hz": 2_000_000})
+    assert svc.status()["profile"] == "watch"
+    r = svc.handle({"cmd": "watch-stop"})
+    assert r["watch"] is None and r["profile"] == "adsb"
+    svc.handle({"cmd": "watch", "center_hz": 162_000_000})
+    r = svc.handle({"cmd": "start", "profile": "ais"})
+    assert r["watch"] is None and r["profile"] == "ais"
+    svc.handle({"cmd": "watch", "center_hz": 162_000_000})
+    r = svc.handle({"cmd": "stop"})
+    assert r["watch"] is None and r["state"] == "idle"
+
+
+def test_bad_watches_are_refused_with_a_reason(svc):
+    assert "outside" in svc.handle({"cmd": "watch", "center_hz": 2_000_000, "sample_rate_hz": 10_000_000})["error"]
+    assert "outside" in svc.handle({"cmd": "watch", "center_hz": 5_999_000_000, "sample_rate_hz": 10_000_000})["error"]
+    assert "wide" in svc.handle({"cmd": "watch", "center_hz": 100_000_000, "sample_rate_hz": 3_000_000})["error"]
+    assert "minutes" in svc.handle({"cmd": "watch", "center_hz": 100_000_000, "minutes": 90})["error"]
+    assert not svc.handle({"cmd": "watch"})["ok"]
+    assert "watch command" in svc.handle({"cmd": "start", "profile": "watch"})["error"]
+    rot = [{"profile": "watch", "minutes": 1}, {"profile": "adsb", "minutes": 1}]
+    assert "watch command" in svc.handle({"cmd": "start", "schedule": rot})["error"]
+    assert svc.pipeline is None and svc.watch is None
+
+
+def test_a_device_tool_pauses_a_watch_and_a_restart_forgets_it(svc):
+    svc.handle({"cmd": "start", "profile": "adsb"})
+    svc.handle({"cmd": "watch", "center_hz": 98_000_000})
+    p = svc.handle({"cmd": "pause", "owner": "hackrf_sweep", "lease_s": 30})
+    assert p["paused_profile"] == "watch"
+    svc.handle({"cmd": "resume", "token": p["token"]})
+    svc.supervise()
+    assert svc.status()["profile"] == "watch"
+    again = LiveService(svc.live, None, make_pipeline=FakePipeline, program_finder=lambda p: "/bin/true")
+    again.load()
+    again.supervise()
+    assert again.watch is None and again.running_spec.profile == "adsb"
+
+
+def test_the_mcp_status_says_when_a_watch_has_the_receiver(svc):
+    svc.handle({"cmd": "start", "schedule": [{"profile": "adsb", "minutes": 10}, {"profile": "ais", "minutes": 10}]})
+    st = svc.handle({"cmd": "watch", "center_hz": 98_000_000, "minutes": 5})
+    text = server._format_live_status({**st, "now": svc.test_clock.t})
+    assert "Watching 93.000-103.000 MHz" in text and "decoding resumes" in text
+
+
 def test_rows_are_counted(svc):
     svc._emit(Row(svc.test_clock.t, "adsb", "aircraft", {}))
     st = svc.status()

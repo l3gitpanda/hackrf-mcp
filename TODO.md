@@ -97,8 +97,45 @@ after the owner approves.
    spectrum segments as rotation steps, the downsampled waterfall, the log
    and its histogram, coverage for gaps; channel levels are computed in the
    browser from the waterfall's peak rows at the profile's default
-   channels, since segments don't record a run's custom frequencies), then
-   Summaries, Alerts and Plugins. The Map's History mode could add a per-minute roll-up of
+   channels, since segments don't record a run's custom frequencies),
+   9. **Band plan strip** (done: `bandstrip.js`, `bandplan-us.json`, on
+   Live, History and the Log's thumbnail), 10. **Official allocations**
+   (done: the FCC Table of Frequency Allocations, 47 CFR 2.106, revised
+   2022-07-01, parsed from the FCC's PDF by `tools/fcc_us_table.py` into
+   `fcc-us-allocations.json`, shown under the strip's pointer readout; to
+   refresh it, download a newer PDF and run the two tools), 11.
+   **Watch a range** (done, below), then Summaries, Alerts and Plugins.
+
+### Watching a custom range (milestone 11)
+
+Agreed with the owner on 2026-11-03: tune and watch any range up to about
+10 MHz wide, scrolling left and right retunes, decoding pauses meanwhile.
+
+- **The receiver is lent, not given.** A watch takes over from the
+  rotation until it is stopped or its time limit runs out (default 15
+  minutes), then the rotation resumes by itself. The limit lives in the
+  live service, not the page: closing the tab must not leave the receiver
+  parked.
+- **Device tools** pause a watch like they pause a profile; it resumes
+  afterwards. Its time limit keeps counting during the pause.
+- **Status and the app bar** say so: "Watching 88–98 MHz, 11 min left".
+  Coverage and History need a state for it.
+- **Recorded:** a watch writes to the spectrum history like a profile,
+  as profile `watch`. Every retune is a new segment (History shows each
+  as a step); the page retunes once per click or drag, not continuously.
+- **Done:** the live service's `watch` / `watch-stop` commands and the
+  `WATCH` profile (`WatchPipeline`, not registered with the decoders, so
+  the MCP tools are unchanged; `start` refuses it), `POST /api/live/watch`
+  and `/api/live/watch/stop`, `hackrf_live_status` saying so, and the
+  Live screen's range form, scroll buttons, waterfall drag, +15 min and
+  stop. Widths 2, 5, 8 and 10 MHz; 1-60 minutes, 15 by default; a watch
+  is not saved, so a restart brings the rotation back.
+- **CPU:** measure the tap at 10 MS/s offline first (a synthetic file,
+  paced, not a tight loop), apply the ~3x factor the QNAP showed for
+  milestone 1, and confirm on the box. Start at 512 bins (19.5 kHz at
+  10 MS/s); `segments.bins` already allows more.
+- **Same rules:** receive only (`hackrf_transfer -r`), the same Gate and
+  Origin checks as start and stop. The Map's History mode could add a per-minute roll-up of
    positions: thinning a week of fixes reads all of them (about a second
    on a desktop, several on the QNAP). On real data the Map's labels pile
    up over a busy approach at the zoom that fits the whole area; hiding

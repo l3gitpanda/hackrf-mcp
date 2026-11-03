@@ -81,6 +81,27 @@
         <span>Empty uses the profile's own gains.</span>
       </details>
       <div class="ctl-err" id="ctl-err" role="alert" hidden></div>
+      <div class="ctl-watch" id="watch-box">
+        <div class="row wr" id="watch-form">
+          <span class="cap">Watch a range</span>
+          <label class="sr" for="w-from">From, MHz</label><input id="w-from" class="inp mono wfreq" inputmode="decimal" placeholder="from MHz" autocomplete="off">
+          <span class="muted">to</span>
+          <label class="sr" for="w-to">To, MHz</label><input id="w-to" class="inp mono wfreq" inputmode="decimal" placeholder="to MHz" autocomplete="off">
+          <label class="sr" for="w-min">For how long</label><select id="w-min" class="inp"></select>
+          <button type="button" class="btn" id="btn-watch">Watch</button>
+          <span class="t2 sm" id="watch-hint">Waterfall only: decoding pauses, then resumes by itself.</span>
+        </div>
+        <div class="row wr" id="watch-on" hidden>
+          <span class="cap">Watching</span>
+          <span class="mono" id="watch-range">—</span>
+          <span class="t2" id="watch-left"></span>
+          <span class="sp"></span>
+          <button type="button" class="btn sm" id="watch-down" title="Scroll down by half the width (or drag the waterfall)">◀ Lower</button>
+          <button type="button" class="btn sm" id="watch-up" title="Scroll up by half the width (or drag the waterfall)">Higher ▶</button>
+          <button type="button" class="btn sm" id="watch-more">+15 min</button>
+          <button type="button" class="btn sm danger" id="watch-stop">Stop watching</button>
+        </div>
+      </div>
       <div class="ctl-rot">
         <div class="row wr">
           <span class="cap">Rotation</span>
@@ -102,6 +123,7 @@
           <span class="mono t2" id="wf-band">no samples yet</span>
           <span class="row wr" id="wf-chans"></span>
           <span class="sp"></span>
+          <button type="button" class="btn sm" id="btn-bands" aria-pressed="true" title="The band plan along the top of the waterfall">Bands</button>
           <button type="button" class="btn sm" id="btn-peak" aria-pressed="true">Peak hold</button>
           <button type="button" class="btn sm" id="btn-wfmode" aria-pressed="true" title="Draw each row's peak (shows short bursts) or its mean">Peaks</button>
           <span class="row legend-db" title="Waterfall palette, levelled to the noise floor"><span class="mono muted" id="wf-lo">−</span><span class="lut"></span><span class="mono muted" id="wf-hi">− dBFS</span></span>

@@ -4,6 +4,7 @@
 // nothing here names a protocol.
 
 import { api, post, LiveSocket } from './api.js';
+import { leftText, parseMhz, scrolled, watchTuning } from './watchutil.js';
 import { paintAppBar, paintClock } from './appbar.js';
 import { Waterfall } from './waterfall.js';
 import { ago, assignColors, clear, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
@@ -46,6 +47,9 @@ function live() {
 
 // --- Start-up --------------------------------------------------------------------
 
+const WATCH_PROFILE = 'watch';
+const watching = () => (live().watch ? live().watch : null);
+
 async function init() {
   S.registry = await api('/api/registry');
   for (const p of S.registry.profiles) S.profiles[p.name] = p;
@@ -55,6 +59,7 @@ async function init() {
     $('wf-hi').textContent = `${Math.round(hi)} dBFS`;
   });
   buildControls();
+  buildWatch();
   buildChips();
   wire();
   try {
@@ -124,6 +129,15 @@ function wire() {
   $('btn-peak').addEventListener('click', (e) => {
     S.wf.peakHold = !S.wf.peakHold;
     e.currentTarget.setAttribute('aria-pressed', String(S.wf.peakHold));
+  });
+  const bandsOn = localStorage.getItem('hl.bands') !== 'off';
+  S.wf.showBands(bandsOn);
+  $('btn-bands').setAttribute('aria-pressed', String(bandsOn));
+  $('btn-bands').addEventListener('click', (e) => {
+    const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
+    S.wf.showBands(on);
+    e.currentTarget.setAttribute('aria-pressed', String(on));
+    localStorage.setItem('hl.bands', on ? 'on' : 'off');
   });
   $('btn-wfmode').addEventListener('click', (e) => {
     S.wf.usePeak = !S.wf.usePeak;
@@ -216,6 +230,7 @@ function renderStatus(st) {
   renderBanner();
   renderOverlay();
   renderHealth();
+  renderWatch();
   $('feed-rate').textContent = `${l.decoded_1m ?? '—'} msg/min`;
 }
 
@@ -230,7 +245,14 @@ function renderControl() {
   const p = name ? S.profiles[name] : null;
   $('ctl-prof').style.setProperty('--pc', profileColor(name));
   $('cur-name').textContent = name || '—';
-  $('cur-desc').textContent = p ? p.summary.split(';')[0] : l.state === 'paused' ? 'Paused' : 'Nothing running';
+  $('cur-desc').textContent =
+    name === WATCH_PROFILE
+      ? 'Watching a range: the waterfall only, nothing decoded'
+      : p
+        ? p.summary.split(';')[0]
+        : l.state === 'paused'
+          ? 'Paused'
+          : 'Nothing running';
   $('t-center').textContent = det ? mhz(det.center_hz) : '—';
   $('t-rate').textContent = det && det.sample_rate_hz ? (det.sample_rate_hz / 1e6).toFixed(3).replace(/0+$/, '').replace(/\.$/, '') : '—';
   $('t-lna').textContent = det ? det.lna_gain_db : '—';
@@ -276,7 +298,7 @@ function renderRotation() {
     return;
   }
   if (d.profile) {
-    $('rot-text').textContent = `Single profile: ${d.profile.profile}, no rotation.`;
+    $('rot-text').textContent = `Single profile: ${d.profile.profile}, no rotation${watching() ? '; on hold while watching' : ''}.`;
     const seg = h('span', { class: 'rs cur', '--pc': profileColor(d.profile.profile) }, d.profile.profile);
     seg.style.width = '100%';
     rot.append(seg);
@@ -285,7 +307,9 @@ function renderRotation() {
   const r = rotation(d.schedule, d.anchor, now());
   if (!r) return;
   const parts = d.schedule.map((e) => `${e.profile} ${e.minutes} min`);
-  $('rot-text').textContent = `${parts.join(' → ')}, repeating · next switch ${utc(r.current.to, false)} (in ${inSeconds(r.current.to, now())})`;
+  // While a watch has the receiver the rotation keeps time but runs nothing.
+  const when = watching() ? 'on hold while watching' : `next switch ${utc(r.current.to, false)} (in ${inSeconds(r.current.to, now())})`;
+  $('rot-text').textContent = `${parts.join(' → ')}, repeating · ${when}`;
   for (const s of r.steps) {
     const cls = s.index === r.current.index ? 'rs cur' : s.to <= now() ? 'rs past' : 'rs';
     const seg = h('span', { class: cls, '--pc': profileColor(s.profile), title: `${s.profile}: ${utc(s.from, false)}–${utc(s.to, false)}` }, `${s.profile} ${s.minutes}m`);
@@ -785,6 +809,107 @@ function tick() {
   } else if (l.state === 'unreachable') {
     $('unreach-retry').textContent = 'Checking again every few seconds.';
   }
+}
+
+
+// --- Watching a custom range --------------------------------------------------------------
+
+function buildWatch() {
+  const w = S.registry.watch;
+  if (!w) {
+    $('watch-box').hidden = true;
+    return;
+  }
+  const sel = $('w-min');
+  for (const m of [5, 15, 30, 60].filter((x) => x <= w.max_minutes)) {
+    sel.append(h('option', { value: String(m), selected: m === w.default_minutes ? true : null }, `for ${m} min`));
+  }
+  const go = () => watchRange();
+  $('btn-watch').addEventListener('click', go);
+  for (const id of ['w-from', 'w-to']) $(id).addEventListener('keydown', (e) => e.key === 'Enter' && go());
+  $('watch-down').addEventListener('click', () => scrollWatch(-1));
+  $('watch-up').addEventListener('click', () => scrollWatch(1));
+  $('watch-more').addEventListener('click', () => {
+    const cur = watching();
+    if (!cur) return;
+    const minutes = Math.min(w.max_minutes, Math.ceil(cur.left_s / 60) + 15);
+    sendWatch({ center_hz: cur.center_hz, sample_rate_hz: cur.sample_rate_hz, minutes });
+  });
+  $('watch-stop').addEventListener('click', async () => {
+    showCtlError(null);
+    try {
+      const st = await post('/api/live/watch/stop', {});
+      renderStatus({ ...S.status, live: st, now: st.now || now() });
+    } catch (e) {
+      showCtlError(e.message);
+    }
+  });
+  // Drag the waterfall sideways to scroll while watching.
+  const plot = S.wf.wfPlot;
+  let x0 = null;
+  plot.addEventListener('pointerdown', (e) => {
+    x0 = watching() ? e.clientX : null;
+  });
+  plot.addEventListener('pointerup', (e) => {
+    const cur = watching();
+    if (x0 === null || !cur) return;
+    const dx = e.clientX - x0;
+    x0 = null;
+    if (Math.abs(dx) < 24) return;
+    const shift = (-dx / Math.max(1, plot.clientWidth)) * cur.sample_rate_hz;
+    sendWatch({ center_hz: scrolled(cur.center_hz + shift, cur.sample_rate_hz, 0, w.min_hz, w.max_hz), sample_rate_hz: cur.sample_rate_hz });
+  });
+}
+
+function watchRange() {
+  const w = S.registry.watch;
+  const from = parseMhz($('w-from').value);
+  const to = $('w-to').value.trim() ? parseMhz($('w-to').value) : from;
+  if (!isFinite(from) || !isFinite(to)) {
+    showCtlError('Type the range in MHz, e.g. 88 to 98 (or one frequency in "from").');
+    return;
+  }
+  const t = watchTuning(from, to, w.rates_hz, w.min_hz, w.max_hz);
+  const body = { ...t, minutes: Number($('w-min').value) };
+  delete body.clipped;
+  if ($('g-lna').value !== '') body.lna_gain_db = Number($('g-lna').value);
+  if ($('g-vga').value !== '') body.vga_gain_db = Number($('g-vga').value);
+  if ($('g-amp').checked) body.amp_enable = true;
+  sendWatch(body, t.clipped ? `At most ${w.rates_hz[w.rates_hz.length - 1] / 1e6} MHz fits at once: showing the start of the range; scroll for the rest.` : null);
+}
+
+function scrollWatch(dir) {
+  const w = S.registry.watch;
+  const cur = watching();
+  if (!cur) return;
+  sendWatch({ center_hz: scrolled(cur.center_hz, cur.sample_rate_hz, dir, w.min_hz, w.max_hz), sample_rate_hz: cur.sample_rate_hz });
+}
+
+async function sendWatch(body, note = null) {
+  showCtlError(null);
+  try {
+    // The reply is the live service's status, as for start and stop.
+    const st = await post('/api/live/watch', body);
+    renderStatus({ ...S.status, live: st, now: st.now || now() });
+    if (note) showCtlError(note);
+  } catch (e) {
+    showCtlError(e.message);
+  }
+}
+
+function renderWatch() {
+  const cur = watching();
+  $('watch-form').hidden = !!cur;
+  $('watch-on').hidden = !cur;
+  if (!cur) return;
+  const lo = cur.center_hz - cur.sample_rate_hz / 2;
+  const hi = cur.center_hz + cur.sample_rate_hz / 2;
+  $('watch-range').textContent = `${mhz(lo, 3)}–${mhz(hi, 3)} MHz`;
+  const left = cur.until - ((S.status && S.status.now) || NOW());
+  $('watch-left').textContent = `${leftText(left)}, then decoding resumes`;
+  const w = S.registry.watch;
+  $('watch-down').disabled = lo <= w.min_hz;
+  $('watch-up').disabled = hi >= w.max_hz;
 }
 
 init().catch((e) => {

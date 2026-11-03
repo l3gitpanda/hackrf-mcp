@@ -5,6 +5,7 @@
 // bin on 1090 MHz, -36 on 162 MHz next to NOAA Weather Radio).
 
 import { clear, decodeRow, h, mhz, mhzShort, quantile, utc } from './util.js';
+import { BandStrip } from './bandstrip.js';
 
 // Dark at the floor so a quiet band stays calm (the mockup's palette).
 const STOPS = [[0, '#05080f'], [0.15, '#0a1530'], [0.3, '#102a5c'], [0.45, '#12508a'], [0.58, '#11809a'], [0.7, '#27a88f'], [0.8, '#8cc46a'], [0.9, '#f0d264'], [1, '#fff4d6']];
@@ -113,6 +114,9 @@ export class Waterfall {
     this.chanGuides = h('div');
     this.tickBox = h('div', { class: 'ticks' });
     this.timeGut = h('div', { class: 'gut' });
+    this.bandBox = h('div');
+    this.bands = new BandStrip(this.bandBox);
+    this.bandRow = h('div', { class: 'bnd' }, h('div', { class: 'gut bgut' }, 'Bands'), this.bandBox);
     this.ovTitle = h('b');
     this.ovSub = h('span');
     this.overlay = h('div', { class: 'ovl', hidden: true }, this.ovTitle, this.ovSub);
@@ -122,6 +126,7 @@ export class Waterfall {
       h(
         'div',
         { class: 'wfp' },
+        this.bandRow,
         h('div', { class: 'spec' }, this.dbGut, this.specPlot),
         h('div', { class: 'fax' }, h('span', { class: 'fu' }, 'MHz'), this.tickBox),
         h('div', { class: 'wf' }, this.timeGut, this.wfPlot),
@@ -176,12 +181,21 @@ export class Waterfall {
     this.ovSub.textContent = sub || '';
   }
 
+  // The band plan strip on or off (the Live screen remembers the choice).
+  showBands(on) {
+    this.bandRow.hidden = !on;
+  }
+
   drawAxis() {
     clear(this.tickBox);
     clear(this.chanGuides);
     const b = this.band;
-    if (!b || !b.sample_rate_hz) return;
+    if (!b || !b.sample_rate_hz) {
+      this.bands.show(null, null);
+      return;
+    }
     const lo = b.center_hz - b.sample_rate_hz / 2;
+    this.bands.show(lo, lo + b.sample_rate_hz);
     for (const t of ticks(b.center_hz, b.sample_rate_hz)) {
       if (t.pct < 4 || t.pct > 96) continue; // half of it would hide under the edge
       const el = h('span', { class: 'tick' }, t.label);

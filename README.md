@@ -494,11 +494,32 @@ and a sweep's data or a capture's samples come back over the connection
 and are written to the capture directory on the worker, where
 `hackrf_decode` and the other file tools read them. The agent keeps its
 own limits: `HACKRF_AGENT_MAX_CAPTURE_MB` (2048 by default) and bias-tee
-power locked unless `HACKRF_AGENT_ALLOW_BIAS_TEE` is on. Transmitting,
-bias-tee control, the clock and the Opera Cake are refused on a split
-station: each would need its own typed request on the agent, and
-transmitting would move the transmit policy and its audit log there.
-`hackrf_server_status` says where the HackRF is.
+power locked unless `HACKRF_AGENT_ALLOW_BIAS_TEE` is on. Bias-tee
+control, the clock and the Opera Cake are refused on a split station: each
+would need its own typed request on the agent. `hackrf_server_status` says
+where the HackRF is.
+
+**Transmitting on a split station.** `hackrf_transfer` with
+`direction="tx"` first passes the MCP server's own transmit policy and
+audit log, as on a single machine. The file is then sent to the agent,
+which checks it again with its own settings before `hackrf_transfer -t`
+runs:
+
+- **Its settings:** `HACKRF_AGENT_TX_MODE` (off by default),
+  `HACKRF_AGENT_TX_BANDS`, `HACKRF_AGENT_TX_EXTRA_RANGES`,
+  `HACKRF_AGENT_MAX_TX_SECONDS` and `HACKRF_AGENT_MAX_TX_MB`.
+- **Its check:** the file's occupied bandwidth is measured with numpy alone
+  (SciPy would not fit the agent's memory limit), the way the MCP server
+  measures it, so a narrow signal can use a band narrower than the 2 MS/s
+  minimum sample rate.
+- **Both must allow it,** and the agent's refusal wins. If the server allows
+  a transmission and the agent refuses it, the two configurations differ.
+- **Every attempt** is in both audit logs. The agent's is
+  `HACKRF_AGENT_TX_LOG`, `/var/lib/hackrf-agent/tx-audit.jsonl` under the
+  unit file.
+- **The upload is two-phase:** the agent answers a checked request with
+  "ready", takes exactly the announced bytes, and checks their SHA-256
+  before anything else.
 
 **Fallback.** The machine with the HackRF can keep its own hackrf-live
 (local device, its own saved rotation) for when the worker is away. With

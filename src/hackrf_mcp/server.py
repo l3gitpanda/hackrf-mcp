@@ -180,8 +180,16 @@ def _agent_line() -> str:
             doing += "; its machine's own live service is paused while this worker is around"
         else:
             doing += "; its machine's own live service is decoding (no worker seen lately)"
+    tx = st.get("tx") or {}
+    tx_text = (
+        f"transmitting needs this server's transmit mode and the agent's to allow it "
+        f"(the agent's: {tx.get('mode', 'unknown')}"
+        + (f", bands {', '.join(tx.get('bands') or []) or 'none'}" if tx.get("mode") == "allowed-bands" else "")
+        + (f", at most {tx['max_tx_seconds']:g} s" if tx.get("mode") not in (None, "off") else "")
+        + ")"
+    )
     return (
-        f"behind the hackrf-agent at {host}:{port} ({doing}); transmitting, bias-tee, clock "
+        f"behind the hackrf-agent at {host}:{port} ({doing}); {tx_text}; bias-tee, clock "
         "and Opera Cake control are not available through it, and the agent's own limits apply "
         f"(sweeps up to {agent.TOOL_TIMEOUT_S['sweep']:.0f} s, captures up to "
         f"{agent.TOOL_TIMEOUT_S['capture']:.0f} s and its HACKRF_AGENT_MAX_CAPTURE_MB)"
@@ -191,11 +199,11 @@ def _agent_line() -> str:
 def _split_refused(what: str) -> str:
     return _refused(
         "this server's HackRF is on another machine, behind a hackrf-agent, which runs only "
-        f"hackrf_info, hackrf_sweep and receive captures; {what} is not available through it"
+        f"hackrf_info, hackrf_sweep, captures and transmissions; {what} is not available through it"
     )
 
 
-def _run_remote(owner: str, req: dict, sink, timeout: float) -> dict | str:
+def _run_remote(owner: str, req: dict, sink, timeout: float, upload: Path | None = None) -> dict | str:
     """_run_on_device for a split station: pause the live service, have the
     agent run the tool (its output to `sink`), resume. Returns the agent's
     "done" notice with a "note" about the pause, or a message (busy, refused,
@@ -216,7 +224,7 @@ def _run_remote(owner: str, req: dict, sink, timeout: float) -> dict | str:
         address, token = _agent()
         timeout = min(timeout, agent.TOOL_TIMEOUT_S[req["tool"]])  # the agent's own ceiling
         try:
-            done = agent.run_tool(address, token, {**req, "timeout_s": timeout}, sink, wait_s=timeout + 330)
+            done = agent.run_tool(address, token, {**req, "timeout_s": timeout}, sink, wait_s=timeout + 330, upload=upload)
         except agent.AgentRefused as exc:
             return _refused(f"the hackrf-agent refused: {exc}")
         except OSError as exc:
@@ -441,7 +449,10 @@ def hackrf_transfer(
     file and transmits only if it and the carrier fit inside one allowed
     band; "unrestricted" skips the band check. The band check covers
     frequency only, not power or emissions. Every attempt, allowed or
-    refused, is written to the server's transmit audit log. A refusal
+    refused, is written to the server's transmit audit log. On a split
+    station (the HackRF behind a hackrf-agent) the file is then sent to the
+    agent, which applies its own transmit policy and audit log too; a
+    transmission needs both to allow it, and the agent's refusal wins. A refusal
     returns a message starting with REFUSED; do not retry with altered
     parameters to get around it.
     Enabling antenna_enable (bias-tee) applies DC power to the antenna port
@@ -485,8 +496,6 @@ def hackrf_transfer(
         path = storage.resolve(file_path, must_exist=(direction == "tx"))
     except storage.PathNotAllowed as exc:
         return _refused(exc)
-    if _agent() is not None and direction == "tx":
-        return _split_refused("transmitting")
 
     if direction == "rx":
         if num_samples is None:
@@ -540,6 +549,11 @@ def hackrf_transfer(
             storage.audit_tx(tx_record)
             return _refused(decision.reason)
         timeout_seconds = min(timeout_seconds, s.max_tx_seconds)
+        if _agent() is not None:
+            return _transmit_remote(
+                path, tx_record, frequency_hz, sample_rate_hz, txvga_gain_db, amp_enable, antenna_enable,
+                repeat_tx, device_serial, timeout_seconds,
+            )  # fmt: skip
         args += ["-t", str(path)]
         if repeat_tx:
             args += ["-R"]
@@ -567,6 +581,45 @@ def hackrf_transfer(
         if tx_record["result"] == "ran":
             result = f"Transmit allowed: {tx_record['reason']}.\n{result}"
     return result
+
+
+def _transmit_remote(
+    path: Path, tx_record: dict, frequency_hz: int, sample_rate_hz: int, txvga_gain_db: int | None, amp_enable: bool,
+    antenna_enable: bool, repeat_tx: bool, device_serial: str | None, timeout_seconds: float,
+) -> str:  # fmt: skip
+    """A transmission through the hackrf-agent, once this server's policy
+    allows it: the file is sent to the agent, which applies its own policy
+    (its verdict wins) and audits the attempt too."""
+    req = {
+        "tool": "transmit",
+        "frequency_hz": frequency_hz,
+        "sample_rate_hz": sample_rate_hz,
+        "txvga_gain_db": txvga_gain_db,
+        "amp": amp_enable,
+        "antenna_enable": antenna_enable,
+        "repeat": repeat_tx,
+        "device_serial": device_serial,
+        "bytes": path.stat().st_size,
+        "sha256": tx_record["file_sha256"],
+    }
+    done = _run_remote("hackrf_transfer", req, lambda b: None, timeout_seconds, upload=path)
+    if isinstance(done, str):
+        tx_record["result"] = (
+            "busy" if done == DEVICE_BUSY
+            else "refused-agent" if done.startswith("REFUSED: the hackrf-agent refused")
+            else "refused-live" if done.startswith("REFUSED:")
+            else "failed"
+        )  # fmt: skip
+        tx_record["agent"] = done
+        storage.audit_tx(tx_record)
+        return done
+    tx_record["result"] = "ran"
+    tx_record["agent_reason"] = done.get("allowed_reason")
+    storage.audit_tx(tx_record)
+    return (
+        f"Transmit allowed: {tx_record['reason']}; the hackrf-agent allowed it too: "
+        f"{done.get('allowed_reason')}.\n{_remote_text(done, timeout=timeout_seconds)}"
+    )
 
 
 def _capture_remote(

@@ -192,6 +192,13 @@ owner's Docker stack doing everything else.
   start/stop/error events), with a watermark in `agent-import.json`;
   fallback spectrum stays on the QNAP. The QNAP's hackrf-live keeps no
   `HACKRF_LIVE_AGENT`.
+- **W6 (done, ahead of W5 at the owner's request):** transmitting through
+  the agent. The MCP server's policy and audit log first, then a two-phase
+  upload ("ready", exact bytes, SHA-256) and the agent's own policy
+  (`HACKRF_AGENT_TX_*`, off by default) with the file's bandwidth measured
+  in numpy alone, and its own audit log in the unit's StateDirectory. Both
+  must allow a transmission. Bias-tee control, clock and Opera Cake stay
+  refused on a split station.
 - **W5:** cutover, with the owner's approval: the agent's port allowed to
   the worker only, the data copied to the worker's volume, the web and MCP
   addresses moved. Order matters for the log, since the worker's first

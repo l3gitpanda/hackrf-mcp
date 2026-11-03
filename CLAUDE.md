@@ -119,8 +119,10 @@ asyncio.run(main())
   `js/map.js`, `js/maputil.js`, `js/history.js`, `js/historyutil.js`,
   `js/bandstrip.js` (the band plan strip; the plan itself is data in
   `bandplan-us.json`, so it can name services and protocols freely),
+  `js/bands.js` and `js/bandsearch.js` (the Bands screen), `js/watchutil.js`,
   `js/waterfall.js`, `js/appbar.js`, `js/util.js`, `js/api.js`), one HTML
-  page per screen (`index.html`, `log.html`, `map.html`, `history.html`),
+  page per screen (`index.html`, `log.html`, `map.html`, `history.html`,
+  `bands.html`),
   and `hl.css` from the mockup plus `app.css`. Pure functions go in the
   `*util.js` modules so `tests/js/webui.test.mjs` can run them.
   `vendor/leaflet/` (Leaflet 1.9.4) and `vendor/protomaps-leaflet/`

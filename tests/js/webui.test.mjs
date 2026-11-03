@@ -6,6 +6,7 @@ import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, pa
 import { AutoLevel, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
 import { bandsAt, layoutBands, officialAt, rangeText, serviceText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
 import { clampCenter, leftText, parseMhz, scrolled, watchTuning } from '../../src/hackrf_mcp/web/static/js/watchutil.js';
+import { parseQuery, search } from '../../src/hackrf_mcp/web/static/js/bandsearch.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
@@ -222,4 +223,33 @@ test('watching a range: the narrowest width that covers it, scrolling by half wi
   assert.equal(leftText(660), '11 min left');
   assert.equal(leftText(40), '40 s left');
   assert.equal(leftText(-1), 'ending');
+});
+
+test('band search: frequencies, ranges and words', () => {
+  assert.deepEqual(parseQuery('162.4'), { freq: { lo: 162400000, hi: 162400000 }, words: [] });
+  assert.deepEqual(parseQuery('1.09 GHz'), { freq: { lo: 1090000000, hi: 1090000000 }, words: [] });
+  assert.deepEqual(parseQuery('535 kHz'), { freq: { lo: 535000, hi: 535000 }, words: [] });
+  assert.deepEqual(parseQuery('88-108 broadcast'), { freq: { lo: 88e6, hi: 108e6 }, words: ['broadcast'] });
+  assert.deepEqual(parseQuery('144 to 148 MHz'), { freq: { lo: 144e6, hi: 148e6 }, words: [] });
+  assert.deepEqual(parseQuery('Marine VHF'), { freq: null, words: ['marine', 'vhf'] });
+  assert.deepEqual(parseQuery('part 97').words, ['97']);
+  const plan = {
+    categories: { marine: { label: 'Marine' }, amateur: { label: 'Amateur radio' } },
+    bands: [
+      { lo: 144e6, hi: 148e6, name: '2 m amateur', cat: 'amateur', part: '97' },
+      { lo: 156e6, hi: 157.45e6, name: 'Marine VHF', cat: 'marine', part: '80', note: 'Ship and coast stations' },
+    ],
+  };
+  const official = {
+    non_federal: [{ lo: 144e6, hi: 146e6, services: ['AMATEUR', 'AMATEUR-SATELLITE'], parts: ['Amateur Radio (97)'] }],
+    federal: [{ lo: 144e6, hi: 148e6, services: [] }],
+  };
+  assert.deepEqual(search(plan, official, 'ship').bands.map((b) => b.name), ['Marine VHF']);
+  assert.deepEqual(search(plan, official, 'part 97').bands.map((b) => b.name), ['2 m amateur']);
+  assert.deepEqual(search(plan, official, '97').bands, []); // a bare number is a frequency: 97 MHz
+  assert.deepEqual(search(plan, official, '145').bands.map((b) => b.name), ['2 m amateur']);
+  assert.deepEqual(search(plan, official, '145').official.map((b) => b.col), ['Non-Federal']);
+  assert.deepEqual(search(plan, official, 'amateur-satellite').official.length, 1);
+  assert.deepEqual(search(plan, official, '', new Set(['marine'])).bands.map((b) => b.name), ['Marine VHF']);
+  assert.equal(search(plan, official, '').official.length, 0);
 });

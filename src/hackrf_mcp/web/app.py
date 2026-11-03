@@ -243,7 +243,7 @@ class Gate:
                 h += SECURITY_HEADERS
                 if path.startswith("/api/"):
                     h.append((b"cache-control", b"no-store"))
-                elif path in ("/", "/log", "/map", "/history", "/login") or path.startswith("/static/"):
+                elif path in ("/", "/log", "/map", "/history", "/bands", "/login") or path.startswith("/static/"):
                     # Revalidate every time, so a deploy reaches browsers at once.
                     h.append((b"cache-control", b"no-cache"))
                 message = {**message, "headers": h}
@@ -328,6 +328,9 @@ def create_app(
 
     async def history_page(request: Request) -> Response:
         return FileResponse(STATIC / "history.html")
+
+    async def bands_page(request: Request) -> Response:
+        return FileResponse(STATIC / "bands.html")
 
     basemap_path = web.state_path(live) / basemap.FILENAME
 
@@ -676,6 +679,7 @@ def create_app(
         Route("/log", log_page),
         Route("/map", map_page),
         Route("/history", history_page),
+        Route("/bands", bands_page),
         Route("/login", login_page),
         Route("/auth/login", login, methods=["POST"]),
         Route("/auth/logout", logout, methods=["POST"]),

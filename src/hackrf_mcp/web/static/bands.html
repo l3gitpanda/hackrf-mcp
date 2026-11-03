@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Bands · hackrf-live</title>
+<link rel="stylesheet" href="/static/hl.css">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/js/bands.js"></script>
+</head>
+<body>
+<div class="hl page">
+  <div class="abwrap">
+    <header class="appbar">
+      <a class="brand" href="/">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <span>hackrf-live</span>
+        <small>home station</small>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/">Live</a>
+        <a href="/map">Map</a>
+        <a href="/log">Log</a>
+        <a href="/history">History</a>
+        <a href="/bands" aria-current="page">Bands</a>
+        <a aria-disabled="true" title="Coming in a later milestone">Summaries</a>
+      </nav>
+      <div class="ab-r">
+        <span class="chip st st-idle" id="ab-state" role="status"><span class="dot"></span><span id="ab-state-text">Connecting…</span></span>
+        <span class="chip" id="ab-prof" hidden><span class="sw"></span><span class="mono" id="ab-prof-text"></span></span>
+        <span class="chip mono" id="ab-clock" aria-label="Station clock, UTC">--:--:-- UTC</span>
+        <form method="post" action="/auth/logout"><button type="submit" class="btn sm ghost">Sign out</button></form>
+      </div>
+    </header>
+  </div>
+  <main class="main">
+    <section class="panel" aria-label="Search the bands">
+      <div class="bsearch">
+        <label class="sr" for="q">Search the bands</label>
+        <input id="q" class="inp bq" type="search" placeholder="Search: marine, part 97, weather, 162.4, 88-108, 1.09 GHz…" autocomplete="off" autofocus>
+        <span class="muted" id="count"></span>
+      </div>
+      <div class="row wr bcats" id="cats" role="group" aria-label="Kinds of service"></div>
+      <p class="mapnote2" id="about"></p>
+    </section>
+    <section class="panel" aria-label="Bands in the plan">
+      <div class="ph"><h2>Band plan</h2><span class="muted" id="n-plan"></span></div>
+      <div class="blist" id="plan" role="list"></div>
+    </section>
+    <section class="panel" id="p-off" aria-label="Official allocations" hidden>
+      <div class="ph"><h2>Official allocations</h2><span class="muted" id="n-off"></span></div>
+      <div class="blist" id="off" role="list"></div>
+      <p class="mapnote2" id="off-src"></p>
+    </section>
+  </main>
+</div>
+</body>
+</html>

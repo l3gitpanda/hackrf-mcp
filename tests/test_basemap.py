@@ -3,6 +3,8 @@ a two-part extract from a local planet stand-in. Needs the pmtiles package
 (uv run --with pmtiles pytest); the header reading hackrf-web does is tested
 in test_web.py without it."""
 
+import http.client
+import io
 import sqlite3
 
 import pytest
@@ -79,3 +81,27 @@ def test_main_needs_an_area_and_an_output(tmp_path, capsys):
     planet(src, zmax=4)
     assert basemap.main(["--around", "33.9,-118.4", "--source", str(src), "--max-zoom", "4", "--wide-zoom", "2", "--dry-run"]) == 0
     assert "tiles" in capsys.readouterr().out
+
+
+def test_a_read_cut_short_is_retried(monkeypatch):
+    calls = []
+
+    class Response(io.BytesIO):
+        status = 206
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(req, timeout):
+        calls.append(req.get_header("Range"))
+        if len(calls) == 1:
+            raise http.client.IncompleteRead(b"par", 5)
+        return Response(b"bytes")
+
+    monkeypatch.setattr(basemap.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(basemap.time, "sleep", lambda s: None)
+    assert basemap.Source("https://example.invalid/planet.pmtiles").get(10, 5) == b"bytes"
+    assert calls == ["bytes=10-14", "bytes=10-14"]

@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import gzip
+import http.client
 import json
 import math
 import sqlite3
@@ -181,7 +182,9 @@ class Source:
                             raise OSError(f"{self.where}: expected 206 Partial Content, got {r.status}")
                         data = r.read()
                     break
-                except OSError:
+                except (OSError, http.client.HTTPException):
+                    # HTTPException covers a connection cut mid-read
+                    # (IncompleteRead), which is not an OSError.
                     if attempt == 3:
                         raise
                     time.sleep(2**attempt)

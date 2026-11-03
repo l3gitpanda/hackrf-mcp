@@ -229,3 +229,5 @@ __marimo__/
 *.dfu
 *.wav
 *.png
+# ...but not the web UI's vendored Leaflet images
+!src/hackrf_mcp/web/static/vendor/leaflet/images/*.png

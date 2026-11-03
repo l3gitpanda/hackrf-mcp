@@ -78,3 +78,33 @@ test('frequency ticks are round and inside the band', () => {
   const ais = ticks(162000000, 2000000);
   assert.ok(ais.some((x) => x.label === '161.25'), JSON.stringify(ais.map((x) => x.label)));
 });
+
+import { heading, positionAt, prune, targetKey, trackWindow } from '../../src/hackrf_mcp/web/static/js/maputil.js';
+
+test('the map finds each target where it was at the cursor', () => {
+  const track = [{ ts: 10, lat: 1 }, { ts: 20, lat: 2 }, { ts: 30, lat: 3 }];
+  assert.equal(positionAt(track, 25).lat, 2);
+  assert.equal(positionAt(track, 30).lat, 3);
+  assert.equal(positionAt(track, 5), null);
+  assert.equal(positionAt(track, 100, 60), null); // too old
+  assert.equal(positionAt([], 1), null);
+  assert.deepEqual(trackWindow(track, 15, 30).map((p) => p.ts), [20, 30]);
+  assert.equal(targetKey('p', 's'), 'p|s');
+});
+
+test('heading comes from the fix, else the declared field', () => {
+  assert.equal(heading({ track: 90 }, { course: 10 }, 'course'), 90);
+  assert.equal(heading({ track: null }, { course: 10 }, 'course'), 10);
+  assert.equal(heading({}, { course: 360 }, 'course'), null); // AIS "not available"
+  assert.equal(heading({}, {}, undefined), null);
+});
+
+test('a live map forgets fixes older than its window', () => {
+  const targets = new Map([
+    ['a', { track: [{ ts: 1 }, { ts: 50 }], last: 50 }],
+    ['b', { track: [{ ts: 2 }], last: 2 }],
+  ]);
+  prune(targets, 10);
+  assert.deepEqual([...targets.keys()], ['a']);
+  assert.deepEqual(targets.get('a').track.map((p) => p.ts), [50]);
+});

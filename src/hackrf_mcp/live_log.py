@@ -635,12 +635,15 @@ def summarise(
         for k, v in fields.items():
             if v in (None, "", [], {}):
                 continue
+            # Only numbers are summed or compared; a value of another type
+            # (a decoder's odd output) is kept as the latest instead.
+            prev = s["fields"].get(k)
+            numeric = isinstance(v, (int, float)) and not isinstance(v, bool)
+            prev_numeric = isinstance(prev, (int, float)) and not isinstance(prev, bool)
             if k in ("messages", "positions"):
-                s["fields"][k] = s["fields"].get(k, 0) + (v if isinstance(v, (int, float)) else 0)
-            elif k in ("altitude_max",):
-                s["fields"][k] = max(s["fields"].get(k, v), v)
-            elif k in ("altitude_min",):
-                s["fields"][k] = min(s["fields"].get(k, v), v)
+                s["fields"][k] = (prev if prev_numeric else 0) + (v if numeric else 0)
+            elif k in ("altitude_max", "altitude_min") and numeric and prev_numeric:
+                s["fields"][k] = max(prev, v) if k == "altitude_max" else min(prev, v)
             else:
                 s["fields"][k] = v
     out = sorted(by_subject.values(), key=lambda s: -s["last"])

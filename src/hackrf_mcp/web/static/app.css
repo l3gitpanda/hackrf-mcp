@@ -63,3 +63,39 @@ body{margin:0;background:#0a0e13}
 .more{display:flex;justify-content:center;padding:10px}
 .tbl tbody tr td .pbadge{vertical-align:middle}
 #tscroll{max-height:min(560px,70vh)}
+/* The Map screen (the mockup's Map artboard, with Leaflet for pan and zoom). */
+.mtool{display:flex;align-items:center;gap:10px 16px;padding:8px 12px;flex-wrap:wrap}
+.mtool + .mtool{border-top:1px solid var(--line)}
+.scrub{flex:1 1 420px;min-width:240px;display:flex;flex-direction:column;gap:3px}
+.sbands{position:relative;height:14px;border-radius:2px;overflow:hidden;background:var(--panel2)}
+.sbands span{position:absolute;top:0;bottom:0;background:color-mix(in oklab,var(--pc) 35%,var(--panel));border-right:1px solid var(--bg);font:600 9.5px/14px var(--mono);color:var(--text);padding-left:3px;overflow:hidden;white-space:nowrap}
+.sbands span.stopped{background:repeating-linear-gradient(135deg,var(--raised) 0 3px,transparent 3px 6px);color:var(--muted)}
+.range{width:100%;accent-color:var(--text);margin:0;height:22px}
+.layers{display:flex;flex-wrap:wrap;gap:6px}
+.tlist{display:flex;flex-direction:column;max-height:520px;overflow:auto}
+.tli{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:7px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;color:inherit;font:inherit;text-align:left;width:100%;cursor:pointer}
+.tli:hover,.tli.on{background:var(--hover)}
+.tli .nm{font-family:var(--mono);font-weight:600}
+.tli .ds{grid-column:2;color:var(--text2);font-size:12px}
+.tli .ag{font-family:var(--mono);font-size:11.5px;color:var(--muted);grid-row:1 / span 2;grid-column:3}
+.tli.stale .nm{color:var(--muted)}
+.mapwrap{position:relative;height:min(680px,70vh);background:var(--sea)}
+#map{position:absolute;inset:0}
+.leaflet-container{background:var(--sea);font-family:inherit}
+.leaflet-control-zoom a,.leaflet-bar a{background:var(--panel2);color:var(--text);border-color:var(--line2)}
+.leaflet-bar{border-color:var(--line2)}
+.leaflet-control-scale-line{background:rgba(10,14,19,.75);color:var(--text2);border-color:var(--text2)}
+.leaflet-control-attribution{background:rgba(10,14,19,.65) !important;color:var(--muted)}
+.leaflet-control-attribution a{color:var(--text2)}
+.mk{position:relative;width:0;height:0}
+.mk .ico{position:absolute;left:-9px;top:-9px;width:18px;height:18px;color:var(--pc);filter:drop-shadow(0 0 2px rgba(0,0,0,.9))}
+.mk .ico svg{display:block;width:18px;height:18px}
+.mk .tl2{position:absolute;left:11px;top:-8px;font:600 11px/1.2 var(--mono);color:#e8eef5;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000;pointer-events:none}
+.mk .tl2 small{display:block;font-weight:400;font-size:10px;color:#b7c3d1}
+.mk.stale{opacity:.45}
+.mk.sel .ico{color:#fff}
+.mk.nolabel .tl2{display:none}
+.mapnote2{position:absolute;right:10px;top:10px;z-index:500;max-width:min(420px,70%);font-size:11.5px;color:var(--text2);background:rgba(10,14,19,.78);border:1px solid var(--line);border-radius:5px;padding:5px 8px;pointer-events:none}
+.g-map2{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;align-items:start}
+@container (max-width:1000px){.g-map2{grid-template-columns:minmax(0,1fr)}}
+.altspark{width:100%;height:40px}

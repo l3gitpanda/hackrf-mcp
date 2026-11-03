@@ -116,9 +116,15 @@ asyncio.run(main())
   adds the security headers (a strict CSP: no inline scripts or styles).
   Pager text is removed on read through each profile's `redact`.
   The UI in `web/static/` is plain ES modules (`js/live.js`, `js/log.js`,
-  `js/waterfall.js`, `js/appbar.js`, `js/util.js`, `js/api.js`), one HTML
-  page per screen (`index.html`, `log.html`), and `hl.css` from the
-  mockup plus `app.css`. Rules: no inline scripts, styles, style attributes
+  `js/map.js`, `js/maputil.js`, `js/waterfall.js`, `js/appbar.js`,
+  `js/util.js`, `js/api.js`), one HTML page per screen (`index.html`,
+  `log.html`, `map.html`), and `hl.css` from the mockup plus `app.css`.
+  `vendor/leaflet/` is Leaflet 1.9.4 as published on npm, unmodified, with
+  its licence and digests (checked by `tests/test_web_static.py`); the
+  rules below apply to our scripts in `js/`, not to `vendor/`. The map loads no
+  tiles; a base map is the operator's `basemap.geojson` in the web state
+  directory, never a file in the repository (it would say where the
+  station is). Rules: no inline scripts, styles, style attributes
   or event handlers (the CSP forbids them; set styles through the CSSOM),
   nothing from other origins, and no protocol names: everything about
   profiles comes from `/api/registry`. `tests/test_web_static.py` checks

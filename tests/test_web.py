@@ -245,6 +245,29 @@ def test_log_paging_histogram_coverage_and_the_log_page(env):
     assert page.status_code == 200 and "log.js" in page.text and page.headers["cache-control"] == "no-cache"
 
 
+def test_the_map_page_basemap_and_receiver(env, tmp_path):
+    live, gate, _ = env
+    c = TestClient(gate)
+    assert c.get("/map", headers=BEARER).status_code == 200
+    assert "leaflet.js" in c.get("/map", headers=BEARER).text
+    assert c.get("/static/vendor/leaflet/leaflet.js", headers=BEARER).status_code == 200
+    # No basemap until the operator puts one in the web state directory.
+    r = c.get("/api/basemap", headers=BEARER)
+    assert r.status_code == 404 and "basemap.geojson" in r.json()["error"]
+    assert c.get("/api/registry", headers=BEARER).json()["basemap"] is False
+    state = settings.WebSettings().state_path(live)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "basemap.geojson").write_text('{"type": "FeatureCollection", "features": []}')
+    r = c.get("/api/basemap", headers=BEARER)
+    assert r.status_code == 200 and r.json()["type"] == "FeatureCollection"
+    assert c.get("/api/registry", headers=BEARER).json()["receiver"] is None
+    assert c.get("/api/registry", headers=BEARER).json()["basemap"] is True
+    placed = web_app.create_app(
+        settings.LiveSettings(live_dir=live.live_dir, receiver=(33.9, -118.4)), settings.WebSettings(), [DIGEST], b"k" * 32, feed=False
+    )
+    assert TestClient(placed).get("/api/registry", headers=BEARER).json()["receiver"] == [33.9, -118.4]
+
+
 def test_spectrum_segments_and_a_downsampled_waterfall(env):
     _, gate, _ = env
     c = TestClient(gate)

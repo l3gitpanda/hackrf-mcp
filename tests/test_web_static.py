@@ -2,6 +2,7 @@
 that exist, and (with node installed) the JavaScript's syntax and pure
 functions."""
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -34,6 +35,17 @@ def test_stylesheets_and_scripts_stay_on_this_origin():
         assert not re.search(r"url\(\s*['\"]?(https?:)?//", text), f.name
         assert "@import" not in text, f.name
         assert "fonts.googleapis" not in text, f.name
+
+
+def test_vendored_leaflet_is_the_published_release():
+    vendor = STATIC / "vendor" / "leaflet"
+    assert (vendor / "LICENSE").is_file()
+    readme = (vendor / "README").read_text()
+    for f in [vendor / "leaflet.js", vendor / "leaflet.css", *sorted((vendor / "images").glob("*.png"))]:
+        digest = hashlib.sha256(f.read_bytes()).hexdigest()
+        assert f"{digest}  {f.relative_to(vendor)}" in readme, f.name
+    css = (vendor / "leaflet.css").read_text()
+    assert not re.search(r"url\(\s*['\"]?(https?:)?//", css)
 
 
 def test_scripts_import_only_files_that_exist():

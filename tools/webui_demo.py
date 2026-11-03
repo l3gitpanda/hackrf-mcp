@@ -99,7 +99,13 @@ class DemoPipeline(Pipeline):
         while not self._stop.wait(rnd.uniform(0.4, 2.5)):
             s = rnd.choice(subjects)
             freq = rnd.choice(self.tuning.freqs_hz or (self.tuning.center_hz,))
-            fields = {k: rnd.choice(["DEMO", 7, 12000, 3.5, "UNDER WAY"]) for k in p.summary_fields if k not in ("lat", "lon")}
+            # Numbers where the real decoders put numbers, words elsewhere.
+            numeric = {"altitude", "altitude_min", "altitude_max", "speed", "track", "course", "heading", "messages", "positions", "duration"}
+            fields = {
+                k: (rnd.choice([7, 3500, 12000, 36000]) if k in numeric else rnd.choice(["DEMO", "UNDER WAY", "TEST"]))
+                for k in p.summary_fields
+                if k not in ("lat", "lon")
+            }
             if has_map:
                 pos[s][0] += rnd.uniform(-0.01, 0.01)
                 pos[s][1] += rnd.uniform(-0.01, 0.01)

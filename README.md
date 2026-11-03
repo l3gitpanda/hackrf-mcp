@@ -336,18 +336,32 @@ shows a timeline of detections per profile with the receiver's coverage
 under it (which profile ran, and hatched gaps for paused, error, stopped and
 service down), pages through the results, opens a row with all its fields,
 its raw text and the waterfall of the minute around it, and exports CSV.
-It never opens the HackRF. It reads the live log and the spectrum history, relays the live
+The **Map** screen (`/map`) draws the targets of every profile whose
+protocol module declares a map view (ADS-B aircraft, AIS ships) from the
+`positions` table: live, with arrows turned to the heading, labels, tracks
+of the last 10 minutes to 3 hours and faded markers after 5 minutes without
+a fix; or in History, for any range up to 7 days, with a scrubber over the
+receiver's coverage and playback. A selected target shows its fields, its
+altitude over the track and a link to its rows in the Log. The map is
+[Leaflet](https://leafletjs.com/) 1.9.4, served from `web/static/vendor/`
+(BSD-2-Clause, see its `LICENSE`), with no tiles from anywhere: a lat/lon
+grid, range rings 25 to 200 km around `HACKRF_LIVE_RECEIVER` when it is
+set, and an optional base map from a GeoJSON file the operator puts at
+`<state dir>/web/basemap.geojson` (for example coastlines and borders from
+Natural Earth, clipped to the area; nothing in the repository says where
+the station is). It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,
 switches and stops profiles over the control socket, as the MCP tools do.
 
 | Route | |
 |---|---|
-| `GET /api/registry` | profiles and decoders from the registries, with each profile's views (map, table, timeline) |
+| `GET /api/registry` | profiles and decoders from the registries, with each profile's views (map, table, timeline), the receiver's position if set, and whether there is a base map |
 | `GET /api/status` | the live service's status, and the memory and CPU of `hackrf-live` and `hackrf-web` |
 | `GET /api/log`, `/api/summary`, `/api/events` | the log, as `hackrf_live_search` and `hackrf_live_summary` read it; `/api/log` takes several `profiles` and pages with `before_id` |
 | `GET /api/log/histogram`, `/api/coverage` | matching rows per time bucket and profile; what the receiver was doing (running which profile, paused, error, stopped, down), rebuilt from the events |
 | `GET /api/positions` | map-track points |
+| `GET /api/basemap` | the operator's `basemap.geojson`, or 404 when there is none (`/api/registry` says which) |
 | `GET /api/spectrum/segments`, `/api/spectrum?segment=` | spectrum history, downsampled to the buckets asked for |
 | `POST /api/live/start`, `/api/live/stop` | the same requests as `hackrf_live_start` / `hackrf_live_stop` |
 | `WS /ws/live` | everything as it happens, and status every few seconds |

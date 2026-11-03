@@ -379,6 +379,17 @@ floor, and the rows logged over time. Rows link to the Log, and those of
 map-capable profiles to the Map at that moment (`/map?at=…&profile=…&subject=…`);
 the Log's detail panel links back to History.
 
+**Band plan.** Every waterfall (Live, History and the Log's thumbnail) has a
+strip along the top naming the bands it shows, coloured by kind of service
+(broadcast, aviation, marine, amateur, land mobile and public safety,
+mobile broadband, satellite, navigation, radar, unlicensed, federal,
+weather, science). Overlapping bands sit in lanes, broadest on top, and
+pointing at the strip (or tapping it) lists every band at that frequency
+with its FCC rule part. The plan is data, `web/static/bandplan-us.json`: a
+practical United States plan of about 135 bands compiled from FCC rules,
+with coarse edges where the real structure is intricate. Live's **Bands**
+button hides it, and History has a view toggle.
+
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,

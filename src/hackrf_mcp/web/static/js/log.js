@@ -6,9 +6,11 @@
 import { api } from './api.js';
 import { paintAppBar, paintClock } from './appbar.js';
 import { AutoLevel, makeLut, resample } from './waterfall.js';
+import { BandStrip } from './bandstrip.js';
 import { assignColors, clear, fmtUtc, h, mhz, parseFreqs, parseUtc, utc } from './util.js';
 
 const $ = (id) => document.getElementById(id);
+const STRIP = new BandStrip($('d-bands'), { lanes: 2 });
 const NOW = () => Date.now() / 1000;
 const LUT = makeLut();
 const PAGE = 200;
@@ -440,6 +442,7 @@ async function drawThumb(r) {
     seg = null;
   }
   if (S.sel !== r) return;
+  STRIP.show(seg ? seg.center_hz - seg.sample_rate_hz / 2 : null, seg ? seg.center_hz + seg.sample_rate_hz / 2 : null);
   if (!seg) {
     $('d-thumbcap').textContent = 'No spectrum was recorded then: the history starts on 2026-11-02 (AIS a little later), and nothing is recorded while paused or stopped.';
     return;

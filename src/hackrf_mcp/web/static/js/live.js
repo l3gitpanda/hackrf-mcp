@@ -125,6 +125,15 @@ function wire() {
     S.wf.peakHold = !S.wf.peakHold;
     e.currentTarget.setAttribute('aria-pressed', String(S.wf.peakHold));
   });
+  const bandsOn = localStorage.getItem('hl.bands') !== 'off';
+  S.wf.showBands(bandsOn);
+  $('btn-bands').setAttribute('aria-pressed', String(bandsOn));
+  $('btn-bands').addEventListener('click', (e) => {
+    const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
+    S.wf.showBands(on);
+    e.currentTarget.setAttribute('aria-pressed', String(on));
+    localStorage.setItem('hl.bands', on ? 'on' : 'off');
+  });
   $('btn-wfmode').addEventListener('click', (e) => {
     S.wf.usePeak = !S.wf.usePeak;
     e.currentTarget.setAttribute('aria-pressed', String(S.wf.usePeak));

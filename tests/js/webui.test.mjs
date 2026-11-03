@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
 import { AutoLevel, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
+import { bandsAt, layoutBands, rangeText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
@@ -161,4 +162,34 @@ test('time ticks pick a step that keeps their number down', () => {
   assert.equal(t.step, 60);
   assert.equal(t.ticks.length, 11 - 0);
   assert.equal(timeTicks(0, 86400, 10).step, 10800);
+});
+
+test('band plan lanes: broadest on top, overlaps pushed down, the rest listed but off the strip', () => {
+  const bands = [
+    { lo: 960, hi: 1215, name: 'wide' },
+    { lo: 1089, hi: 1091, name: 'narrow' },
+    { lo: 1000, hi: 1100, name: 'mid' },
+    { lo: 1090, hi: 1090.5, name: 'tiny' },
+    { lo: 2000, hi: 2100, name: 'away' },
+  ];
+  const { bands: out, lanes } = layoutBands(bands, 1080, 1100, 3);
+  const by = Object.fromEntries(out.map((b) => [b.name, b]));
+  assert.equal(lanes, 3);
+  assert.equal(by.wide.lane, 0);
+  assert.equal(by.mid.lane, 1);
+  assert.equal(by.narrow.lane, 2);
+  assert.equal(by.tiny.lane, null);
+  assert.equal(by.away, undefined);
+  assert.equal(by.wide.left, 0);
+  assert.equal(by.wide.width, 100);
+  assert.equal(by.narrow.left, 45);
+  assert.equal(by.narrow.width, 10);
+  assert.deepEqual(bandsAt(bands, 1090.2).map((b) => b.name), ['tiny', 'narrow', 'mid', 'wide']);
+  assert.deepEqual(bandsAt(bands, 1215), []);
+});
+
+test('band ranges read in the unit that suits them', () => {
+  assert.equal(rangeText(162400000, 162550000), '162.4–162.55 MHz');
+  assert.equal(rangeText(535000, 1705000), '535–1705 kHz');
+  assert.equal(rangeText(2400000000, 2483500000), '2.4–2.4835 GHz');
 });

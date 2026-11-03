@@ -150,3 +150,20 @@ body{margin:0;background:#0a0e13}
 .tscale2{position:relative;height:18px;margin:0 12px 8px;font-size:10.5px;color:var(--muted)}
 .tscale2 span{position:absolute;top:3px;transform:translateX(-50%);white-space:nowrap}
 @media (max-width:1000px){.hgrid{grid-template-columns:minmax(0,1fr)}.hgrid>*{grid-column:1;grid-row:auto}.hwf{padding-left:58px}.tscale{width:54px}}
+/* The band plan strip (bandstrip.js) */
+.bstrip{position:relative;min-width:0}
+.bstrip[hidden]{display:none}
+.bstrip .blanes{position:relative;overflow:hidden;cursor:crosshair;touch-action:pan-y;min-height:15px}
+.bstrip .bseg{position:absolute;height:14px;box-sizing:border-box;border-left:2px solid var(--bc);border-right:1px solid rgba(5,8,15,.7);background:color-mix(in oklab,var(--bc) 32%,#0a0f17);color:#e8eef5;font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:10px;line-height:13px;padding:0 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;pointer-events:none}
+.bstrip .bnone{display:block;font-size:10.5px;line-height:15px;color:#8f9cad;padding:0 6px}
+.bstrip .btip{position:absolute;top:100%;z-index:30;margin-top:4px;box-sizing:border-box;background:#0d131c;border:1px solid #2a3647;border-radius:5px;padding:7px 9px;font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:12px;line-height:1.35;color:#d8e2ec;box-shadow:0 6px 18px rgba(0,0,0,.5)}
+.bstrip .brow{display:grid;grid-template-columns:10px minmax(0,1fr);gap:7px;margin-top:6px}
+.bstrip .brow .sw{width:10px;height:10px;border-radius:2px;background:var(--bc);margin-top:3px}
+.bstrip .muted{color:#8f9cad}
+.bstrip .bsrc{margin-top:7px;font-size:10.5px}
+.wfp .bnd{display:grid;grid-template-columns:var(--g) minmax(0,1fr);border-bottom:1px solid #1b2432;background:#0a0f17;position:relative;z-index:5}
+.wfp .bnd[hidden]{display:none}
+.wfp .bgut{display:flex;align-items:center;justify-content:flex-end;padding-right:6px}
+.hbands{margin-bottom:3px}
+.hbands.off{display:none}
+#d-bands{margin-bottom:3px}

@@ -117,6 +117,8 @@ asyncio.run(main())
   Pager text is removed on read through each profile's `redact`.
   The UI in `web/static/` is plain ES modules (`js/live.js`, `js/log.js`,
   `js/map.js`, `js/maputil.js`, `js/history.js`, `js/historyutil.js`,
+  `js/bandstrip.js` (the band plan strip; the plan itself is data in
+  `bandplan-us.json`, so it can name services and protocols freely),
   `js/waterfall.js`, `js/appbar.js`, `js/util.js`, `js/api.js`), one HTML
   page per screen (`index.html`, `log.html`, `map.html`, `history.html`),
   and `hl.css` from the mockup plus `app.css`. Pure functions go in the

@@ -3,6 +3,7 @@ that exist, and (with node installed) the JavaScript's syntax and pure
 functions."""
 
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -88,3 +89,20 @@ def test_pure_functions_with_node():
     test = Path(__file__).parent / "js" / "webui.test.mjs"
     r = subprocess.run([node, "--test", str(test)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_band_plan_is_well_formed():
+    plan = json.loads((STATIC / "bandplan-us.json").read_text())
+    cats = plan["categories"]
+    assert plan["name"] and plan["about"] and plan["updated"]
+    for c in cats.values():
+        assert re.fullmatch(r"#[0-9a-f]{6}", c["color"]) and c["label"]
+    keys = [(b["lo"], -b["hi"]) for b in plan["bands"]]
+    assert keys == sorted(keys), "bands are kept in frequency order"
+    for b in plan["bands"]:
+        assert isinstance(b["lo"], int) and isinstance(b["hi"], int) and 0 < b["lo"] < b["hi"] <= 7_125_000_000, b
+        assert b["cat"] in cats and b["name"], b
+    names = {b["name"] for b in plan["bands"]}
+    # What the station's own profiles listen to is named.
+    for n in ("ADS-B / Mode S 1090 MHz", "AIS 1 (161.975 MHz)", "AIS 2 (162.025 MHz)", "NOAA Weather Radio", "Paging"):
+        assert n in names

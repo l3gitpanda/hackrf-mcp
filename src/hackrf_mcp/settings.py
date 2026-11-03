@@ -144,6 +144,10 @@ class LiveSettings:
     pager_content: bool = False
     # Receiver position (lat, lon), which lets dump1090 resolve more positions.
     receiver: tuple[float, float] | None = None
+    # A hackrf-agent to take samples from instead of a HackRF on this
+    # machine (HACKRF_LIVE_AGENT=host:port), and the file holding its token.
+    agent: tuple[str, int] | None = None
+    agent_token_file: Path | None = None
     # Default receive gains for profiles that don't set their own.
     lna_gain_db: int | None = None
     vga_gain_db: int | None = None
@@ -209,6 +213,15 @@ class LiveSettings:
             if not sep:
                 raise ValueError(f"HACKRF_LIVE_RECEIVER {v!r} must look like LAT,LON")
             kwargs["receiver"] = (float(lat), float(lon))
+        if v := env.get("HACKRF_LIVE_AGENT"):
+            host, sep, port = v.strip().rpartition(":")
+            if not sep or not host or not port.isdigit():
+                raise ValueError(f"HACKRF_LIVE_AGENT {v!r} must look like HOST:PORT")
+            kwargs["agent"] = (host.strip("[]"), int(port))
+            token = env.get("HACKRF_LIVE_AGENT_TOKEN_FILE")
+            if not token:
+                raise ValueError("HACKRF_LIVE_AGENT needs HACKRF_LIVE_AGENT_TOKEN_FILE, the file holding the agent's token")
+            kwargs["agent_token_file"] = Path(token).expanduser()
         for name, key in (("lna_gain_db", "HACKRF_LIVE_LNA_GAIN"), ("vga_gain_db", "HACKRF_LIVE_VGA_GAIN")):
             if v := env.get(key):
                 kwargs[name] = int(v)

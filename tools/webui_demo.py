@@ -134,6 +134,10 @@ def main() -> None:
     parser.add_argument("--token-file", help="write the sign-in token here instead of printing it")
     parser.add_argument("--dir", default="/tmp/hackrf-webui-demo", help="scratch directory, emptied at start")
     parser.add_argument("--basemap", help="a base map extract to show (python -m hackrf_mcp.web.basemap)")
+    parser.add_argument(
+        "--agent", action="store_true",
+        help="take samples from a hackrf-agent (run here, over loopback TCP) as a split station would",
+    )
     args = parser.parse_args()
 
     found = lambda _: "/bin/true"  # noqa: E731
@@ -145,6 +149,25 @@ def main() -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
     live = settings.LiveSettings(live_dir=tmp / "live", min_free_mb=0)
+    agent_server = None
+    if args.agent:
+        # The split station: an agent runs tools/fake_hackrf_transfer.py and
+        # streams it over TCP; the live service reads it with RemoteSource.
+        from hackrf_mcp import agent
+
+        fake = tmp / "hackrf_transfer"
+        fake.parent.mkdir(parents=True, exist_ok=True)
+        fake.write_text(f"#!{sys.executable}\n" + (Path(__file__).parent / "fake_hackrf_transfer.py").read_text())
+        fake.chmod(0o755)
+        token = secrets.token_urlsafe(32)
+        (tmp / "agent-token").write_text(token)
+        a = agent.AgentSettings(host="127.0.0.1", port=args.port + 1, token_file=tmp / "agent-token", binary=str(fake))
+        a.digests = a.load_digests()
+        agent_server = agent.AgentServer(a)
+        threading.Thread(target=agent_server.serve_forever, daemon=True).start()
+        live = settings.LiveSettings(
+            live_dir=tmp / "live", min_free_mb=0, agent=("127.0.0.1", args.port + 1), agent_token_file=tmp / "agent-token"
+        )
     settings.configure_live(live)
     live.live_dir.mkdir(parents=True)
     samples = tmp / "samples"
@@ -165,7 +188,10 @@ def main() -> None:
         # A watch decodes nothing, so it runs its own pipeline on the simulated source.
         return tuning.profile.pipeline(tuning, ctx) if tuning.profile.spectrum_only else DemoPipeline(tuning, ctx)
 
-    svc = LiveService(live, pump, make_pipeline=make_pipeline, make_source=make_source, program_finder=found, spectrum=rec)
+    svc = LiveService(
+        live, pump, make_pipeline=make_pipeline, make_source=None if args.agent else make_source,
+        program_finder=found, spectrum=rec,
+    )  # fmt: skip
     svc.attach_feed(live_feed.FeedServer(live.feed_socket_path).start())
     control = ControlServer(live.socket_path, svc)
     threading.Thread(target=control.serve_forever, daemon=True).start()

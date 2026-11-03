@@ -235,6 +235,18 @@ class LiveService:
     # --- plumbing -----------------------------------------------------
 
     def _hackrf_source(self, tuning: Tuning) -> live_profiles.Source:
+        if self.live.agent is not None:
+            # Split station: the HackRF is on another machine, behind a
+            # hackrf-agent; this one never opens a device itself.
+            return live_profiles.RemoteSource(
+                self.live.agent,
+                self.live.agent_token_file.read_text().strip(),
+                tuning.center_hz,
+                tuning.sample_rate_hz,
+                tuning.lna_gain_db,
+                tuning.vga_gain_db,
+                tuning.amp,
+            )
         return HackrfSource(
             cli._resolve_binary("hackrf_transfer"),
             tuning.center_hz,

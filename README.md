@@ -448,6 +448,37 @@ HackRF, `uv run python tools/webui_demo.py` runs the real service, feed,
 log, spectrum history and backend on simulated samples with made-up rows,
 and prints a sign-in token for `http://127.0.0.1:18766/`.
 
+## Split station: hackrf-agent
+
+The HackRF can sit on one machine while the processing runs on another,
+like a game panel and its nodes: **hackrf-agent** (`python -m
+hackrf_mcp.agent`, [`deploy/hackrf-agent.service`](deploy/hackrf-agent.service))
+runs where the HackRF is plugged in, owns it, and streams its raw samples;
+the live service on the worker reads them instead of opening a local
+device when `HACKRF_LIVE_AGENT=host:port` and
+`HACKRF_LIVE_AGENT_TOKEN_FILE` are set. Decoders, spectrum history, the
+log and the web UI then all run on the worker. The agent needs only
+Python's standard library and `hackrf_transfer`.
+
+- **What crosses the network:** int8 I/Q at 2 bytes a sample, so 38 Mbit/s
+  at 2.4 MS/s and 160 Mbit/s for a 10 MHz watch. Use a wired LAN.
+- **Protocol:** one JSON request line, then frames (samples, or a JSON
+  notice: started, input power once a second, why a stream ended). A new
+  stream preempts the old one; the agent stops `hackrf_transfer` and waits
+  for it before opening the device again. Details are at the top of
+  `agent.py`.
+- **Access:** `HACKRF_AGENT_ALLOW` (addresses or networks) and a token
+  (`HACKRF_AGENT_TOKEN_FILE` or `HACKRF_AGENT_TOKEN_SHA256`). Requests are
+  typed fields, never a command line, and receive only. There is no TLS
+  and the samples carry everything the radio hears, so allow the worker's
+  address alone, in the agent and in the firewall.
+- **Trying it without hardware:** `tools/webui_demo.py --agent` runs an
+  agent over loopback with `tools/fake_hackrf_transfer.py`.
+
+Still to come: the MCP server's device tools through the agent, a worker
+container image, and the agent decoding locally whenever no worker is
+connected (see TODO.md).
+
 ## Adding a decoder
 
 Each protocol lives in one module in

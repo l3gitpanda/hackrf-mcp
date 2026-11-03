@@ -139,6 +139,12 @@ asyncio.run(main())
   profiles comes from `/api/registry`. `tests/test_web_static.py` checks
   these, and runs `node --check` and `tests/js/webui.test.mjs` when node
   is installed. `tools/webui_demo.py` runs it all on simulated data.
+- `src/hackrf_mcp/agent.py` — hackrf-agent, the split station's half next
+  to the HackRF: owns it and streams framed I/Q to a worker. Standard
+  library only (it must stay importable without numpy); typed receive-only
+  requests, never argv. `live_profiles.RemoteSource` is its client, used
+  when `HACKRF_LIVE_AGENT` is set. `tests/test_agent.py` runs both over
+  loopback TCP with a fake `hackrf_transfer` (run unsandboxed).
 - `src/hackrf_mcp/live_client.py` — the MCP server's side of the socket.
   `_run_on_device()` pauses the live service around every device call.
 

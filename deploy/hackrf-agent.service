@@ -1,0 +1,55 @@
+# systemd unit for hackrf-agent (src/hackrf_mcp/agent.py), the half of a
+# split station that runs where the HackRF is plugged in: it owns the device
+# and streams its samples to a worker on another machine, whose live service
+# has HACKRF_LIVE_AGENT=<this host>:<port> and the same token.
+#
+# Install:
+#   sudo cp deploy/hackrf-agent.service /etc/systemd/system/
+#   sudo systemctl edit hackrf-agent     # set User=/Group= to hackrf-mcp's
+#   (put the settings below in /etc/hackrf-mcp/agent.env, mode 0640)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now hackrf-agent
+#
+# /etc/hackrf-mcp/agent.env:
+#   HACKRF_AGENT_HOST=0.0.0.0
+#   HACKRF_AGENT_PORT=8767
+#   HACKRF_AGENT_ALLOW=192.0.2.10            # the worker, and nothing else
+#   HACKRF_AGENT_TOKEN_FILE=/etc/hackrf-mcp/agent-token   # or ..._TOKEN_SHA256
+#
+# Allow the port in the firewall for the worker's address only: there is
+# no TLS, and the samples carry everything the radio hears. One HackRF: a
+# local hackrf-live on this machine must not decode while the agent streams.
+
+[Unit]
+Description=hackrf-agent (the HackRF's samples for a worker elsewhere)
+After=network.target
+
+[Service]
+Type=simple
+User=hackrf
+Group=hackrf
+SupplementaryGroups=plugdev
+EnvironmentFile=/etc/hackrf-mcp/agent.env
+ExecStart=/opt/hackrf-mcp/.venv/bin/python -m hackrf_mcp.agent
+Restart=always
+RestartSec=5
+
+# hackrf_transfer and the copy to the network; no decoding happens here.
+MemoryHigh=96M
+MemoryMax=160M
+CPUQuota=100%
+Nice=-2
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=200
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

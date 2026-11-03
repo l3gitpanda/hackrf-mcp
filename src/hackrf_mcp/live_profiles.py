@@ -20,9 +20,11 @@ module holds what they share:
 from __future__ import annotations
 
 import collections
+import json
 import re
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import threading
@@ -442,6 +444,103 @@ class Source:
         return h
 
 
+class RemoteSource(Source):
+    """The HackRF's samples from a hackrf-agent on another machine (see
+    hackrf_mcp.agent): the same int8 I/Q as HackrfSource, sent in frames.
+    The agent runs hackrf_transfer and stops it when this connection
+    closes; stop() returns once the connection is closed, and the agent
+    frees the device on its side (a new stream waits for that)."""
+
+    def __init__(self, address: tuple[str, int], token: str, center_hz: int, sample_rate_hz: int, lna: int, vga: int, amp: bool):
+        super().__init__()
+        self.address = address
+        self.token = token
+        self.sample_rate_hz = sample_rate_hz
+        self.request = {
+            "cmd": "stream",
+            "center_hz": int(center_hz),
+            "sample_rate_hz": int(sample_rate_hz),
+            "lna_gain_db": int(lna),
+            "vga_gain_db": int(vga),
+            "amp": bool(amp),
+        }
+        self.sock = None
+        self.thread: threading.Thread | None = None
+        self.power: float | None = None
+        self.end_reason: str | None = None
+        self._stopping = False
+
+    def start(self, consumer: Callable[[bytes], None]) -> None:
+        from hackrf_mcp import agent
+
+        self.started = time.monotonic()
+        try:
+            self.sock = agent.request(self.address, self.token, self.request)
+            self.sock.settimeout(15)  # samples arrive many times a second
+        except OSError as exc:
+            self.error = f"could not reach the hackrf-agent at {self.address[0]}:{self.address[1]}: {exc}"
+            self.finished.set()
+            return
+        self.thread = threading.Thread(target=self._pump, args=(consumer,), daemon=True, name="remote-source")
+        self.thread.start()
+
+    def _pump(self, consumer: Callable[[bytes], None]) -> None:
+        from hackrf_mcp import agent
+
+        try:
+            while not self._stopping:
+                got = agent.read_frame(self.sock)
+                if got is None:
+                    # Keep the agent's own reason (a refusal, an end) if it gave one.
+                    if not self._stopping and self.error is None:
+                        self.error = "the hackrf-agent closed the stream"
+                    break
+                kind, body = got
+                if kind == agent.SAMPLES:
+                    if self.end_reason is not None:
+                        continue
+                    self._count(len(body))
+                    self._deliver(consumer, body)
+                elif kind == agent.NOTICE:
+                    msg = json.loads(body)
+                    t = msg.get("type")
+                    if t == "power":
+                        self.power = msg.get("dbfs")
+                    elif t == "end":
+                        self.end_reason = msg.get("reason") or "ended"
+                        self.error = f"the hackrf-agent ended the stream: {self.end_reason}"
+                    elif t == "error":
+                        self.error = f"the hackrf-agent refused: {msg.get('error')}"
+        except Exception as exc:
+            if not self._stopping:
+                self.error = f"stream from the hackrf-agent stopped: {exc!r}"
+        finally:
+            self.finished.set()
+
+    def level_dbfs(self) -> float | None:
+        return self.power
+
+    def stop(self) -> None:
+        self._stopping = True
+        if self.sock is not None:
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.sock.close()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+
+    def failure(self) -> str | None:
+        return None if self._stopping else self.error
+
+    def health(self) -> dict:
+        h = super().health()
+        h["input_power_dbfs"] = self.level_dbfs()
+        h["agent"] = f"{self.address[0]}:{self.address[1]}"
+        return h
+
+
 class HackrfSource(Source):
     """`hackrf_transfer -r -`: the HackRF's samples on a pipe. Stopping it
     sends SIGINT, which makes hackrf_transfer close the device cleanly, and
@@ -701,7 +800,10 @@ def wav_header(rate: int) -> bytes:
 class Pipeline:
     """One running profile: a source, its decoder processes, and whatever
     turns their output into rows. start() and stop() are called from the
-    service's supervisor; stop() releases the HackRF before it returns."""
+    service's supervisor. stop() releases the HackRF before it returns when
+    the HackRF is on this machine (HackrfSource); with a hackrf-agent
+    (RemoteSource) it closes the connection, and the agent frees the device
+    on its side before it opens it for anyone else."""
 
     def __init__(self, tuning: Tuning, ctx: Context):
         self.tuning = tuning

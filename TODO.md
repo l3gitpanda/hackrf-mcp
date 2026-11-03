@@ -104,7 +104,10 @@ after the owner approves.
    2022-07-01, parsed from the FCC's PDF by `tools/fcc_us_table.py` into
    `fcc-us-allocations.json`, shown under the strip's pointer readout; to
    refresh it, download a newer PDF and run the two tools), 11.
-   **Watch a range** (done, below), then Summaries, Alerts and Plugins.
+   **Watch a range** (done, below), 12. **Bands** (done: `/bands`,
+   `bands.js`, `bandsearch.js`: search the plan and the official table by
+   word, part, frequency or range, and open a band in Watch a range), then
+   Summaries, Alerts and Plugins.
 
 ### Watching a custom range (milestone 11)
 

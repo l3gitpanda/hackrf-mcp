@@ -174,3 +174,14 @@ body{margin:0;background:#0a0e13}
 .ctl-watch .wfreq{width:7.5em}
 .ctl-watch .sm{font-size:12px}
 .ctl-watch #watch-range{font-weight:600}
+/* The Bands screen */
+.bsearch{display:flex;align-items:center;gap:12px;padding:12px}
+.bsearch .bq{flex:1 1 auto;max-width:640px;font-size:15px;min-height:38px}
+.bcats{padding:0 12px 10px;gap:6px}
+.blist{max-height:min(70vh,760px);overflow:auto}
+.bres{display:grid;grid-template-columns:12px minmax(0,1fr) auto;gap:4px 12px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line)}
+.bres.off{grid-template-columns:116px minmax(0,1fr) auto}
+.bres .sw{width:12px;height:12px;border-radius:3px;background:var(--bc)}
+.bres .bmain{min-width:0}
+.bres .sm{font-size:12px}
+.blist .empty{padding:14px 12px;margin:0;color:var(--muted)}

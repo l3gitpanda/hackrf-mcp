@@ -270,9 +270,14 @@ def test_the_history_page_and_links_into_it(env):
     page = c.get("/history", headers=BEARER)
     assert page.status_code == 200 and page.headers["cache-control"] == "no-cache"
     assert "js/history.js" in page.text and 'aria-current="page">History' in page.text
-    # Every screen links to it now.
+    # Every screen links to it now, and to Bands.
     for path in ("/", "/log", "/map"):
         assert '<a href="/history">History</a>' in c.get(path, headers=BEARER).text
+    for path in ("/", "/log", "/map", "/history"):
+        assert '<a href="/bands">Bands</a>' in c.get(path, headers=BEARER).text
+    bands = c.get("/bands", headers=BEARER)
+    assert bands.status_code == 200 and "js/bands.js" in bands.text and bands.headers["cache-control"] == "no-cache"
+    assert TestClient(gate, follow_redirects=False).get("/bands").status_code == 303
 
 
 def pmtiles_header(minz=0, maxz=14, bounds=(-121.7, 31.6, -116.4, 35.1), meta=None) -> bytes:

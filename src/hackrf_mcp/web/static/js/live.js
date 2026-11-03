@@ -844,6 +844,16 @@ function buildWatch() {
       showCtlError(e.message);
     }
   });
+  // Opened from the Bands screen: the range is filled in; taking the
+  // receiver is still a click on Watch.
+  const u = new URLSearchParams(location.search);
+  if (u.get('watch_from')) {
+    $('w-from').value = u.get('watch_from');
+    $('w-to').value = u.get('watch_to') || '';
+    $('watch-hint').textContent = 'Press Watch to tune there; decoding pauses until the time runs out or you stop.';
+    $('watch-box').scrollIntoView({ block: 'center' });
+    $('btn-watch').focus();
+  }
   // Drag the waterfall sideways to scroll while watching.
   const plot = S.wf.wfPlot;
   let x0 = null;

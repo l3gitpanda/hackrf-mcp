@@ -396,6 +396,13 @@ prints it only as images), parsed from the FCC's PDF by
 `web/static/fcc-us-allocations.json`. Live's **Bands** button hides the
 strip, and History has a view toggle.
 
+**Bands.** The **Bands** screen (`/bands`) searches the band plan and the
+official allocations as you type: words (marine, weather, radio astronomy),
+an FCC rule part (part 97), a frequency (162.4, 1.09 GHz, 535 kHz) or a
+range (88-108), with chips for the kinds of service. The search is kept in
+the address. Each band's **Watch** fills in the Live screen's Watch a range
+(taking the receiver is still a click there).
+
 **Watching a range.** The Live screen's **Watch a range** takes any range
 the HackRF receives (1 MHz-6 GHz), up to 10 MHz at once: type from and to
 in MHz, and it tunes there with the waterfall only, nothing decoded.

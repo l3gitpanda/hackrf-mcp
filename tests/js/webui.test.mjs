@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
 import { AutoLevel, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
+import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
   const c = assignColors([{ name: 'adsb' }, { name: 'ais', color: PALETTE[0] }, { name: 'acars' }]);
@@ -107,4 +108,57 @@ test('a live map forgets fixes older than its window', () => {
   prune(targets, 10);
   assert.deepEqual([...targets.keys()], ['a']);
   assert.deepEqual(targets.get('a').track.map((p) => p.ts), [50]);
+});
+
+test('history days are UTC days', () => {
+  assert.deepEqual(dayBounds('2026-11-03'), [1793664000, 1793750400]);
+  assert.equal(dayBounds('11/03/2026'), null);
+  assert.equal(dayOf(1793664000), '2026-11-03');
+  assert.equal(dayOf(1793750399.5), '2026-11-03');
+});
+
+test('the steps of a day are its spectrum segments, clipped, the last one running to now', () => {
+  const segs = [
+    { id: 2, profile: 'b', ts_start: 1600, ts_end: 2200 },
+    { id: 1, profile: 'a', ts_start: 900, ts_end: 1600 },
+    { id: 3, profile: 'a', ts_start: 2200, ts_end: null },
+    { id: 0, profile: 'a', ts_start: 100, ts_end: 900 },
+  ];
+  const steps = stepsOf(segs, 1000, 3000, 2500);
+  assert.deepEqual(steps.map((s) => [s.id, s.a, s.b, s.live]), [[1, 1000, 1600, false], [2, 1600, 2200, false], [3, 2200, 2500, true]]);
+  assert.equal(stepAt(steps, 1700), 1);
+  assert.equal(stepAt(steps, 2900), 2);
+  assert.equal(stepAt([], 2900), -1);
+});
+
+test('gaps are the stretches of coverage that are not running, clipped to the step', () => {
+  const cov = [
+    { state: 'running', profile: 'a', from: 0, to: 100 },
+    { state: 'paused', profile: null, from: 100, to: 130 },
+    { state: 'running', profile: 'a', from: 130, to: 500 },
+    { state: 'error', profile: 'a', from: 500, to: 700 },
+  ];
+  assert.deepEqual(gapsIn(cov, 50, 600).map((g) => [g.state, g.a, g.b]), [['paused', 100, 130], ['error', 500, 600]]);
+  assert.match(gapsIn(cov, 50, 600)[0].label, /paused/);
+});
+
+test('channel level is the strongest bin near each channel, the floor the 20th percentile', () => {
+  // 10 bins over 100-110 Hz; a channel at 103 Hz, one outside the band.
+  const row = Float32Array.from([-90, -91, -92, -40, -93, -94, -95, -96, -97, -98]);
+  const lv = channelLevels([row], 105, 10, [103.5, 200], 0.6);
+  assert.deepEqual(lv.channels, [103.5]);
+  assert.deepEqual(lv.levels, [[-40]]);
+  assert.equal(lv.floor[0], -97);
+});
+
+test('chart paths lift the pen across gaps and clamp to the box', () => {
+  const d = pathOf([0, 1, 2, 10, 11], [-50, -60, NaN, -200, -50], 0, 11, -40, -100, 110, 60, 3);
+  assert.equal(d, 'M0.0,10.0 L10.0,20.0 M100.0,60.0 L110.0,10.0');
+});
+
+test('time ticks pick a step that keeps their number down', () => {
+  const t = timeTicks(0, 600, 10);
+  assert.equal(t.step, 60);
+  assert.equal(t.ticks.length, 11 - 0);
+  assert.equal(timeTicks(0, 86400, 10).step, 10800);
 });

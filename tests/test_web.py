@@ -263,6 +263,18 @@ def test_log_paging_histogram_coverage_and_the_log_page(env):
     assert page.status_code == 200 and "log.js" in page.text and page.headers["cache-control"] == "no-cache"
 
 
+def test_the_history_page_and_links_into_it(env):
+    _, gate, _ = env
+    assert TestClient(gate, follow_redirects=False).get("/history").status_code == 303  # needs sign-in
+    c = TestClient(gate)
+    page = c.get("/history", headers=BEARER)
+    assert page.status_code == 200 and page.headers["cache-control"] == "no-cache"
+    assert "js/history.js" in page.text and 'aria-current="page">History' in page.text
+    # Every screen links to it now.
+    for path in ("/", "/log", "/map"):
+        assert '<a href="/history">History</a>' in c.get(path, headers=BEARER).text
+
+
 def pmtiles_header(minz=0, maxz=14, bounds=(-121.7, 31.6, -116.4, 35.1), meta=None) -> bytes:
     """A PMTiles v3 header and gzipped metadata, enough for basemap.info()."""
     raw = gzip.compress(json.dumps(meta or {}).encode())

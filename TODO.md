@@ -92,8 +92,13 @@ after the owner approves.
    OpenStreetMap extract kept on the station, `web/basemap.py`, drawn by
    vendored protomaps-leaflet. tar1090 was not used: it is GPL, installs
    its own web server as root, shows only live ADS-B, and ADS-B here runs
-   half of a rotation, so it would be empty half the time), then History,
-   Summaries, Alerts and Plugins. History could add a per-minute roll-up of
+   half of a rotation, so it would be empty half the time), 8. **History**
+   (done: `/history`, `history.js`, `historyutil.js`, from existing routes:
+   spectrum segments as rotation steps, the downsampled waterfall, the log
+   and its histogram, coverage for gaps; channel levels are computed in the
+   browser from the waterfall's peak rows at the profile's default
+   channels, since segments don't record a run's custom frequencies), then
+   Summaries, Alerts and Plugins. The Map's History mode could add a per-minute roll-up of
    positions: thinning a week of fixes reads all of them (about a second
    on a desktop, several on the QNAP). On real data the Map's labels pile
    up over a busy approach at the zoom that fits the whole area; hiding

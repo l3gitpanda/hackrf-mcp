@@ -88,11 +88,14 @@ after the owner approves.
    against `tools/webui_demo.py`), 6. **Log screen** (done: `/log`,
    `log.js`, `/api/log/histogram`, `/api/coverage`), 7. **Map** (done:
    `/map`, `map.js`, `maputil.js`, vendored Leaflet over `positions`, live
-   and History with a scrubber; no tile server, an optional operator
-   `basemap.geojson`. tar1090 was not used: it is GPL, installs its own web
-   server as root, shows only live ADS-B, and ADS-B here runs half of a
-   rotation, so it would be empty half the time), then History, Summaries,
-   Alerts and Plugins.
+   and History with a scrubber and thinning for long ranges; the base map an
+   OpenStreetMap extract kept on the station, `web/basemap.py`, drawn by
+   vendored protomaps-leaflet. tar1090 was not used: it is GPL, installs
+   its own web server as root, shows only live ADS-B, and ADS-B here runs
+   half of a rotation, so it would be empty half the time), then History,
+   Summaries, Alerts and Plugins. History could add a per-minute roll-up of
+   positions: thinning a week of fixes reads all of them (about a second
+   on a desktop, several on the QNAP).
 
 ### Constraints
 
@@ -115,7 +118,8 @@ after the owner approves.
   through FastMCP) serving the log over a JSON API and the live feed over a
   websocket, as a third unit or inside `hackrf-mcp`'s HTTP server on another
   path.
-- **Frontend:** plain modules, with a map library (Leaflet, without tiles),
+- **Frontend:** plain modules, with a map library (Leaflet, with vector
+  tiles from a local extract),
   a canvas waterfall (the OpenWebRX and WebSDR approach: append rows to a
   scrolling canvas) and a table/timeline view.
 - **Extension points:** panels registered like protocols. A protocol module

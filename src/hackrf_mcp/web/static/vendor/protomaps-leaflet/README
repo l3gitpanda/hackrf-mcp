@@ -1,0 +1,7 @@
+protomaps-leaflet 5.1.0 (BSD 3-Clause, see LICENSE), from the npm package
+protomaps-leaflet@5.1.0 (tarball sha1 4e5cfd270134b60653254b492a7f2c76aac959f9):
+dist/protomaps-leaflet.js, unchanged (its source map is left out). It draws the
+Map screen's base map, vector tiles read from hackrf-web in byte ranges.
+tests/test_web_static.py checks these digests:
+
+26af014f7b1af308ec120b791cff76657bb9c3383633b52033e6edf9e5e4cdb5  protomaps-leaflet.js

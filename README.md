@@ -341,27 +341,47 @@ protocol module declares a map view (ADS-B aircraft, AIS ships) from the
 `positions` table: live, with arrows turned to the heading, labels, tracks
 of the last 10 minutes to 3 hours and faded markers after 5 minutes without
 a fix; or in History, for any range up to 7 days, with a scrubber over the
-receiver's coverage and playback. A selected target shows its fields, its
-altitude over the track and a link to its rows in the Log. The map is
-[Leaflet](https://leafletjs.com/) 1.9.4, served from `web/static/vendor/`
-(BSD-2-Clause, see its `LICENSE`), with no tiles from anywhere: a lat/lon
-grid, range rings 25 to 200 km around `HACKRF_LIVE_RECEIVER` when it is
-set, and an optional base map from a GeoJSON file the operator puts at
-`<state dir>/web/basemap.geojson` (for example coastlines and borders from
-Natural Earth, clipped to the area; nothing in the repository says where
-the station is). It never opens the HackRF. It reads the live log and the spectrum history, relays the live
+receiver's coverage and playback (long ranges come back thinned to one fix
+per target every 20 s to an hour, and the screen says so). A selected
+target shows its fields, its altitude over the track and a link to its rows
+in the Log. The map is [Leaflet](https://leafletjs.com/) 1.9.4 with a
+lat/lon grid and range rings 25 to 200 km around `HACKRF_LIVE_RECEIVER`
+when it is set. Nothing is loaded from other sites when it is viewed.
+
+**Base map.** Streets, coast and places come from an extract of
+OpenStreetMap vector tiles that the operator makes once and keeps on the
+station, never in the repository (it says where the station is):
+
+```bash
+uv run --with pmtiles python -m hackrf_mcp.web.basemap \
+    --from-log /var/lib/hackrf-mcp/live/live.db \
+    --out /var/lib/hackrf-mcp/web/basemap.pmtiles
+```
+
+It reads only what it needs from the newest [Protomaps](https://protomaps.com/)
+daily build with HTTP range requests: the wide area (the positions in the
+log, or `--around LAT,LON`, or `--wide W,S,E,N`) down to zoom 11 for towns,
+main roads and coast, and the core where most targets are down to zoom 14
+for streets. For a coastal metro area that is about 86 MiB and 15 seconds;
+`--dry-run` reports the size first. hackrf-web serves the file in byte
+ranges at `/api/basemap.pmtiles` and the browser draws it with the vendored
+[protomaps-leaflet](https://github.com/protomaps/protomaps-leaflet) 5.1.0
+(BSD-3-Clause). Map data © OpenStreetMap contributors (ODbL), shown on the
+map. Without the file the map has the grid alone.
+
+It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,
 switches and stops profiles over the control socket, as the MCP tools do.
 
 | Route | |
 |---|---|
-| `GET /api/registry` | profiles and decoders from the registries, with each profile's views (map, table, timeline), the receiver's position if set, and whether there is a base map |
+| `GET /api/registry` | profiles and decoders from the registries, with each profile's views (map, table, timeline), the receiver's position if set, and the base map's zooms and bounds, if there is one |
 | `GET /api/status` | the live service's status, and the memory and CPU of `hackrf-live` and `hackrf-web` |
 | `GET /api/log`, `/api/summary`, `/api/events` | the log, as `hackrf_live_search` and `hackrf_live_summary` read it; `/api/log` takes several `profiles` and pages with `before_id` |
 | `GET /api/log/histogram`, `/api/coverage` | matching rows per time bucket and profile; what the receiver was doing (running which profile, paused, error, stopped, down), rebuilt from the events |
-| `GET /api/positions` | map-track points |
-| `GET /api/basemap` | the operator's `basemap.geojson`, or 404 when there is none (`/api/registry` says which) |
+| `GET /api/positions` | map-track points; when a range holds more than `limit`, one fix per target per `step` seconds (the response gives `step`) |
+| `GET /api/basemap.pmtiles` | the operator's base map, in byte ranges, or 404 when there is none |
 | `GET /api/spectrum/segments`, `/api/spectrum?segment=` | spectrum history, downsampled to the buckets asked for |
 | `POST /api/live/start`, `/api/live/stop` | the same requests as `hackrf_live_start` / `hackrf_live_stop` |
 | `WS /ws/live` | everything as it happens, and status every few seconds |

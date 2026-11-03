@@ -95,7 +95,7 @@ body{margin:0;background:#0a0e13}
 .mk.stale{opacity:.45}
 .mk.sel .ico{color:#fff}
 .mk.nolabel .tl2{display:none}
-.mapnote2{position:absolute;right:10px;top:10px;z-index:500;max-width:min(420px,70%);font-size:11.5px;color:var(--text2);background:rgba(10,14,19,.78);border:1px solid var(--line);border-radius:5px;padding:5px 8px;pointer-events:none}
+.mapnote2{margin:0;font-size:11.5px;color:var(--text2);padding:6px 12px;border-top:1px solid var(--line)}
 .g-map2{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;align-items:start}
 @container (max-width:1000px){.g-map2{grid-template-columns:minmax(0,1fr)}}
 .altspark{width:100%;height:40px}

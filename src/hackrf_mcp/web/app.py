@@ -11,9 +11,10 @@ and the static UI.
                                  running (which profile), paused, error, idle
   GET  /api/summary              one entry per subject (as hackrf_live_summary)
   GET  /api/events               starts, stops, pauses, errors
-  GET  /api/positions            map-track points
-  GET  /api/basemap              the map's basemap (GeoJSON), if the operator
-                                 has put one in the web state directory
+  GET  /api/positions            map-track points, thinned for long ranges
+  GET  /api/basemap.pmtiles      the map's base map (vector tiles, byte
+                                 ranges), if the operator has put one in the
+                                 web state directory (see web/basemap.py)
   GET  /api/spectrum/segments    spectrum history segments in a range
   GET  /api/spectrum             one segment's waterfall, downsampled
   POST /api/live/start           start or switch a profile, or a rotation
@@ -52,6 +53,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum
 from hackrf_mcp.settings import LiveSettings, WebSettings
+from hackrf_mcp.web import basemap
 from hackrf_mcp.web.hub import FeedHub
 from hackrf_mcp.web.sessions import COOKIE, Sessions
 
@@ -71,6 +73,8 @@ SECURITY_HEADERS = [
 CGROUP = Path("/sys/fs/cgroup/system.slice")
 STATUS_PUSH_S = 3.0
 STATUS_CACHE_S = 2.0
+# Seconds between the fixes kept per target when a range of positions is thinned.
+POSITION_STEPS = (20, 30, 60, 120, 300, 600, 1800, 3600)
 
 
 # --- Reading helpers -----------------------------------------------------------
@@ -308,14 +312,15 @@ def create_app(
     async def map_page(request: Request) -> Response:
         return FileResponse(STATIC / "map.html")
 
-    basemap_path = web.state_path(live) / "basemap.geojson"
+    basemap_path = web.state_path(live) / basemap.FILENAME
 
     async def api_basemap(request: Request) -> Response:
-        # Nothing is fetched from elsewhere: the map draws a basemap only if
-        # the operator has placed one here.
+        # Nothing is fetched from elsewhere: the map draws a base map only if
+        # the operator has placed one here. The browser reads it in byte
+        # ranges (FileResponse answers Range requests).
         if not basemap_path.is_file():
-            return error(404, f"no basemap: put a GeoJSON file at {basemap_path}")
-        return FileResponse(basemap_path, media_type="application/geo+json")
+            return error(404, f"no base map: extract one into {basemap_path} (python -m hackrf_mcp.web.basemap)")
+        return FileResponse(basemap_path, media_type="application/vnd.pmtiles")
 
     async def login_page(request: Request) -> Response:
         return FileResponse(STATIC / "login.html")
@@ -344,7 +349,7 @@ def create_app(
     # --- the API
 
     def api_registry(request: Request) -> Response:
-        return JSONResponse({**registry_json(live), "basemap": basemap_path.is_file()})
+        return JSONResponse({**registry_json(live), "basemap": basemap.info(basemap_path)})
 
     status_cache: dict = {"at": 0.0, "value": None}
 
@@ -466,16 +471,31 @@ def create_app(
     @guarded
     def api_positions(request: Request) -> Response:
         now = time.time()
+        q = {
+            "since": _when(request, "since", now),
+            "until": _when(request, "until", now),
+            "profile": request.query_params.get("profile") or None,
+            "subject": request.query_params.get("subject") or None,
+        }
+        limit = _int(request, "limit", 10_000, 1, 50_000)
         with closing(reader()) as conn:
-            rows = live_log.positions(
-                conn,
-                since=_when(request, "since", now),
-                until=_when(request, "until", now),
-                profile=request.query_params.get("profile") or None,
-                subject=request.query_params.get("subject") or None,
-                limit=_int(request, "limit", 10_000, 1, 50_000),
+            step = None
+            total = live_log.count_positions(conn, **q)
+            if total <= limit:
+                rows = live_log.positions(conn, **q, limit=limit)
+            else:
+                # More fixes than asked for: thin every track to one fix per
+                # step seconds rather than cut the range short. Fixes come at
+                # most every 10 s per target, so start near the ratio.
+                need = 10 * total / limit
+                for step in [s for s in POSITION_STEPS if s >= need] or POSITION_STEPS[-1:]:
+                    rows = live_log.positions(conn, **q, limit=limit + 1, step=step)
+                    if len(rows) <= limit:
+                        break
+            truncated = len(rows) > limit
+            return JSONResponse(
+                {"positions": [dict(r) for r in rows[:limit]], "step": step, "truncated": truncated}
             )
-            return JSONResponse({"positions": [dict(r) for r in rows]})
 
     @guarded
     def api_segments(request: Request) -> Response:
@@ -617,7 +637,7 @@ def create_app(
         Route("/api/summary", api_summary),
         Route("/api/events", api_events),
         Route("/api/positions", api_positions),
-        Route("/api/basemap", api_basemap),
+        Route("/api/basemap.pmtiles", api_basemap),
         Route("/api/spectrum/segments", api_segments),
         Route("/api/spectrum", api_spectrum),
         Route("/api/live/start", api_start, methods=["POST"]),

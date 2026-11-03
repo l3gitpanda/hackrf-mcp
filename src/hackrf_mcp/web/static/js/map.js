@@ -2,8 +2,8 @@
 // (the registry says which, and which fields hold lat, lon, altitude,
 // heading and the label), drawn from the log's positions table, live or
 // for a past range, with tracks. Leaflet (vendored, the global L) does pan
-// and zoom; no tiles are loaded from anywhere: a basemap is drawn only if
-// the operator has put one on the server (/api/basemap).
+// and zoom. Nothing is loaded from other sites: the base map is drawn only
+// if the operator has put one on the server (/api/basemap.pmtiles).
 
 import { api, LiveSocket } from './api.js';
 import { paintAppBar, paintClock } from './appbar.js';
@@ -134,6 +134,8 @@ async function loadRange(since, until) {
     api(`/api/positions?${q}&limit=50000`),
     ...S.mapProfiles.map((p) => api(`/api/summary?profile=${encodeURIComponent(p)}&${q}&limit=2000`)),
   ]);
+  S.step = pos.step;
+  S.truncated = pos.truncated;
   for (const p of pos.positions) {
     if (!S.profiles[p.profile] || !view(p.profile)) continue;
     const t = target(p.profile, p.subject);
@@ -227,7 +229,9 @@ async function loadHistory() {
 
 function renderCursorLabel() {
   $('t-label').textContent = `${utc(S.cursor)} UTC`;
-  $('t-sub').textContent = new Date(S.cursor * 1000).toISOString().slice(0, 10);
+  // Long ranges come back thinned (one fix per target per step seconds).
+  const thin = S.step ? ` · a fix per ${S.step >= 60 ? `${S.step / 60} min` : `${S.step} s`}${S.truncated ? ', cut short' : ''}` : '';
+  $('t-sub').textContent = new Date(S.cursor * 1000).toISOString().slice(0, 10) + thin;
 }
 
 function togglePlay() {
@@ -375,7 +379,13 @@ function fit() {
   const pts = [];
   for (const t of S.targets.values()) for (const p of t.track) pts.push([p.lat, p.lon]);
   if (S.registry.receiver) pts.push(S.registry.receiver);
-  if (!pts.length) return;
+  if (!pts.length) {
+    // Nothing logged yet: show the base map's busiest part, if there is one.
+    const b = S.registry.basemap;
+    const box = b && (b.core || b.bounds);
+    if (box) S.map.fitBounds([[box[1], box[0]], [box[3], box[2]]]);
+    return;
+  }
   S.map.fitBounds(L.latLngBounds(pts).pad(0.08), { maxZoom: 11 });
   S.fitted = true;
 }
@@ -387,7 +397,7 @@ function drawGrid() {
   const span = Math.max(b.getEast() - b.getWest(), b.getNorth() - b.getSouth());
   const steps = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30];
   const step = steps.find((s) => span / s <= 12) || 30;
-  const style = { color: '#2a3647', weight: 1, opacity: 0.8, interactive: false };
+  const style = { color: '#2a3647', weight: 1, opacity: S.registry.basemap ? 0.45 : 0.8, interactive: false };
   for (let lat = Math.ceil(b.getSouth() / step) * step; lat <= b.getNorth(); lat += step) {
     S.layers.grid.addLayer(L.polyline([[lat, b.getWest() - span], [lat, b.getEast() + span]], style));
   }
@@ -396,23 +406,24 @@ function drawGrid() {
   }
 }
 
-async function loadBasemap() {
-  if (!S.registry.basemap) return; // none on the server: the graticule alone
-  let geo;
-  try {
-    geo = await api('/api/basemap');
-  } catch (e) {
-    return; // none on the server: the graticule alone
+// The operator's base map, if there is one: OpenStreetMap vector tiles that
+// the browser reads from hackrf-web in byte ranges and draws itself
+// (protomaps-leaflet, the global protomapsL). The archive covers its whole
+// area down to full_zoom and only a core below that, so a layer of the whole
+// area, stretched past full_zoom, lies under a layer of the core's detail
+// that asks for nothing outside the core. protomaps-leaflet draws each zoom
+// from the data one zoom up, hence the + 2.
+function loadBasemap() {
+  const b = S.registry.basemap;
+  if (!b || !window.protomapsL) return; // none on the server: the graticule alone
+  const opts = { url: '/api/basemap.pmtiles', flavor: 'dark', lang: 'en', noWrap: true };
+  window.protomapsL.leafletLayer({ ...opts, maxDataZoom: b.full_zoom, zIndex: 1 }).addTo(S.layers.base);
+  if (b.core && b.maxzoom > b.full_zoom) {
+    const [w, s, e, n] = b.core;
+    window.protomapsL
+      .leafletLayer({ ...opts, maxDataZoom: b.maxzoom, minZoom: b.full_zoom + 2, bounds: L.latLngBounds([s, w], [n, e]), zIndex: 2 })
+      .addTo(S.layers.base);
   }
-  L.geoJSON(geo, {
-    interactive: false,
-    style: (f) => {
-      const kind = (f.properties && (f.properties.kind || f.properties.featurecla || '')).toString().toLowerCase();
-      if (kind.includes('land')) return { color: '#3a4858', weight: 0.8, fillColor: '#0f141b', fillOpacity: 1 };
-      if (kind.includes('road')) return { color: '#1e2733', weight: 1, fill: false };
-      return { color: '#3a4858', weight: 1, fill: false };
-    },
-  }).addTo(S.layers.base);
 }
 
 function drawRings() {

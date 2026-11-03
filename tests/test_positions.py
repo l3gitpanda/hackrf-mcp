@@ -119,6 +119,23 @@ def test_positions_are_written_read_and_pruned_with_the_log(tmp_path):
     assert [r["ts"] for r in live_log.positions(conn)] == [960.0, 970.0]
 
 
+def test_positions_thinned_to_one_fix_per_target_per_step(tmp_path):
+    w = _writer(tmp_path)
+    fixes = [Position(1000.0 + 10 * i, "adsb", "A1", 33.9 + i / 1000, -118.4, None, None, None) for i in range(12)]
+    fixes += [Position(1005.0 + 10 * i, "adsb", "B2", 34.0, -118.0, None, None, None) for i in range(12)]
+    w.write_positions(fixes)
+    conn = live_log.open_reader(w.path)
+    assert live_log.count_positions(conn) == 24
+    assert live_log.count_positions(conn, since=1050, subject="a1") == 7
+    thin = live_log.positions(conn, step=60)
+    # Slices are whole multiples of 60 s (960, 1020, 1080): three per target
+    # over 1000-1115 s, and the last fix in each is kept.
+    assert [(r["subject"], r["ts"]) for r in thin] == [
+        ("A1", 1010.0), ("B2", 1015.0), ("A1", 1070.0), ("B2", 1075.0), ("A1", 1110.0), ("B2", 1115.0),
+    ]
+    assert [r["ts"] for r in live_log.positions(conn, subject="B2", step=60, limit=1)] == [1015.0]
+
+
 def test_size_pruning_takes_positions_older_than_the_oldest_row_left(tmp_path):
     w = _writer(tmp_path, max_bytes=1)
     w.write([Row(ts=float(t), profile="adsb", kind="aircraft", fields={}, subject="A1") for t in range(100)])

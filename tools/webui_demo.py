@@ -133,6 +133,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--token-file", help="write the sign-in token here instead of printing it")
     parser.add_argument("--dir", default="/tmp/hackrf-webui-demo", help="scratch directory, emptied at start")
+    parser.add_argument("--basemap", help="a base map extract to show (python -m hackrf_mcp.web.basemap)")
     args = parser.parse_args()
 
     found = lambda _: "/bin/true"  # noqa: E731
@@ -165,6 +166,11 @@ def main() -> None:
     threading.Thread(target=control.serve_forever, daemon=True).start()
     threading.Thread(target=svc.serve_forever, daemon=True).start()
     svc.handle({"cmd": "start", "schedule": [{"profile": "adsb", "minutes": 2}, {"profile": "ais", "minutes": 1}]})
+
+    if args.basemap:
+        state = settings.WebSettings().state_path(live)
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "basemap.pmtiles").symlink_to(Path(args.basemap).resolve())
 
     token = secrets.token_urlsafe(24)
     if args.token_file:

@@ -119,12 +119,15 @@ asyncio.run(main())
   `js/map.js`, `js/maputil.js`, `js/waterfall.js`, `js/appbar.js`,
   `js/util.js`, `js/api.js`), one HTML page per screen (`index.html`,
   `log.html`, `map.html`), and `hl.css` from the mockup plus `app.css`.
-  `vendor/leaflet/` is Leaflet 1.9.4 as published on npm, unmodified, with
-  its licence and digests (checked by `tests/test_web_static.py`); the
-  rules below apply to our scripts in `js/`, not to `vendor/`. The map loads no
-  tiles; a base map is the operator's `basemap.geojson` in the web state
-  directory, never a file in the repository (it would say where the
-  station is). Rules: no inline scripts, styles, style attributes
+  `vendor/leaflet/` (Leaflet 1.9.4) and `vendor/protomaps-leaflet/`
+  (5.1.0) are as published on npm, unmodified, with their licences and
+  digests (checked by `tests/test_web_static.py`); the rules that follow apply to
+  our scripts in `js/`, not to `vendor/`. The base map is a PMTiles extract
+  the operator makes with `web/basemap.py` (`python -m
+  hackrf_mcp.web.basemap`, needs `pmtiles`: `uv run --with pmtiles`) and
+  keeps in the web state directory, never in the repository (it says where
+  the station is). `tests/test_basemap.py` skips without `pmtiles`; run
+  `uv run --with pmtiles pytest` before changing it. Rules: no inline scripts, styles, style attributes
   or event handlers (the CSP forbids them; set styles through the CSSOM),
   nothing from other origins, and no protocol names: everything about
   profiles comes from `/api/registry`. `tests/test_web_static.py` checks

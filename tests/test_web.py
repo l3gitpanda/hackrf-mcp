@@ -2,8 +2,10 @@
 live websocket, with a stand-in control socket and no device."""
 
 import base64
+import gzip
 import hashlib
 import json
+import struct
 
 import numpy as np
 import pytest
@@ -211,6 +213,22 @@ def test_log_search_hides_pager_text_unless_the_operator_allows_it(env, tmp_path
     assert rows[0]["fields"]["message"] == SECRET_TEXT
 
 
+def test_long_ranges_of_positions_are_thinned_not_cut_short(env, monkeypatch):
+    live, gate, _ = env
+    w = LiveLogWriter(live.db_path, 86400 * 365 * 100, 1 << 30, 0)
+    w.write_positions([Position(2000.0 + 10 * i, "adsb", "C3", 34.0, -118.0 + i / 1000, None, None, None) for i in range(60)])
+    c = TestClient(gate)
+    full = c.get("/api/positions", params={"since": "1990", "subject": "C3"}, headers=BEARER).json()
+    assert len(full["positions"]) == 60 and full["step"] is None and not full["truncated"]
+    thin = c.get("/api/positions", params={"since": "1990", "subject": "C3", "limit": "21"}, headers=BEARER).json()
+    # 2000-2590 s, a fix every 10 s, at most 21 wanted: one per 30 s, to the end of the range.
+    assert thin["step"] == 30 and not thin["truncated"]
+    assert len(thin["positions"]) == 21 and thin["positions"][-1]["ts"] == 2590.0
+    monkeypatch.setattr(web_app, "POSITION_STEPS", (20,))
+    cut = c.get("/api/positions", params={"since": "1990", "subject": "C3", "limit": "21"}, headers=BEARER).json()
+    assert cut["step"] == 20 and cut["truncated"] and len(cut["positions"]) == 21
+
+
 def test_events_positions_and_bad_parameters(env):
     _, gate, _ = env
     c = TestClient(gate)
@@ -245,23 +263,50 @@ def test_log_paging_histogram_coverage_and_the_log_page(env):
     assert page.status_code == 200 and "log.js" in page.text and page.headers["cache-control"] == "no-cache"
 
 
+def pmtiles_header(minz=0, maxz=14, bounds=(-121.7, 31.6, -116.4, 35.1), meta=None) -> bytes:
+    """A PMTiles v3 header and gzipped metadata, enough for basemap.info()."""
+    raw = gzip.compress(json.dumps(meta or {}).encode())
+    h = bytearray(127)
+    h[:8] = b"PMTiles\x03"
+    struct.pack_into("<QQ", h, 24, 127, len(raw))
+    h[97] = 2  # gzip
+    h[100], h[101] = minz, maxz
+    struct.pack_into("<iiii", h, 102, *(round(v * 1e7) for v in bounds))
+    return bytes(h) + raw
+
+
 def test_the_map_page_basemap_and_receiver(env, tmp_path):
     live, gate, _ = env
     c = TestClient(gate)
-    assert c.get("/map", headers=BEARER).status_code == 200
-    assert "leaflet.js" in c.get("/map", headers=BEARER).text
+    page = c.get("/map", headers=BEARER).text
+    assert "leaflet.js" in page and "protomaps-leaflet.js" in page
     assert c.get("/static/vendor/leaflet/leaflet.js", headers=BEARER).status_code == 200
-    # No basemap until the operator puts one in the web state directory.
-    r = c.get("/api/basemap", headers=BEARER)
-    assert r.status_code == 404 and "basemap.geojson" in r.json()["error"]
-    assert c.get("/api/registry", headers=BEARER).json()["basemap"] is False
+    assert c.get("/static/vendor/protomaps-leaflet/protomaps-leaflet.js", headers=BEARER).status_code == 200
+    # No base map until the operator puts one in the web state directory.
+    r = c.get("/api/basemap.pmtiles", headers=BEARER)
+    assert r.status_code == 404 and "basemap.pmtiles" in r.json()["error"]
+    assert c.get("/api/registry", headers=BEARER).json()["basemap"] is None
     state = settings.WebSettings().state_path(live)
     state.mkdir(parents=True, exist_ok=True)
-    (state / "basemap.geojson").write_text('{"type": "FeatureCollection", "features": []}')
-    r = c.get("/api/basemap", headers=BEARER)
-    assert r.status_code == 200 and r.json()["type"] == "FeatureCollection"
-    assert c.get("/api/registry", headers=BEARER).json()["receiver"] is None
-    assert c.get("/api/registry", headers=BEARER).json()["basemap"] is True
+    body = pmtiles_header(meta={"hackrf_full_zoom": 11, "hackrf_core_bounds": [-119.0, 32.9, -117.3, 34.25]}) + bytes(range(256)) * 64
+    (state / "basemap.pmtiles").write_bytes(body)
+    # The browser reads it in byte ranges.
+    r = c.get("/api/basemap.pmtiles", headers={**BEARER, "Range": "bytes=127-1126"})
+    assert r.status_code == 206 and r.content == body[127:1127]
+    assert r.headers["content-range"] == f"bytes 127-1126/{len(body)}"
+    assert TestClient(gate).get("/api/basemap.pmtiles").status_code in (401, 303)
+    reg = c.get("/api/registry", headers=BEARER).json()
+    assert reg["receiver"] is None
+    assert reg["basemap"] == {
+        "minzoom": 0,
+        "maxzoom": 14,
+        "full_zoom": 11,
+        "bounds": [-121.7, 31.6, -116.4, 35.1],
+        "core": [-119.0, 32.9, -117.3, 34.25],
+    }
+    # Not a PMTiles archive: no base map rather than an error.
+    (state / "basemap.pmtiles").write_bytes(b"not a map")
+    assert c.get("/api/registry", headers=BEARER).json()["basemap"] is None
     placed = web_app.create_app(
         settings.LiveSettings(live_dir=live.live_dir, receiver=(33.9, -118.4)), settings.WebSettings(), [DIGEST], b"k" * 32, feed=False
     )

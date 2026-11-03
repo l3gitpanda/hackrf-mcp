@@ -37,15 +37,18 @@ def test_stylesheets_and_scripts_stay_on_this_origin():
         assert "fonts.googleapis" not in text, f.name
 
 
-def test_vendored_leaflet_is_the_published_release():
-    vendor = STATIC / "vendor" / "leaflet"
+@pytest.mark.parametrize("name", ["leaflet", "protomaps-leaflet"])
+def test_vendored_libraries_are_the_published_releases(name):
+    vendor = STATIC / "vendor" / name
     assert (vendor / "LICENSE").is_file()
     readme = (vendor / "README").read_text()
-    for f in [vendor / "leaflet.js", vendor / "leaflet.css", *sorted((vendor / "images").glob("*.png"))]:
+    files = [f for f in sorted(vendor.rglob("*")) if f.is_file() and f.name not in ("LICENSE", "README")]
+    assert files
+    for f in files:
         digest = hashlib.sha256(f.read_bytes()).hexdigest()
         assert f"{digest}  {f.relative_to(vendor)}" in readme, f.name
-    css = (vendor / "leaflet.css").read_text()
-    assert not re.search(r"url\(\s*['\"]?(https?:)?//", css)
+    for css in vendor.glob("*.css"):
+        assert not re.search(r"url\(\s*['\"]?(https?:)?//", css.read_text())
 
 
 def test_scripts_import_only_files_that_exist():

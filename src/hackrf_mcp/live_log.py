@@ -530,8 +530,45 @@ def positions(
     profile: str | None = None,
     subject: str | None = None,
     limit: int = 10_000,
+    step: float = 0,
 ) -> list[sqlite3.Row]:
-    """Positions in [since, until], oldest first: tracks for a map."""
+    """Positions in [since, until], oldest first: tracks for a map.
+
+    With `step` (seconds), at most one fix per target in each `step`-long
+    slice of time, the last one logged in it: the same tracks, thinner, for
+    ranges too long to send every fix.
+    """
+    where, args = _position_filter(since, until, profile, subject)
+    cond = " WHERE " + " AND ".join(where) if where else ""
+    if step and step > 0:
+        sql = (
+            "SELECT p.* FROM positions p JOIN (SELECT max(id) AS id FROM positions"
+            + cond
+            # The slice first: rows arrive in time order, so the grouping
+            # B-tree is appended to rather than shuffled (a third faster).
+            + " GROUP BY CAST(ts / ? AS INTEGER), subject, profile) k ON p.id = k.id ORDER BY p.ts, p.id LIMIT ?"
+        )
+        args.append(float(step))
+    else:
+        sql = "SELECT * FROM positions" + cond + " ORDER BY ts, id LIMIT ?"
+    args.append(max(1, int(limit)))
+    return conn.execute(sql, args).fetchall()
+
+
+def count_positions(
+    conn: sqlite3.Connection,
+    since: float | None = None,
+    until: float | None = None,
+    profile: str | None = None,
+    subject: str | None = None,
+) -> int:
+    """How many positions `positions()` would return without a limit or step."""
+    where, args = _position_filter(since, until, profile, subject)
+    cond = " WHERE " + " AND ".join(where) if where else ""
+    return conn.execute("SELECT count(*) FROM positions" + cond, args).fetchone()[0]
+
+
+def _position_filter(since, until, profile, subject) -> tuple[list[str], list]:
     where, args = [], []
     if since is not None:
         where.append("ts >= ?")
@@ -545,9 +582,7 @@ def positions(
     if subject:
         where.append("subject = ? COLLATE NOCASE")
         args.append(normalise_subject(subject))
-    sql = "SELECT * FROM positions" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY ts, id LIMIT ?"
-    args.append(max(1, int(limit)))
-    return conn.execute(sql, args).fetchall()
+    return where, args
 
 
 def events(
@@ -635,12 +670,15 @@ def summarise(
         for k, v in fields.items():
             if v in (None, "", [], {}):
                 continue
+            # Only numbers are summed or compared; a value of another type
+            # (a decoder's odd output) is kept as the latest instead.
+            prev = s["fields"].get(k)
+            numeric = isinstance(v, (int, float)) and not isinstance(v, bool)
+            prev_numeric = isinstance(prev, (int, float)) and not isinstance(prev, bool)
             if k in ("messages", "positions"):
-                s["fields"][k] = s["fields"].get(k, 0) + (v if isinstance(v, (int, float)) else 0)
-            elif k in ("altitude_max",):
-                s["fields"][k] = max(s["fields"].get(k, v), v)
-            elif k in ("altitude_min",):
-                s["fields"][k] = min(s["fields"].get(k, v), v)
+                s["fields"][k] = (prev if prev_numeric else 0) + (v if numeric else 0)
+            elif k in ("altitude_max", "altitude_min") and numeric and prev_numeric:
+                s["fields"][k] = max(prev, v) if k == "altitude_max" else min(prev, v)
             else:
                 s["fields"][k] = v
     out = sorted(by_subject.values(), key=lambda s: -s["last"])

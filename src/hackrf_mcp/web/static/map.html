@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Map · hackrf-live</title>
+<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="/static/hl.css">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/vendor/leaflet/leaflet.js"></script>
+<script src="/static/vendor/protomaps-leaflet/protomaps-leaflet.js"></script>
+<script type="module" src="/static/js/map.js"></script>
+</head>
+<body>
+<div class="hl page">
+  <div class="abwrap">
+    <header class="appbar">
+      <a class="brand" href="/">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <span>hackrf-live</span>
+        <small>home station</small>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/">Live</a>
+        <a href="/map" aria-current="page">Map</a>
+        <a href="/log">Log</a>
+        <a aria-disabled="true" title="Coming in a later milestone">History</a>
+        <a aria-disabled="true" title="Coming in a later milestone">Summaries</a>
+      </nav>
+      <div class="ab-r">
+        <span class="chip st st-idle" id="ab-state" role="status"><span class="dot"></span><span id="ab-state-text">Connecting…</span></span>
+        <span class="chip" id="ab-prof" hidden><span class="sw"></span><span class="mono" id="ab-prof-text"></span></span>
+        <span class="chip mono" id="ab-clock" aria-label="Station clock, UTC">--:--:-- UTC</span>
+        <form method="post" action="/auth/logout"><button type="submit" class="btn sm ghost">Sign out</button></form>
+      </div>
+    </header>
+  </div>
+  <main class="main">
+    <section class="panel" aria-label="Map controls">
+      <div class="mtool">
+        <div class="seg" role="group" aria-label="Map mode">
+          <button type="button" id="m-live" aria-pressed="true">Live</button>
+          <button type="button" id="m-hist" aria-pressed="false">History</button>
+        </div>
+        <div class="col">
+          <span class="mono" id="t-label">--:--:-- UTC</span>
+          <span class="muted" id="t-sub">now</span>
+        </div>
+        <label class="row" id="trail-wrap"><span class="muted">Tracks of the last</span>
+          <select id="trail" class="inp">
+            <option value="600">10 min</option>
+            <option value="1800" selected>30 min</option>
+            <option value="3600">1 hour</option>
+            <option value="10800">3 hours</option>
+          </select>
+        </label>
+        <span class="row" id="hist-range" hidden>
+          <label class="sr" for="h-from">From (UTC)</label><input id="h-from" class="inp mono" placeholder="2026-11-02 18:00">
+          <span class="muted">to</span>
+          <label class="sr" for="h-to">To (UTC)</label><input id="h-to" class="inp mono" placeholder="2026-11-02 19:00">
+          <button type="button" class="btn sm" id="h-load">Load</button>
+          <button type="button" class="btn sm" id="h-play" aria-pressed="false">Play</button>
+        </span>
+        <div class="scrub" id="scrub" hidden>
+          <div class="sbands" id="sbands" aria-hidden="true"></div>
+          <input class="range" id="cursor" type="range" min="0" max="1000" step="1" value="1000" aria-label="Map time">
+          <div class="rotx" id="sticks" aria-hidden="true"></div>
+        </div>
+        <span class="ctl-err" id="merr" role="alert" hidden></span>
+      </div>
+      <div class="mtool">
+        <span class="cap">Layers</span>
+        <div class="layers" id="layers" role="group" aria-label="Layers"></div>
+        <span class="sp"></span>
+        <label class="check"><input type="checkbox" id="o-tracks" checked>Tracks</label>
+        <label class="check"><input type="checkbox" id="o-labels" checked>Labels</label>
+        <label class="check" id="rings-wrap" hidden><input type="checkbox" id="o-rings" checked>Range rings</label>
+      </div>
+    </section>
+    <div class="g-map2">
+      <section class="panel" aria-label="Map">
+        <div class="mapwrap"><div id="map"></div></div>
+        <p class="mapnote2" id="mapnote"></p>
+      </section>
+      <aside class="col" aria-label="Targets">
+        <section class="panel" id="sel" hidden>
+          <div class="ph">
+            <span class="pbadge" id="s-profile"></span>
+            <span class="kind muted" id="s-kind"></span>
+            <span class="sp"></span>
+            <button type="button" class="btn sm icon ghost" id="s-close" aria-label="Close details">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6 l12 12 M18 6 L6 18"></path></svg>
+            </button>
+          </div>
+          <div class="pb col">
+            <div class="row wr"><span class="mono big" id="s-ident"></span><span class="tag" id="s-stale" hidden></span></div>
+            <div class="col" id="s-altbox" hidden>
+              <span class="cap">Altitude over the track</span>
+              <svg class="altspark" id="s-alt" viewBox="0 0 120 40" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <div class="row mono muted" id="s-altlab"></div>
+            </div>
+            <dl class="kv" id="s-fields"></dl>
+            <div class="row wr"><a class="btn sm" id="s-log" href="/log">Open in log</a><button type="button" class="btn sm" id="s-zoom">Zoom to</button></div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="ph"><h2>In view</h2><span class="mono muted" id="n-view"></span></div>
+          <div class="tlist" id="tlist"></div>
+        </section>
+      </aside>
+    </div>
+  </main>
+</div>
+</body>
+</html>

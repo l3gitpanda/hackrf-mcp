@@ -2,6 +2,7 @@
 that exist, and (with node installed) the JavaScript's syntax and pure
 functions."""
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -34,6 +35,20 @@ def test_stylesheets_and_scripts_stay_on_this_origin():
         assert not re.search(r"url\(\s*['\"]?(https?:)?//", text), f.name
         assert "@import" not in text, f.name
         assert "fonts.googleapis" not in text, f.name
+
+
+@pytest.mark.parametrize("name", ["leaflet", "protomaps-leaflet"])
+def test_vendored_libraries_are_the_published_releases(name):
+    vendor = STATIC / "vendor" / name
+    assert (vendor / "LICENSE").is_file()
+    readme = (vendor / "README").read_text()
+    files = [f for f in sorted(vendor.rglob("*")) if f.is_file() and f.name not in ("LICENSE", "README")]
+    assert files
+    for f in files:
+        digest = hashlib.sha256(f.read_bytes()).hexdigest()
+        assert f"{digest}  {f.relative_to(vendor)}" in readme, f.name
+    for css in vendor.glob("*.css"):
+        assert not re.search(r"url\(\s*['\"]?(https?:)?//", css.read_text())
 
 
 def test_scripts_import_only_files_that_exist():

@@ -99,7 +99,13 @@ class DemoPipeline(Pipeline):
         while not self._stop.wait(rnd.uniform(0.4, 2.5)):
             s = rnd.choice(subjects)
             freq = rnd.choice(self.tuning.freqs_hz or (self.tuning.center_hz,))
-            fields = {k: rnd.choice(["DEMO", 7, 12000, 3.5, "UNDER WAY"]) for k in p.summary_fields if k not in ("lat", "lon")}
+            # Numbers where the real decoders put numbers, words elsewhere.
+            numeric = {"altitude", "altitude_min", "altitude_max", "speed", "track", "course", "heading", "messages", "positions", "duration"}
+            fields = {
+                k: (rnd.choice([7, 3500, 12000, 36000]) if k in numeric else rnd.choice(["DEMO", "UNDER WAY", "TEST"]))
+                for k in p.summary_fields
+                if k not in ("lat", "lon")
+            }
             if has_map:
                 pos[s][0] += rnd.uniform(-0.01, 0.01)
                 pos[s][1] += rnd.uniform(-0.01, 0.01)
@@ -127,6 +133,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--token-file", help="write the sign-in token here instead of printing it")
     parser.add_argument("--dir", default="/tmp/hackrf-webui-demo", help="scratch directory, emptied at start")
+    parser.add_argument("--basemap", help="a base map extract to show (python -m hackrf_mcp.web.basemap)")
     args = parser.parse_args()
 
     found = lambda _: "/bin/true"  # noqa: E731
@@ -159,6 +166,11 @@ def main() -> None:
     threading.Thread(target=control.serve_forever, daemon=True).start()
     threading.Thread(target=svc.serve_forever, daemon=True).start()
     svc.handle({"cmd": "start", "schedule": [{"profile": "adsb", "minutes": 2}, {"profile": "ais", "minutes": 1}]})
+
+    if args.basemap:
+        state = settings.WebSettings().state_path(live)
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "basemap.pmtiles").symlink_to(Path(args.basemap).resolve())
 
     token = secrets.token_urlsafe(24)
     if args.token_file:

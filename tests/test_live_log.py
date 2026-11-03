@@ -185,3 +185,15 @@ def test_coverage_rebuilds_what_the_receiver_was_doing(tmp_path):
     ]
     # A range that starts mid-run knows what was running from before it.
     assert live_log.coverage(conn, 150.0, 180.0) == [{"state": "running", "profile": "ais", "from": 150.0, "to": 180.0}]
+
+
+def test_summarise_survives_fields_of_mixed_types(tmp_path):
+    w = _writer(tmp_path)
+    w.write([
+        Row(ts=1.0, profile="adsb", kind="aircraft", subject="A1", fields={"altitude_min": 3000, "altitude_max": 3000, "messages": 2}),
+        Row(ts=2.0, profile="adsb", kind="aircraft", subject="A1", fields={"altitude_min": "ground", "altitude_max": 3500, "messages": "x"}),
+        Row(ts=3.0, profile="adsb", kind="aircraft", subject="A1", fields={"altitude_min": 2500, "altitude_max": 4000, "messages": 3}),
+    ])
+    [s] = live_log.summarise(live_log.open_reader(w.path), "adsb", ("aircraft",), 0.0)
+    assert s["fields"]["altitude_max"] == 4000 and s["fields"]["messages"] == 5
+    assert s["fields"]["altitude_min"] == 2500  # the odd "ground" didn't break the comparison

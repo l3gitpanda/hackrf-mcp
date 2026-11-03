@@ -229,3 +229,7 @@ __marimo__/
 *.dfu
 *.wav
 *.png
+# ...but not the web UI's vendored Leaflet images
+!src/hackrf_mcp/web/static/vendor/leaflet/images/*.png
+# Base map extracts say where the station is: keep them out of the repository
+*.pmtiles

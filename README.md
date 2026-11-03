@@ -396,6 +396,16 @@ prints it only as images), parsed from the FCC's PDF by
 `web/static/fcc-us-allocations.json`. Live's **Bands** button hides the
 strip, and History has a view toggle.
 
+**Watching a range.** The Live screen's **Watch a range** takes any range
+the HackRF receives (1 MHz-6 GHz), up to 10 MHz at once: type from and to
+in MHz, and it tunes there with the waterfall only, nothing decoded.
+**Lower** and **Higher**, or dragging the waterfall sideways, scroll by
+half the width. The receiver is lent, not given: after the chosen time
+(15 minutes by default, at most 60, **+15 min** to extend) the live service
+goes back to the rotation by itself, page open or not, and a restart does
+the same. Device tools pause a watch as they pause decoding. What was
+watched is recorded in the spectrum history as profile `watch`.
+
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,

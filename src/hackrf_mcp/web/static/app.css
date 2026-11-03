@@ -169,3 +169,8 @@ body{margin:0;background:#0a0e13}
 #d-bands{margin-bottom:3px}
 .bstrip .boff{margin-top:8px;padding-top:7px;border-top:1px solid #2a3647}
 .bstrip .boff>div{margin-top:3px}
+/* Watching a custom range (Live) */
+.ctl-watch{padding:8px 14px;border-top:1px solid var(--line)}
+.ctl-watch .wfreq{width:7.5em}
+.ctl-watch .sm{font-size:12px}
+.ctl-watch #watch-range{font-weight:600}

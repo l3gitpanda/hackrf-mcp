@@ -104,7 +104,7 @@ after the owner approves.
    2022-07-01, parsed from the FCC's PDF by `tools/fcc_us_table.py` into
    `fcc-us-allocations.json`, shown under the strip's pointer readout; to
    refresh it, download a newer PDF and run the two tools), 11.
-   **Watch a range** (below), then Summaries, Alerts and Plugins.
+   **Watch a range** (done, below), then Summaries, Alerts and Plugins.
 
 ### Watching a custom range (milestone 11)
 
@@ -117,13 +117,19 @@ Agreed with the owner on 2026-11-03: tune and watch any range up to about
   live service, not the page: closing the tab must not leave the receiver
   parked.
 - **Device tools** pause a watch like they pause a profile; it resumes
-  afterwards with the time it had left.
+  afterwards. Its time limit keeps counting during the pause.
 - **Status and the app bar** say so: "Watching 88–98 MHz, 11 min left".
   Coverage and History need a state for it.
-- **Recorded:** a watch writes to the spectrum history like a profile.
-  Every retune is a new segment, so retunes are debounced, and History
-  shows consecutive watch segments as one session rather than forty
-  5-second steps.
+- **Recorded:** a watch writes to the spectrum history like a profile,
+  as profile `watch`. Every retune is a new segment (History shows each
+  as a step); the page retunes once per click or drag, not continuously.
+- **Done:** the live service's `watch` / `watch-stop` commands and the
+  `WATCH` profile (`WatchPipeline`, not registered with the decoders, so
+  the MCP tools are unchanged; `start` refuses it), `POST /api/live/watch`
+  and `/api/live/watch/stop`, `hackrf_live_status` saying so, and the
+  Live screen's range form, scroll buttons, waterfall drag, +15 min and
+  stop. Widths 2, 5, 8 and 10 MHz; 1-60 minutes, 15 by default; a watch
+  is not saved, so a restart brings the rotation back.
 - **CPU:** measure the tap at 10 MS/s offline first (a synthetic file,
   paced, not a tight loop), apply the ~3x factor the QNAP showed for
   milestone 1, and confirm on the box. Start at 512 bins (19.5 kHz at

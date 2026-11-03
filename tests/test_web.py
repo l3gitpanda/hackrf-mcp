@@ -377,6 +377,30 @@ def test_start_builds_the_same_requests_as_the_mcp_tool(env):
     assert c.post("/api/live/stop", headers=BEARER).status_code == 503
 
 
+def test_a_watch_is_requested_like_a_start(env):
+    _, gate, control = env
+    c = TestClient(gate)
+    reg = c.get("/api/registry", headers=BEARER).json()["watch"]
+    assert reg["rates_hz"][-1] == 10_000_000 and reg["default_minutes"] == 15 and reg["max_minutes"] == 60
+    r = c.post("/api/live/watch", headers=BEARER, json={"center_hz": 98_000_000, "sample_rate_hz": 10_000_000, "minutes": 5})
+    assert r.status_code == 200
+    assert control.requests[-1] == {
+        "cmd": "watch", "center_hz": 98_000_000, "sample_rate_hz": 10_000_000,
+        "lna_gain_db": None, "vga_gain_db": None, "amp": False, "minutes": 5.0,
+    }
+    # A retune leaves the time limit to the service.
+    c.post("/api/live/watch", headers=BEARER, json={"center_hz": 103_000_000})
+    assert "minutes" not in control.requests[-1] and control.requests[-1]["sample_rate_hz"] == 10_000_000
+    assert c.post("/api/live/watch/stop", headers=BEARER).status_code == 200
+    assert control.requests[-1] == {"cmd": "watch-stop"}
+    assert c.post("/api/live/watch", headers=BEARER, json={}).status_code == 400
+    # Changes need the page's own origin, as start does.
+    assert TestClient(gate).post("/api/live/watch", json={"center_hz": 98_000_000}).status_code in (401, 403)
+    control.fail = live_client.LiveError("outside what the HackRF receives")
+    r = c.post("/api/live/watch", headers=BEARER, json={"center_hz": 2_000_000})
+    assert r.status_code == 400 and "outside" in r.json()["error"]
+
+
 # --- The websocket ---------------------------------------------------------------------------
 
 

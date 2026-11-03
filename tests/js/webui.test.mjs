@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
 import { AutoLevel, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
 import { bandsAt, layoutBands, officialAt, rangeText, serviceText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
+import { clampCenter, leftText, parseMhz, scrolled, watchTuning } from '../../src/hackrf_mcp/web/static/js/watchutil.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
@@ -203,4 +204,22 @@ test('the official table: the band at a frequency, and primary or secondary from
   assert.equal(serviceText('AERONAUTICAL MOBILE (R)'), 'AERONAUTICAL MOBILE (R)');
   assert.equal(serviceText('Mobile except aeronautical mobile'), 'Mobile except aeronautical mobile (secondary)');
   assert.equal(serviceText('Radiolocation'), 'Radiolocation (secondary)');
+});
+
+test('watching a range: the narrowest width that covers it, scrolling by half widths, inside 1 MHz-6 GHz', () => {
+  const rates = [2e6, 5e6, 8e6, 10e6];
+  assert.equal(parseMhz('88.5'), 88500000);
+  assert.equal(parseMhz('162,4'), 162400000);
+  assert.ok(Number.isNaN(parseMhz('fm')));
+  assert.deepEqual(watchTuning(88e6, 98e6, rates, 1e6, 6e9), { center_hz: 93e6, sample_rate_hz: 10e6, clipped: false });
+  assert.deepEqual(watchTuning(162.4e6, 162.55e6, rates, 1e6, 6e9), { center_hz: 162475000, sample_rate_hz: 2e6, clipped: false });
+  assert.deepEqual(watchTuning(88e6, 108e6, rates, 1e6, 6e9), { center_hz: 93e6, sample_rate_hz: 10e6, clipped: true });
+  assert.deepEqual(watchTuning(1.5e6, 1.5e6, rates, 1e6, 6e9), { center_hz: 2e6, sample_rate_hz: 2e6, clipped: false });
+  assert.equal(scrolled(93e6, 10e6, 1, 1e6, 6e9), 98e6);
+  assert.equal(scrolled(93e6, 10e6, -1, 1e6, 6e9), 88e6);
+  assert.equal(scrolled(5.998e9, 10e6, 1, 1e6, 6e9), 5.995e9);
+  assert.equal(clampCenter(1e6, 2e6, 1e6, 6e9), 2e6);
+  assert.equal(leftText(660), '11 min left');
+  assert.equal(leftText(40), '40 s left');
+  assert.equal(leftText(-1), 'ending');
 });

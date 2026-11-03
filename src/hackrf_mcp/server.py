@@ -1296,10 +1296,18 @@ def _format_live_status(st: dict) -> str:
         lines.append(f"Live decoding: STARTING {st['target']}.")
     else:
         lines.append("Live decoding: IDLE (no profile running; the HackRF is free).")
+    w = st.get("watch")
+    if w:
+        lo, hi = w["center_hz"] - w["sample_rate_hz"] / 2, w["center_hz"] + w["sample_rate_hz"] / 2
+        lines.append(
+            f"  Watching {lo / 1e6:.3f}-{hi / 1e6:.3f} MHz (waterfall only, nothing decoded) from the web UI "
+            f"until {_utc(w['until'])}, then decoding resumes."
+        )
     d = st.get("desired")
     if d and "schedule" in d:
         parts = [f"{e['profile']} {e['minutes']:g} min" for e in d["schedule"]]
-        lines.append(f"  Rotation: {' -> '.join(parts)}, repeating; next switch {_utc(st.get('next_switch'))}.")
+        nxt = "decoding resumes" if w else "next switch"
+        lines.append(f"  Rotation: {' -> '.join(parts)}, repeating; {nxt} {_utc(st.get('next_switch'))}.")
     if state != "idle" or st.get("decoded_total"):
         lines.append(
             f"  Decoded messages: {st['decoded_1m']} in the last minute, {st['decoded_10m']} in 10 min, "

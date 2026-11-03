@@ -19,6 +19,9 @@ and the static UI.
   GET  /api/spectrum             one segment's waterfall, downsampled
   POST /api/live/start           start or switch a profile, or a rotation
   POST /api/live/stop            stop live decoding
+  POST /api/live/watch           lend the receiver to a watch of one range
+                                 (waterfall only) for a while; retunes one
+  POST /api/live/watch/stop      end a watch: back to the rotation
   WS   /ws/live                  rows, events, positions and FFT rows as
                                  they happen, and status every few seconds
 
@@ -54,6 +57,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum
+from hackrf_mcp.live_service import WATCH_DEFAULT_MIN, WATCH_MAX_MIN
 from hackrf_mcp.settings import LiveSettings, WebSettings
 from hackrf_mcp.web import basemap
 from hackrf_mcp.web.hub import FeedHub
@@ -159,6 +163,14 @@ def registry_json(live: LiveSettings) -> dict:
         "pager_content": live.pager_content,
         # HACKRF_LIVE_RECEIVER, for the map's range rings; None if unset.
         "receiver": list(live.receiver) if live.receiver else None,
+        # What a watch of a custom range may be (the live service checks again).
+        "watch": {
+            "rates_hz": list(live_profiles.WATCH_RATES_HZ),
+            "min_hz": live_profiles.WATCH_MIN_HZ,
+            "max_hz": live_profiles.WATCH_MAX_HZ,
+            "default_minutes": WATCH_DEFAULT_MIN,
+            "max_minutes": WATCH_MAX_MIN,
+        },
     }
 
 
@@ -571,6 +583,30 @@ def create_app(
     async def api_stop(request: Request) -> Response:
         return await _control({"cmd": "stop"})
 
+    async def api_watch(request: Request) -> Response:
+        # Lend the receiver to a watch of one range; the live service hands
+        # it back to the rotation when the time runs out.
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("send a JSON object")
+            req = {
+                "cmd": "watch",
+                "center_hz": int(body["center_hz"]),
+                "sample_rate_hz": int(body.get("sample_rate_hz") or live_profiles.WATCH_RATES_HZ[-1]),
+                "lna_gain_db": body.get("lna_gain_db"),
+                "vga_gain_db": body.get("vga_gain_db"),
+                "amp": bool(body.get("amp_enable", False)),
+            }
+            if body.get("minutes") is not None:
+                req["minutes"] = float(body["minutes"])
+        except (ValueError, KeyError, TypeError) as exc:
+            return error(400, f"bad request: {exc}")
+        return await _control(req)
+
+    async def api_watch_stop(request: Request) -> Response:
+        return await _control({"cmd": "watch-stop"})
+
     async def _control(req: dict) -> Response:
         try:
             st = await run_in_threadpool(control, req, timeout=30)
@@ -656,6 +692,8 @@ def create_app(
         Route("/api/spectrum", api_spectrum),
         Route("/api/live/start", api_start, methods=["POST"]),
         Route("/api/live/stop", api_stop, methods=["POST"]),
+        Route("/api/live/watch", api_watch, methods=["POST"]),
+        Route("/api/live/watch/stop", api_watch_stop, methods=["POST"]),
         WebSocketRoute("/ws/live", ws_live),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]

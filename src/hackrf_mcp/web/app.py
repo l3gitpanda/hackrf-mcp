@@ -42,6 +42,8 @@ from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from urllib.parse import parse_qs
 
+import anyio
+import anyio.abc
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -608,15 +610,23 @@ def create_app(
                 if isinstance(msg, dict) and "fft" in msg:
                     client.fft = bool(msg["fft"])
 
-        tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(listen())]
+        # Both halves in one anyio task group (Starlette's own concurrency), so
+        # the server stopping or the client leaving unwinds them together.
+        # Either half ending ends the session: listen when the client goes,
+        # pump when a send fails.
+        async def half(tg: anyio.abc.TaskGroup, fn) -> None:
+            try:
+                await fn()
+            except (WebSocketDisconnect, RuntimeError, OSError, anyio.ClosedResourceError):
+                pass  # the client is gone
+            finally:
+                tg.cancel_scope.cancel()
+
         try:
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        except WebSocketDisconnect:
-            pass
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(half, tg, pump)
+                tg.start_soon(half, tg, listen)
         finally:
-            for t in tasks:
-                t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
             hub.unsubscribe(client)
 
     async def lifespan(app):

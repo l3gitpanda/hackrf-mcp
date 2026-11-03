@@ -145,6 +145,39 @@ Agreed with the owner on 2026-11-03: tune and watch any range up to about
    labels that would overlap (keeping the selected and the moving ones)
    would fix it.
 
+### Split station (milestone 13, agreed 2026-11-03)
+
+The owner wants the processing off the box with the radio, Pelican
+panel/wings style, so CPU stops being the limit: a thin **hackrf-agent**
+next to the HackRF, and a **worker** container on a bigger machine in the
+owner's Docker stack doing everything else.
+
+- **Decided:** the agent owns the HackRF and streams raw I/Q; the worker
+  runs the decoders, spectrum, log, web UI and MCP server, with its data
+  in a Docker volume; when no worker is connected the agent's machine
+  decodes locally (today's setup) and the worker imports what it logged.
+  The web and MCP ports move to the worker at cutover.
+- **W1 (done):** `agent.py` (framed protocol, token and address allowlist,
+  one stream at a time with preemption, typed receive-only requests,
+  status with `last_client_seen`), `RemoteSource`, `HACKRF_LIVE_AGENT`,
+  `deploy/hackrf-agent.service`, `tools/fake_hackrf_transfer.py` and
+  `webui_demo.py --agent`. Not deployed.
+- **W2:** the worker image (Python app plus dump1090, AIS-catcher,
+  acarsdec, dumpvdl2, multimon-ng, direwolf, rtl_433) and a compose file
+  with CPU and memory limits; built by CI into a registry.
+- **W3:** the MCP server's device tools through the agent: info, sweep and
+  captures (a capture's bytes come back to the worker, where the analysis
+  tools read them). Transmitting through the agent needs its own approval:
+  the transmit policy and its audit log would move to the agent, the only
+  thing touching the device.
+- **W4:** fallback. The agent starts local decoding when no worker has
+  been seen for about 2 minutes (`last_client_seen`), and stops it when one
+  asks for a stream; the worker imports the rows and positions logged
+  meanwhile.
+- **W5:** cutover, with the owner's approval: the agent's port allowed to
+  the worker only, the data copied to the worker's volume, the web and MCP
+  addresses moved.
+
 ### Constraints
 
 - **The QNAP:** 2 Celeron cores, one of them taken by Kodi, and 3.7 GiB of

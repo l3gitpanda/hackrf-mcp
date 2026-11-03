@@ -4,8 +4,9 @@
 # behind hackrf-agent (deploy/hackrf-agent.service).
 #
 #   cp deploy/worker/worker.env.example /opt/hackrf/worker.env   # then edit
-#   put the agent's token in /opt/hackrf/agent-token (mode 0600, uid 1000)
-#   docker compose -f deploy/worker/compose.yaml up -d
+#   put the agent's token in /opt/hackrf/agent-token (mode 0400, uid 1000)
+#   HACKRF_LIVE_AGENT=<agent host>:8767 docker compose -f deploy/worker/compose.yaml up -d
+#   (or put HACKRF_LIVE_AGENT in a .env file beside the compose file)
 #
 # Ports: 8765 (MCP, bearer token) and 8766 (web UI, token then cookie).
 # Allow them to the LAN only; there is no TLS.
@@ -33,6 +34,10 @@ services:
       - hackrf-data:/data
       - ${HACKRF_AGENT_TOKEN:-/opt/hackrf/agent-token}:/run/secrets/agent-token:ro
     environment:
+      # The hackrf-agent next to the HackRF. Set for live and mcp only, not in
+      # worker.env: a service given the address must also get the token file
+      # or it refuses to start, and web needs neither.
+      HACKRF_LIVE_AGENT: ${HACKRF_LIVE_AGENT:?set HACKRF_LIVE_AGENT to the agent's host:port}
       HACKRF_LIVE_AGENT_TOKEN_FILE: /run/secrets/agent-token
     # The decoders and the spectrum FFTs: the part that needed more CPU
     # than the box with the radio has.
@@ -58,6 +63,12 @@ services:
     environment:
       HACKRF_MCP_HOST: 0.0.0.0
       HACKRF_MCP_PORT: "8765"
+      # hackrf_info, hackrf_sweep and captures run through the agent.
+      HACKRF_LIVE_AGENT: ${HACKRF_LIVE_AGENT:?set HACKRF_LIVE_AGENT to the agent's host:port}
+      HACKRF_LIVE_AGENT_TOKEN_FILE: /run/secrets/agent-token
+    volumes:
+      - hackrf-data:/data
+      - ${HACKRF_AGENT_TOKEN:-/opt/hackrf/agent-token}:/run/secrets/agent-token:ro
     ports:
       - "8765:8765"
     cpus: 2

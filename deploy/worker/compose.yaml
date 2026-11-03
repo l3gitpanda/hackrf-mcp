@@ -1,0 +1,67 @@
+# The split station's worker: three services from one image, sharing /data
+# (the live log, spectrum history, captures, web state, and the live
+# service's control and feed sockets). The HackRF is on another machine
+# behind hackrf-agent (deploy/hackrf-agent.service).
+#
+#   cp deploy/worker/worker.env.example /opt/hackrf/worker.env   # then edit
+#   put the agent's token in /opt/hackrf/agent-token (mode 0600, uid 1000)
+#   docker compose -f deploy/worker/compose.yaml up -d
+#
+# Ports: 8765 (MCP, bearer token) and 8766 (web UI, token then cookie).
+# Allow them to the LAN only; there is no TLS.
+
+name: hackrf
+
+x-worker: &worker
+  image: ${HACKRF_IMAGE:-192.168.3.130:3000/panda/hackrf-mcp:homelab}
+  user: "1000:1000"
+  restart: unless-stopped
+  env_file: ${HACKRF_ENV_FILE:-/opt/hackrf/worker.env}
+  volumes:
+    - hackrf-data:/data
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  live:
+    <<: *worker
+    command: ["python", "-m", "hackrf_mcp.live_service"]
+    volumes:
+      - hackrf-data:/data
+      - ${HACKRF_AGENT_TOKEN:-/opt/hackrf/agent-token}:/run/secrets/agent-token:ro
+    environment:
+      HACKRF_LIVE_AGENT_TOKEN_FILE: /run/secrets/agent-token
+    # The decoders and the spectrum FFTs: the part that needed more CPU
+    # than the box with the radio has.
+    cpus: 4
+    mem_limit: 2g
+
+  web:
+    <<: *worker
+    command: ["python", "-m", "hackrf_mcp.web"]
+    depends_on: [live]
+    environment:
+      HACKRF_WEB_HOST: 0.0.0.0
+      HACKRF_WEB_PORT: "8766"
+    ports:
+      - "8766:8766"
+    cpus: 1
+    mem_limit: 512m
+
+  mcp:
+    <<: *worker
+    command: ["hackrf-mcp", "--transport", "http"]
+    depends_on: [live]
+    environment:
+      HACKRF_MCP_HOST: 0.0.0.0
+      HACKRF_MCP_PORT: "8765"
+    ports:
+      - "8765:8765"
+    cpus: 2
+    mem_limit: 1g
+
+volumes:
+  hackrf-data:

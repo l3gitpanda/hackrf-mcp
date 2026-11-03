@@ -475,9 +475,19 @@ Python's standard library and `hackrf_transfer`.
 - **Trying it without hardware:** `tools/webui_demo.py --agent` runs an
   agent over loopback with `tools/fake_hackrf_transfer.py`.
 
-Still to come: the MCP server's device tools through the agent, a worker
-container image, and the agent decoding locally whenever no worker is
-connected (see TODO.md).
+**The worker image.** The `Dockerfile` builds the worker: Ubuntu 24.04 with
+dump1090-mutability, multimon-ng and rtl_433 from Ubuntu, AIS-catcher
+0.66, acarsdec 3.7 and dumpvdl2 2.6.0 (with libacars 2.2) built from
+source, and the app from `uv.lock`, running as uid 1000.
+`python -m hackrf_mcp.selfcheck` lists every decoder and fails if one is
+missing or a library doesn't resolve. `deploy/worker/compose.yaml` runs it
+as three services (live, web, MCP) sharing one `/data` volume, with their
+own CPU and memory limits; `deploy/worker/worker.env.example` holds the
+settings. `.forgejo/workflows/image.yaml` builds it on a Forgejo mirror of
+this fork, runs the self-check, and pushes it to the registry.
+
+Still to come: the MCP server's device tools through the agent, and the
+agent decoding locally whenever no worker is connected (see TODO.md).
 
 ## Adding a decoder
 

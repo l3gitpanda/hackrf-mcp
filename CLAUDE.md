@@ -145,6 +145,11 @@ asyncio.run(main())
   requests, never argv. `live_profiles.RemoteSource` is its client, used
   when `HACKRF_LIVE_AGENT` is set. `tests/test_agent.py` runs both over
   loopback TCP with a fake `hackrf_transfer` (run unsandboxed).
+- `Dockerfile`, `deploy/worker/`, `.forgejo/workflows/image.yaml` — the
+  split station's worker image, its compose stack and its CI build.
+  `src/hackrf_mcp/selfcheck.py` checks an image has every decoder.
+  Decoder versions are pinned to what the original station ran; their
+  flags and output are what the protocol modules parse.
 - `src/hackrf_mcp/live_client.py` — the MCP server's side of the socket.
   `_run_on_device()` pauses the live service around every device call.
 

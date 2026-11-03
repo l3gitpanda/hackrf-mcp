@@ -1,0 +1,60 @@
+# Builds the split station's worker image (Dockerfile) into the Forgejo
+# registry, on the owner's Forgejo pull mirror of this fork: every mirror
+# sync of the homelab branch runs it as a push.
+#
+# Needs a repository secret PACKAGERUNNER_TOKEN (a token with package
+# write) on the mirror. Tags: :sha-<12 hex> always, :homelab from homelab.
+# The job container has no Node, so the source is fetched with git and the
+# job's own token rather than actions/checkout.
+
+name: image
+
+on:
+  push:
+    branches: [homelab]
+  workflow_dispatch:
+
+jobs:
+  image:
+    runs-on: docker
+    env:
+      REGISTRY: 192.168.3.130:3000
+    steps:
+      - name: Preflight
+        env:
+          PACKAGERUNNER_TOKEN: ${{ secrets.PACKAGERUNNER_TOKEN }}
+        run: |
+          test -n "$PACKAGERUNNER_TOKEN" || { echo "missing secret: PACKAGERUNNER_TOKEN"; exit 1; }
+          docker version --format 'docker {{.Server.Version}}'
+
+      - name: Fetch the source
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          apk add --no-cache git >/dev/null
+          url=$(echo "$GITHUB_SERVER_URL" | sed "s#://#://oauth2:${TOKEN}@#")
+          git clone --quiet --depth 1 --branch "$GITHUB_REF_NAME" "$url/$GITHUB_REPOSITORY.git" src
+          git -C src log --oneline -1
+
+      - name: Build
+        run: |
+          image="$REGISTRY/$(echo "$GITHUB_REPOSITORY" | tr 'A-Z' 'a-z')"
+          sha=$(git -C src rev-parse HEAD | cut -c1-12)
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "SHA12=$sha" >> "$GITHUB_ENV"
+          docker build --pull -t "$image:sha-$sha" src
+
+      - name: Smoke test (every decoder present, libraries resolve)
+        run: docker run --rm "$IMAGE:sha-$SHA12" python -m hackrf_mcp.selfcheck
+
+      - name: Push
+        env:
+          PACKAGERUNNER_TOKEN: ${{ secrets.PACKAGERUNNER_TOKEN }}
+        run: |
+          echo "$PACKAGERUNNER_TOKEN" | docker login "$REGISTRY" -u "$GITHUB_REPOSITORY_OWNER" --password-stdin
+          docker push "$IMAGE:sha-$SHA12"
+          if [ "$GITHUB_REF_NAME" = homelab ]; then
+            docker tag "$IMAGE:sha-$SHA12" "$IMAGE:homelab"
+            docker push "$IMAGE:homelab"
+          fi
+          docker logout "$REGISTRY"

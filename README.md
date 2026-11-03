@@ -486,8 +486,22 @@ own CPU and memory limits; `deploy/worker/worker.env.example` holds the
 settings. `.forgejo/workflows/image.yaml` builds it on a Forgejo mirror of
 this fork, runs the self-check, and pushes it to the registry.
 
-Still to come: the MCP server's device tools through the agent, and the
-agent decoding locally whenever no worker is connected (see TODO.md).
+**Device tools on a split station.** With `HACKRF_LIVE_AGENT` set, the MCP
+server's `hackrf_info`, `hackrf_sweep` and receive `hackrf_transfer` run
+through the agent: the live service is paused as usual, the agent runs the
+tool (a "run" request with typed fields; it builds the command itself),
+and a sweep's data or a capture's samples come back over the connection
+and are written to the capture directory on the worker, where
+`hackrf_decode` and the other file tools read them. The agent keeps its
+own limits: `HACKRF_AGENT_MAX_CAPTURE_MB` (2048 by default) and bias-tee
+power locked unless `HACKRF_AGENT_ALLOW_BIAS_TEE` is on. Transmitting,
+bias-tee control, the clock and the Opera Cake are refused on a split
+station: each would need its own typed request on the agent, and
+transmitting would move the transmit policy and its audit log there.
+`hackrf_server_status` says where the HackRF is.
+
+Still to come: the agent decoding locally whenever no worker is connected
+(see TODO.md).
 
 ## Adding a decoder
 

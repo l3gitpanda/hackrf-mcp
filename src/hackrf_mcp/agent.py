@@ -13,8 +13,10 @@ Protocol, over one TCP connection per request:
         "sample_rate_hz": 10000000, "lna_gain_db": 32, "vga_gain_db": 40,
         "amp": false}
    or  {"token": "...", "cmd": "status"}
-   Requests are typed fields, never a command line: the agent only ever
-   runs `hackrf_transfer -r -` (receive) with checked values.
+   or  {"token": "...", "cmd": "run", "tool": "info" | "sweep" | "capture", ...}
+   Requests are typed fields, never a command line: the agent builds the
+   command itself from checked values, and only ever receives (the tools
+   are hackrf_transfer -r, hackrf_sweep and hackrf_info).
 2. The agent answers in frames: a 4-byte big-endian payload length, a type
    byte, then the payload. Type 1 is samples (int8 I/Q, as hackrf_transfer
    writes them); type 2 is a notice, one JSON object:
@@ -23,7 +25,13 @@ Protocol, over one TCP connection per request:
        {"type": "end", "reason": "..."}       the stream is over
        {"type": "error", "error": "..."}      refused, then closed
        {"type": "status", ...}                the answer to "status"
-3. A stream runs until the client closes the connection or the agent ends
+       {"type": "done", "exit_code", "stderr", "timed_out", "bytes"}
+                                              a "run" finished
+   Type 3 is a tool's output (a sweep's CSV, a capture's samples,
+   hackrf_info's text), sent as it is written, before "done".
+3. A "run" holds the HackRF until its tool exits (or its timeout): a
+   stream in progress is ended first, and later requests wait their turn.
+   A stream runs until the client closes the connection or the agent ends
    it with an "end" notice: a new stream preempts the old one (there is one
    HackRF), or hackrf_transfer exits. The agent stops hackrf_transfer with
    SIGINT and waits for it, so the device is free before the next one starts.
@@ -57,6 +65,7 @@ from pathlib import Path
 FRAME = struct.Struct(">IB")
 SAMPLES = 1
 NOTICE = 2
+DATA = 3
 MAX_FRAME = 1 << 20
 MAX_REQUEST = 4096
 READ_BYTES = 1 << 18
@@ -114,6 +123,12 @@ class AgentSettings:
     token_file: Path | None = None
     allow: tuple[str, ...] = ("127.0.0.1",)
     binary: str = "hackrf_transfer"
+    # Where hackrf_info and hackrf_sweep are (default: on PATH).
+    tools_dir: str | None = None
+    # Limits the agent keeps whatever the worker asks: a capture's size, and
+    # DC on the antenna port (off unless HACKRF_AGENT_ALLOW_BIAS_TEE).
+    max_capture_mb: int = 2048
+    allow_bias_tee: bool = False
     digests: list[bytes] = field(default_factory=list)
 
     @classmethod
@@ -126,6 +141,9 @@ class AgentSettings:
             token_file=Path(env["HACKRF_AGENT_TOKEN_FILE"]) if env.get("HACKRF_AGENT_TOKEN_FILE") else None,
             allow=tuple(a.strip() for a in env.get("HACKRF_AGENT_ALLOW", "127.0.0.1").split(",") if a.strip()),
             binary=env.get("HACKRF_AGENT_BINARY") or shutil.which("hackrf_transfer") or "hackrf_transfer",
+            tools_dir=env.get("HACKRF_AGENT_TOOLS_DIR") or None,
+            max_capture_mb=int(env.get("HACKRF_AGENT_MAX_CAPTURE_MB", "2048")),
+            allow_bias_tee=env.get("HACKRF_AGENT_ALLOW_BIAS_TEE", "").strip().lower() in ("1", "true", "yes", "on"),
         )
         s.digests = s.load_digests()
         return s
@@ -144,6 +162,13 @@ class AgentSettings:
         if not out:
             raise ValueError("no token: set HACKRF_AGENT_TOKEN_SHA256 or HACKRF_AGENT_TOKEN_FILE")
         return out
+
+    def program(self, name: str) -> str:
+        if name == "hackrf_transfer":
+            return self.binary
+        if self.tools_dir:
+            return os.path.join(self.tools_dir, name)
+        return shutil.which(name) or name
 
     def allowed(self, peer: str) -> bool:
         try:
@@ -171,6 +196,137 @@ def check_stream(req: dict) -> dict:
     if not isinstance(amp, bool):
         raise ValueError("amp must be true or false")
     return {"center_hz": center, "sample_rate_hz": rate, "lna_gain_db": lna, "vga_gain_db": vga, "amp": amp}
+
+
+SERIAL_RE = re.compile(r"[0-9a-fA-F]{1,32}")
+# The longest each tool may hold the HackRF (a worker clamps to these).
+TOOL_TIMEOUT_S = {"info": 15.0, "sweep": 300.0, "capture": 900.0}
+
+
+def _gain_args(req: dict) -> list[str]:
+    out = []
+    if req.get("lna_gain_db") is not None:
+        lna = int(req["lna_gain_db"])
+        if not (0 <= lna <= 40 and lna % 8 == 0):
+            raise ValueError(f"lna_gain_db must be 0-40 in steps of 8, not {lna}")
+        out += ["-l", str(lna)]
+    if req.get("vga_gain_db") is not None:
+        vga = int(req["vga_gain_db"])
+        if not (0 <= vga <= 62 and vga % 2 == 0):
+            raise ValueError(f"vga_gain_db must be 0-62 in steps of 2, not {vga}")
+        out += ["-g", str(vga)]
+    amp = req.get("amp", False)
+    if not isinstance(amp, bool):
+        raise ValueError("amp must be true or false")
+    return out + (["-a", "1"] if amp else [])
+
+
+def _timeout(req: dict, most: float) -> float:
+    t = float(req.get("timeout_s", most))
+    if not 1 <= t <= most:
+        raise ValueError(f"timeout_s must be 1-{most:g}, not {t:g}")
+    return t
+
+
+def check_run(req: dict, s: AgentSettings) -> tuple[str, list[str], float, int]:
+    """A "run" request as (tool name, command line, timeout, most output
+    bytes), built by the agent from checked fields; ValueError otherwise."""
+    tool = req.get("tool")
+    serial = req.get("device_serial")
+    if serial is not None and not (isinstance(serial, str) and SERIAL_RE.fullmatch(serial)):
+        raise ValueError("device_serial is a hex serial number")
+    dev = ["-d", serial] if serial else []
+    if tool == "info":
+        return "hackrf_info", [s.program("hackrf_info"), *dev], TOOL_TIMEOUT_S["info"], 1 << 20
+    if tool == "sweep":
+        lo, hi = int(req["freq_min_mhz"]), int(req["freq_max_mhz"])
+        if not 0 <= lo < hi <= 7250:
+            raise ValueError(f"sweep range {lo}-{hi} MHz must be within 0-7250 and low to high")
+        args = [s.program("hackrf_sweep"), "-f", f"{lo}:{hi}"]
+        if req.get("bin_width_hz") is not None:
+            w = int(req["bin_width_hz"])
+            if not 2445 <= w <= 5_000_000:
+                raise ValueError(f"bin_width_hz must be 2445-5000000, not {w}")
+            args += ["-w", str(w)]
+        if req.get("one_shot", True):
+            args += ["-1"]
+        elif req.get("num_sweeps") is not None:
+            n = int(req["num_sweeps"])
+            if not 1 <= n <= 10_000:
+                raise ValueError(f"num_sweeps must be 1-10000, not {n}")
+            args += ["-N", str(n)]
+        return "hackrf_sweep", [*args, *_gain_args(req), *dev], _timeout(req, TOOL_TIMEOUT_S["sweep"]), 64 << 20
+    if tool == "capture":
+        f, rate, n = int(req["frequency_hz"]), int(req["sample_rate_hz"]), int(req["num_samples"])
+        if not MIN_HZ <= f <= MAX_HZ:
+            raise ValueError(f"frequency_hz {f} is outside {MIN_HZ}-{MAX_HZ}")
+        if not MIN_RATE <= rate <= MAX_RATE:
+            raise ValueError(f"sample_rate_hz {rate} is outside {MIN_RATE}-{MAX_RATE}")
+        if not 0 < 2 * n <= s.max_capture_mb << 20:
+            raise ValueError(f"a capture of {n} samples is over this agent's {s.max_capture_mb} MB limit")
+        antenna = req.get("antenna_enable", False)
+        if antenna is not False and not s.allow_bias_tee:
+            raise ValueError("bias-tee power is locked on this agent (HACKRF_AGENT_ALLOW_BIAS_TEE is off)")
+        args = [s.binary, "-r", "-", "-n", str(n), "-f", str(f), "-s", str(rate), *_gain_args(req)]
+        if antenna is True:
+            args += ["-p", "1"]
+        return "hackrf_transfer", [*args, *dev], _timeout(req, TOOL_TIMEOUT_S["capture"]), 2 * n + 4096
+    raise ValueError(f"unknown tool {tool!r}; this agent runs info, sweep and capture")
+
+
+def run_child(sock: socket.socket, args: list[str], timeout_s: float, limit: int) -> dict:
+    """Run one tool, its stdout to `sock` as DATA frames; the "done" notice."""
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    err = bytearray()
+
+    def drain() -> None:
+        for chunk in iter(lambda: proc.stderr.read(4096), b""):
+            err.extend(chunk)
+            del err[: max(0, len(err) - 16384)]
+
+    t = threading.Thread(target=drain, daemon=True)
+    t.start()
+    state = {"timed_out": False}
+
+    def stop(why: str) -> None:
+        if proc.poll() is None:
+            state[why] = True
+            try:
+                os.killpg(proc.pid, signal.SIGINT)
+            except ProcessLookupError:
+                return
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+
+    timer = threading.Timer(timeout_s, stop, args=("timed_out",))
+    timer.start()
+    sent = 0
+    try:
+        while True:
+            buf = proc.stdout.read1(READ_BYTES) if hasattr(proc.stdout, "read1") else proc.stdout.read(READ_BYTES)
+            if not buf:
+                break
+            sent += len(buf)
+            if sent > limit:
+                stop("over_limit")
+                break
+            sock.sendall(frame(DATA, buf))
+    except OSError:
+        stop("client_gone")  # nobody to send to: stop the tool and free the device
+    finally:
+        timer.cancel()
+        code = proc.wait()
+        t.join(timeout=2)
+    return {
+        "type": "done",
+        "exit_code": code,
+        "stderr": err.decode(errors="replace")[-8000:],
+        "timed_out": state["timed_out"],
+        "over_limit": state.get("over_limit", False),
+        "bytes": sent,
+    }
 
 
 # --- the one stream ---------------------------------------------------------
@@ -288,6 +444,7 @@ class Agent:
         self.lock = threading.Lock()
         self.start_lock = threading.Lock()
         self.current: Stream | None = None
+        self.tool: dict | None = None  # the "run" holding the device, if any
         self.started = time.time()
         self.last_client_seen: float | None = None
 
@@ -303,7 +460,16 @@ class Agent:
         except (KeyError, TypeError, ValueError) as exc:
             sock.sendall(notice({"type": "error", "error": f"bad request: {exc}"}))
             return
-        with self.start_lock:
+        # A tool holds the HackRF for its whole run: refuse at once rather
+        # than queue, so a worker that keeps retrying doesn't pile up requests
+        # that would preempt each other in turn when the tool ends.
+        with self.lock:
+            tool = self.tool
+        if tool is not None or not self.start_lock.acquire(timeout=10):
+            busy = f"running {tool['name']} for {tool['client']}" if tool else "busy"
+            sock.sendall(notice({"type": "error", "error": f"the HackRF is {busy}; try again when it finishes"}))
+            return
+        try:
             with self.lock:
                 old = self.current
             if old is not None:
@@ -318,8 +484,41 @@ class Agent:
                 return
             with self.lock:
                 self.current = s
+        finally:
+            self.start_lock.release()
         s.send(notice({"type": "started", **tuning}))
         s.pump()
+
+    def run(self, sock: socket.socket, peer: str, req: dict) -> None:
+        try:
+            name, args, timeout_s, limit = check_run(req, self.settings)
+        except (KeyError, TypeError, ValueError) as exc:
+            sock.sendall(notice({"type": "error", "error": f"bad request: {exc}"}))
+            return
+        with self.start_lock:
+            with self.lock:
+                old = self.current
+            if old is not None:
+                old.finish(f"preempted by {name} from {peer}")
+                old.stop_child()
+            with self.lock:
+                self.tool = {"name": name, "since": time.time(), "client": peer}
+            try:
+                done = run_child(sock, args, timeout_s, limit)
+            except OSError as exc:
+                done = None
+                try:
+                    sock.sendall(notice({"type": "error", "error": f"could not run {name}: {exc}"}))
+                except OSError:
+                    pass
+            finally:
+                with self.lock:
+                    self.tool = None
+        if done is not None:
+            try:
+                sock.sendall(notice(done))
+            except OSError:
+                pass
 
     def forget(self, s: Stream) -> None:
         with self.lock:
@@ -333,6 +532,7 @@ class Agent:
             "type": "status",
             "streaming": cur is not None,
             "stream": cur.status() if cur else None,
+            "tool": self.tool,
             "last_client_seen": self.last_client_seen,
             "agent_started": self.started,
             "binary": self.settings.binary,
@@ -375,6 +575,8 @@ class _Handler(socketserver.BaseRequestHandler):
                 sock.sendall(notice(agent.status()))
             elif cmd == "stream":
                 agent.stream(sock, peer, req)
+            elif cmd == "run":
+                agent.run(sock, peer, req)
             else:
                 sock.sendall(notice({"type": "error", "error": f"unknown command {cmd!r}"}))
         except OSError:
@@ -399,6 +601,31 @@ def request(address: tuple[str, int], token: str, req: dict, timeout: float = 5.
     sock = socket.create_connection(address, timeout=timeout)
     sock.sendall((json.dumps({**req, "token": token}) + "\n").encode())
     return sock
+
+
+class AgentRefused(Exception):
+    """The agent refused a request (an "error" notice)."""
+
+
+def run_tool(address: tuple[str, int], token: str, req: dict, sink, wait_s: float = 1200.0) -> dict:
+    """Ask the agent to run a tool; its output goes to `sink` as it comes,
+    and the "done" notice is returned. The request may wait for the device
+    while another tool runs, hence the long `wait_s`."""
+    with request(address, token, {**req, "cmd": "run"}) as sock:
+        sock.settimeout(wait_s)
+        while True:
+            got = read_frame(sock)
+            if got is None:
+                raise ConnectionError("the hackrf-agent closed the connection before the tool finished")
+            kind, body = got
+            if kind == DATA:
+                sink(body)
+            elif kind == NOTICE:
+                msg = json.loads(body)
+                if msg.get("type") == "done":
+                    return msg
+                if msg.get("type") == "error":
+                    raise AgentRefused(msg["error"])
 
 
 def status(address: tuple[str, int], token: str, timeout: float = 5.0) -> dict:

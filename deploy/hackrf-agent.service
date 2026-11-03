@@ -14,6 +14,9 @@
 #   HACKRF_AGENT_PORT=8767
 #   HACKRF_AGENT_ALLOW=192.0.2.10            # the worker, and nothing else
 #   HACKRF_AGENT_TOKEN_FILE=/etc/hackrf-mcp/agent-token   # or ..._TOKEN_SHA256
+#   HACKRF_AGENT_MAX_CAPTURE_MB=2048         # largest capture it will run
+#   HACKRF_AGENT_ALLOW_BIAS_TEE=off          # DC on the antenna port
+#   HACKRF_AGENT_TOOLS_DIR=/usr/local/bin    # hackrf_info and hackrf_sweep
 #
 # Allow the port in the firewall for the worker's address only: there is
 # no TLS, and the samples carry everything the radio hears. One HackRF: a

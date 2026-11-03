@@ -22,8 +22,10 @@ class LiveError(RuntimeError):
     """The service answered with an error."""
 
 
-def request(req: dict, timeout: float = 20.0) -> dict:
-    path = settings.get_live().socket_path
+def request(req: dict, timeout: float = 20.0, path=None) -> dict:
+    """One request to a live service's control socket: this process's
+    (settings.get_live()) unless `path` names another."""
+    path = settings.get_live().socket_path if path is None else path
     if not path.exists():
         raise Unavailable(f"the live decoder service is not running (no socket at {path})")
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

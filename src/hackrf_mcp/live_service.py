@@ -94,11 +94,16 @@ class LogPump(threading.Thread):
         except queue.Full:
             self.dropped_queue += 1
 
-    def event(self, event: str, profile: str | None, detail: str | None) -> None:
+    def event(self, event: str, profile: str | None, detail: str | None, ts: float | None = None) -> None:
         try:
-            self.q.put_nowait(("event", (time.time(), event, profile, detail)))
+            self.q.put_nowait(("event", (time.time() if ts is None else ts, event, profile, detail)))
         except queue.Full:
             self.dropped_queue += 1
+
+    def after_write(self, fn) -> None:
+        """Call fn on the pump's thread once everything queued before it is
+        written (not if the write fails)."""
+        self.q.put(("call", fn))
 
     def position(self, position: Position) -> None:
         try:
@@ -116,18 +121,20 @@ class LogPump(threading.Thread):
             self.dropped_queue += 1
 
     def drain(self) -> None:
-        rows, events, spectra, positions = [], [], [], []
+        rows, events, spectra, positions, calls = [], [], [], [], []
         while True:
             try:
                 kind, item = self.q.get_nowait()
             except queue.Empty:
                 break
-            {"row": rows, "event": events, "spectrum": spectra, "position": positions}[kind].append(item)
+            {"row": rows, "event": events, "spectrum": spectra, "position": positions, "call": calls}[kind].append(item)
         try:
             for ts, event, profile, detail in events:
                 self.writer.event(event, profile, detail, ts=ts)
             self.writer.write(rows)
             self.writer.write_positions(positions)
+            for fn in calls:
+                fn()
         finally:
             # The spectrum history must not hold up the log, nor the log it.
             if spectra and self.spectrum_writer is not None:
@@ -204,6 +211,7 @@ class LiveService:
         self.wake = threading.Event()
         self.shutdown = threading.Event()
         self.started_at = clock()
+        self.agent_link = None  # the split station's live_import.AgentLink, if any
 
         self.desired: dict | None = None  # {"spec": Spec} or {"schedule": [(Spec, minutes)], "anchor": t}
         self.hold: dict | None = None  # {"owner", "until", "token", "since", "stopped"}
@@ -620,6 +628,7 @@ class LiveService:
             now = self.clock()
             was = self.running_spec.profile if self.running_spec else None
             since = now
+            renewal = self.hold is not None and self.hold["owner"] == owner
             if self.hold is not None:
                 # Another holder's lease is replaced; the device is already free.
                 was = was or self.hold.get("stopped")
@@ -627,7 +636,7 @@ class LiveService:
             token = secrets.token_hex(8)
             self.hold = {"owner": owner, "until": now + lease, "token": token, "since": since, "stopped": was}
             self._stop_pipeline(f"paused for {owner}")
-            if was:
+            if was and not renewal:
                 self._event("pause", was, f"for {owner}, lease {lease:.0f} s")
         return {"ok": True, "token": token, "paused_profile": was, "lease_s": lease}
 
@@ -746,6 +755,7 @@ class LiveService:
         out["log"] = log
         out["spectrum"] = self.spectrum_status()
         out["feed"] = self.feed.status() if self.feed is not None else None
+        out["agent"] = self.agent_link.status() if self.agent_link is not None else None
         return out
 
     def spectrum_status(self) -> dict:
@@ -836,6 +846,17 @@ def serve(live: settings.LiveSettings) -> None:
         f"pid {os.getpid()}, pager content {'on' if live.pager_content else 'off'}, spectrum history "
         + (f"on (duty {live.spectrum_duty:g})" if recorder else "off"),
     )
+    link = None
+    if live.agent is not None:
+        # Split station: heartbeats to the hackrf-agent, and what its machine
+        # logged while no worker was around (see live_import.py).
+        from hackrf_mcp import live_import
+
+        link = live_import.AgentLink(
+            pump, live.agent, live.agent_token_file, live.live_dir / "agent-import.json", live.pager_content
+        )
+        service.agent_link = link
+        link.start()
     service.load()
     server = ControlServer(live.socket_path, service)
     threading.Thread(target=server.serve_forever, daemon=True, name="control").start()
@@ -857,6 +878,8 @@ def serve(live: settings.LiveSettings) -> None:
             live.socket_path.unlink()
         except OSError:
             pass
+        if link is not None:
+            link.stop()
         service._event("service-stop", None, None)
         feed.close()
         pump.stop()

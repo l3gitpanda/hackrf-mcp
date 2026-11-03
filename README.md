@@ -500,8 +500,28 @@ station: each would need its own typed request on the agent, and
 transmitting would move the transmit policy and its audit log there.
 `hackrf_server_status` says where the HackRF is.
 
-Still to come: the agent decoding locally whenever no worker is connected
-(see TODO.md).
+**Fallback.** The machine with the HackRF can keep its own hackrf-live
+(local device, its own saved rotation) for when the worker is away. With
+`HACKRF_AGENT_FALLBACK_LIVE_DIR` set to that service's `HACKRF_LIVE_DIR`,
+the agent holds it paused, with the live service's pause leases, while a
+worker is around: streaming, running a tool, or sending the heartbeat its
+live service sends every 30 s. After `HACKRF_AGENT_FALLBACK_AFTER_S` (120)
+without one, the agent lets go and that machine decodes on its own. The
+lease is three minutes and renewed every minute, so if the agent itself
+stops, the local service resumes by itself. When the worker is back, its
+first stream takes the HackRF over again (the agent pauses the local
+service before opening the device), and after each heartbeat the worker
+imports what was logged meanwhile: messages, positions, and the local
+service's start, stop and error events, each with its own time and marked
+as the fallback's. The worker keeps the last ids it imported in
+`agent-import.json` in its live directory; the first contact records where
+the local log stands and imports nothing, since the log copied over when
+the station was split holds the rest. Imported rows reach the log, the
+history and the MCP search, not the live view, and pager rows get the
+worker's redaction on top of what was stored. The spectrum recorded during
+a fallback stays on that machine. The local hackrf-live must not have
+`HACKRF_LIVE_AGENT` set: it is the one process there that opens the
+HackRF itself.
 
 ## Adding a decoder
 

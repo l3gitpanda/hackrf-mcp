@@ -14,6 +14,7 @@ Protocol, over one TCP connection per request:
         "amp": false}
    or  {"token": "...", "cmd": "status"}
    or  {"token": "...", "cmd": "run", "tool": "info" | "sweep" | "capture", ...}
+   or  {"token": "...", "cmd": "export", "since": {"messages": id, ...}}
    Requests are typed fields, never a command line: the agent builds the
    command itself from checked values, and only ever receives (the tools
    are hackrf_transfer -r, hackrf_sweep and hackrf_info).
@@ -27,6 +28,7 @@ Protocol, over one TCP connection per request:
        {"type": "status", ...}                the answer to "status"
        {"type": "done", "exit_code", "stderr", "timed_out", "bytes"}
                                               a "run" finished
+       {"type": "done", "max_ids", "last_ids", "more"}  an "export" finished
    Type 3 is a tool's output (a sweep's CSV, a capture's samples,
    hackrf_info's text), sent as it is written, before "done".
 3. A "run" holds the HackRF until its tool exits (or its timeout): a
@@ -35,6 +37,15 @@ Protocol, over one TCP connection per request:
    it with an "end" notice: a new stream preempts the old one (there is one
    HackRF), or hackrf_transfer exits. The agent stops hackrf_transfer with
    SIGINT and waits for it, so the device is free before the next one starts.
+
+Fallback (HACKRF_AGENT_FALLBACK_LIVE_DIR): this machine keeps its own live
+service, with a local HackRF and its own saved rotation. While a worker is
+around (it sends {"cmd": "status", "heartbeat": true} every 30 s, or a
+stream or tool is running) the agent holds that service paused with its
+pause leases; after HACKRF_AGENT_FALLBACK_AFTER_S (120) without one, it
+lets go and the machine decodes on its own. The lease is short and
+renewed, so if the agent itself dies the local service resumes within
+three minutes. "export" hands the worker what was logged meanwhile.
 
 Only addresses in HACKRF_AGENT_ALLOW may connect, and every request needs a
 token whose SHA-256 is in HACKRF_AGENT_TOKEN_SHA256 (or that is in
@@ -54,6 +65,7 @@ import shutil
 import signal
 import socket
 import socketserver
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -61,6 +73,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from hackrf_mcp import live_client  # standard library only, like this module
 
 FRAME = struct.Struct(">IB")
 SAMPLES = 1
@@ -129,6 +143,9 @@ class AgentSettings:
     # DC on the antenna port (off unless HACKRF_AGENT_ALLOW_BIAS_TEE).
     max_capture_mb: int = 2048
     allow_bias_tee: bool = False
+    # This machine's own live service, decoding while no worker is around.
+    fallback_live_dir: Path | None = None
+    fallback_after_s: float = 120.0
     digests: list[bytes] = field(default_factory=list)
 
     @classmethod
@@ -144,6 +161,8 @@ class AgentSettings:
             tools_dir=env.get("HACKRF_AGENT_TOOLS_DIR") or None,
             max_capture_mb=int(env.get("HACKRF_AGENT_MAX_CAPTURE_MB", "2048")),
             allow_bias_tee=env.get("HACKRF_AGENT_ALLOW_BIAS_TEE", "").strip().lower() in ("1", "true", "yes", "on"),
+            fallback_live_dir=Path(env["HACKRF_AGENT_FALLBACK_LIVE_DIR"]) if env.get("HACKRF_AGENT_FALLBACK_LIVE_DIR") else None,
+            fallback_after_s=float(env.get("HACKRF_AGENT_FALLBACK_AFTER_S", "120")),
         )
         s.digests = s.load_digests()
         return s
@@ -329,6 +348,144 @@ def run_child(sock: socket.socket, args: list[str], timeout_s: float, limit: int
     }
 
 
+# --- fallback: this machine's own live service -------------------------------
+
+FALLBACK_LEASE_S = 180.0
+FALLBACK_RENEW_S = 60.0
+FALLBACK_OWNER = "hackrf-agent (a worker has the HackRF)"
+EXPORT_TABLES = ("messages", "positions", "events")
+
+
+class Fallback:
+    """This machine's own live service (a local HackRF, its own saved
+    rotation): left to decode while no worker is around, and paused with the
+    live service's own pause leases while one is."""
+
+    def __init__(self, agent: Agent, live_dir: Path, after_s: float):
+        self.agent = agent
+        self.live_dir = Path(live_dir)
+        self.socket = self.live_dir / "control.sock"
+        self.after_s = after_s
+        self.lock = threading.Lock()
+        self.token: str | None = None
+        self.held_since: float | None = None
+        self.lease_until: float | None = None
+        self.renewed = 0.0
+        self.error: str | None = None
+
+    def hold(self) -> None:
+        """Make sure the local service has let go of the HackRF: it stops its
+        pipeline before it answers. A local service that isn't running has
+        nothing to let go of; one that refuses raises LiveError."""
+        with self.lock:
+            self._hold()
+
+    def _hold(self) -> None:
+        now = time.time()
+        if self.token is not None and now - self.renewed < FALLBACK_RENEW_S:
+            return
+        # A renewal replaces the service's one pause with a new lease.
+        try:
+            r = live_client.request({"cmd": "pause", "owner": FALLBACK_OWNER, "lease_s": FALLBACK_LEASE_S}, path=self.socket)
+        except live_client.Unavailable:
+            self.token = self.held_since = self.lease_until = None
+            return
+        if self.token is None:
+            self.held_since = now
+        self.token, self.renewed, self.lease_until, self.error = r["token"], now, now + FALLBACK_LEASE_S, None
+
+    def _release(self) -> None:
+        token, self.token = self.token, None
+        self.held_since = self.lease_until = None
+        if token is not None:
+            try:
+                live_client.request({"cmd": "resume", "token": token}, timeout=5, path=self.socket)
+            except (live_client.Unavailable, live_client.LiveError):
+                pass  # the lease runs out by itself
+
+    def worker_present(self, now: float) -> bool:
+        """A stream or tool running or being started, or a worker heartbeat
+        within after_s."""
+        a = self.agent
+        with a.lock:
+            busy = a.current is not None or a.tool is not None
+        # start_lock is held from before hold() until `current` or `tool` is
+        # set, so a stream being started counts too.
+        busy = busy or a.start_lock.locked()
+        return busy or (a.last_heartbeat is not None and now - a.last_heartbeat < self.after_s)
+
+    def tick(self) -> None:
+        # Deciding and acting under one lock: a stream that holds the local
+        # service between the two can't be undone by a release.
+        with self.lock:
+            if self.worker_present(time.time()):
+                try:
+                    self._hold()
+                except live_client.LiveError as exc:
+                    self.error = str(exc)
+            else:
+                self._release()
+
+    def run_forever(self, stop: threading.Event, every_s: float = 5.0) -> None:
+        self.tick()
+        while not stop.wait(every_s):
+            self.tick()
+
+    def status(self) -> dict:
+        return {
+            "held": self.token is not None,
+            "held_since": self.held_since,
+            "lease_until": self.lease_until,
+            "after_s": self.after_s,
+            "error": self.error,
+        }
+
+    def export(self, sock: socket.socket, req: dict) -> None:
+        """What the local service logged after the ids in req["since"], as
+        JSON lines in DATA frames ({"table", "row"}), then "done" with each
+        table's highest id. Rows go as stored: pager text that wasn't logged
+        isn't there to send."""
+        try:
+            raw_since = req.get("since") or {}
+            since = {t: int(raw_since.get(t, 0)) for t in EXPORT_TABLES}
+            limit = max(1, min(int(req.get("limit", 5000)), 20_000))
+        except (AttributeError, TypeError, ValueError) as exc:
+            sock.sendall(notice({"type": "error", "error": f"bad request: {exc}"}))
+            return
+        db = self.live_dir / "live.db"
+        if not db.exists():
+            sock.sendall(notice({"type": "done", "max_ids": {t: 0 for t in EXPORT_TABLES}, "last_ids": {}, "more": False}))
+            return
+        try:
+            self._export(sock, db, since, limit, bool(req.get("max_only")))
+        except sqlite3.Error as exc:
+            sock.sendall(notice({"type": "error", "error": f"could not read this machine's live log: {exc}"}))
+
+    def _export(self, sock: socket.socket, db: Path, since: dict, limit: int, max_only: bool) -> None:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            max_ids = {t: conn.execute(f"SELECT coalesce(max(id), 0) FROM {t}").fetchone()[0] for t in EXPORT_TABLES}
+            last_ids: dict[str, int] = {}
+            more = False
+            if not max_only:
+                for t in EXPORT_TABLES:
+                    rows = conn.execute(f"SELECT * FROM {t} WHERE id > ? ORDER BY id LIMIT ?", (since[t], limit + 1)).fetchall()
+                    more = more or len(rows) > limit
+                    batch = []
+                    for row in rows[:limit]:
+                        batch.append(json.dumps({"table": t, "row": dict(row)}, separators=(",", ":")))
+                        last_ids[t] = row["id"]
+                        if len(batch) >= 500:
+                            sock.sendall(frame(DATA, ("\n".join(batch) + "\n").encode()))
+                            batch = []
+                    if batch:
+                        sock.sendall(frame(DATA, ("\n".join(batch) + "\n").encode()))
+        finally:
+            conn.close()
+        sock.sendall(notice({"type": "done", "max_ids": max_ids, "last_ids": last_ids, "more": more}))
+
+
 # --- the one stream ---------------------------------------------------------
 
 
@@ -446,6 +603,8 @@ class Agent:
         self.current: Stream | None = None
         self.tool: dict | None = None  # the "run" holding the device, if any
         self.started = time.time()
+        self.last_heartbeat: float | None = None
+        self.fallback = Fallback(self, settings.fallback_live_dir, settings.fallback_after_s) if settings.fallback_live_dir else None
         self.last_client_seen: float | None = None
 
     def authorised(self, token: object) -> bool:
@@ -470,6 +629,8 @@ class Agent:
             sock.sendall(notice({"type": "error", "error": f"the HackRF is {busy}; try again when it finishes"}))
             return
         try:
+            if not self._hold_fallback(sock):
+                return
             with self.lock:
                 old = self.current
             if old is not None:
@@ -496,6 +657,8 @@ class Agent:
             sock.sendall(notice({"type": "error", "error": f"bad request: {exc}"}))
             return
         with self.start_lock:
+            if not self._hold_fallback(sock):
+                return
             with self.lock:
                 old = self.current
             if old is not None:
@@ -520,6 +683,18 @@ class Agent:
             except OSError:
                 pass
 
+    def _hold_fallback(self, sock: socket.socket) -> bool:
+        """Before the HackRF is opened: make this machine's own live service
+        let go of it. False (and the client told) if it won't."""
+        if self.fallback is None:
+            return True
+        try:
+            self.fallback.hold()
+            return True
+        except live_client.LiveError as exc:
+            sock.sendall(notice({"type": "error", "error": f"this machine's own live service did not let go of the HackRF: {exc}"}))
+            return False
+
     def forget(self, s: Stream) -> None:
         with self.lock:
             if self.current is s:
@@ -533,6 +708,8 @@ class Agent:
             "streaming": cur is not None,
             "stream": cur.status() if cur else None,
             "tool": self.tool,
+            "last_heartbeat": self.last_heartbeat,
+            "fallback": self.fallback.status() if self.fallback else None,
             "last_client_seen": self.last_client_seen,
             "agent_started": self.started,
             "binary": self.settings.binary,
@@ -572,7 +749,14 @@ class _Handler(socketserver.BaseRequestHandler):
             sock.settimeout(SEND_TIMEOUT_S)
             cmd = req.get("cmd")
             if cmd == "status":
+                if req.get("heartbeat") is True:
+                    agent.last_heartbeat = agent.last_client_seen
                 sock.sendall(notice(agent.status()))
+            elif cmd == "export":
+                if agent.fallback is None:
+                    sock.sendall(notice({"type": "error", "error": "this agent has no local live service (HACKRF_AGENT_FALLBACK_LIVE_DIR)"}))
+                else:
+                    agent.fallback.export(sock, req)
             elif cmd == "stream":
                 agent.stream(sock, peer, req)
             elif cmd == "run":
@@ -628,8 +812,31 @@ def run_tool(address: tuple[str, int], token: str, req: dict, sink, wait_s: floa
                     raise AgentRefused(msg["error"])
 
 
-def status(address: tuple[str, int], token: str, timeout: float = 5.0) -> dict:
-    with request(address, token, {"cmd": "status"}, timeout) as sock:
+def export(address: tuple[str, int], token: str, since: dict | None, max_only: bool = False, limit: int = 5000) -> tuple[list[dict], dict]:
+    """What the agent's machine logged after `since` (ids per table): the
+    rows ({"table", "row"}) and the "done" notice (max_ids, last_ids, more)."""
+    buf = bytearray()
+    with request(address, token, {"cmd": "export", "since": since or {}, "max_only": max_only, "limit": limit}) as sock:
+        sock.settimeout(60)
+        while True:
+            got = read_frame(sock)
+            if got is None:
+                raise ConnectionError("the hackrf-agent closed the connection before the export finished")
+            kind, body = got
+            if kind == DATA:
+                buf += body
+            elif kind == NOTICE:
+                msg = json.loads(body)
+                if msg.get("type") == "done":
+                    rows = [json.loads(line) for line in buf.decode().splitlines() if line]
+                    return rows, msg
+                if msg.get("type") == "error":
+                    raise AgentRefused(msg["error"])
+
+
+def status(address: tuple[str, int], token: str, timeout: float = 5.0, heartbeat: bool = False) -> dict:
+    req = {"cmd": "status", "heartbeat": True} if heartbeat else {"cmd": "status"}
+    with request(address, token, req, timeout) as sock:
         got = read_frame(sock)
     if got is None or got[0] != NOTICE:
         raise ConnectionError("the agent closed the connection without an answer")
@@ -648,10 +855,17 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    halt = threading.Event()
+    if server.agent.fallback is not None:
+        threading.Thread(target=server.agent.fallback.run_forever, args=(halt,), daemon=True, name="fallback").start()
     print(f"hackrf-agent on {settings.host}:{settings.port}, allowing {', '.join(settings.allow)}", file=sys.stderr, flush=True)
     try:
         server.serve_forever()
     finally:
+        # The hold on the local live service is left to run out (within
+        # FALLBACK_LEASE_S) rather than released: a restart a few seconds
+        # later would otherwise hand the HackRF back and forth.
+        halt.set()
         with server.agent.lock:
             cur = server.agent.current
         if cur is not None:

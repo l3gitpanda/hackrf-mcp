@@ -174,6 +174,12 @@ def _agent_line() -> str:
         doing = f"streaming {st['stream']['center_hz'] / 1e6:.4f} MHz at {st['stream']['sample_rate_hz'] / 1e6:g} MS/s"
     else:
         doing = "idle"
+    fb = st.get("fallback")
+    if fb is not None:
+        if fb.get("held"):
+            doing += "; its machine's own live service is paused while this worker is around"
+        else:
+            doing += "; its machine's own live service is decoding (no worker seen lately)"
     return (
         f"behind the hackrf-agent at {host}:{port} ({doing}); transmitting, bias-tee, clock "
         "and Opera Cake control are not available through it, and the agent's own limits apply "

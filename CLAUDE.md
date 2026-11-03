@@ -144,7 +144,13 @@ asyncio.run(main())
   library only (it must stay importable without numpy); typed receive-only
   requests, never argv. `live_profiles.RemoteSource` is its client, used
   when `HACKRF_LIVE_AGENT` is set. `tests/test_agent.py` runs both over
-  loopback TCP with a fake `hackrf_transfer` (run unsandboxed).
+  loopback TCP with a fake `hackrf_transfer` (run unsandboxed). Its
+  `Fallback` keeps the agent machine's own hackrf-live paused while a
+  worker is around (it uses `live_client` and `settings`, also standard
+  library only), and "export" serves that service's log.
+- `src/hackrf_mcp/live_import.py` — the worker's side of the fallback: the
+  heartbeat to the agent and the import of the fallback's log through the
+  LogPump. `tests/test_fallback.py` covers both halves.
 - `Dockerfile`, `deploy/worker/`, `.forgejo/workflows/image.yaml` — the
   split station's worker image, its compose stack and its CI build.
   `src/hackrf_mcp/selfcheck.py` checks an image has every decoder.

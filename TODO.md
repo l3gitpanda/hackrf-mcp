@@ -182,13 +182,25 @@ owner's Docker stack doing everything else.
   refused on a split station; transmitting through the agent needs its
   own approval, since the transmit policy and its audit log would move
   to the agent, the only thing touching the device.
-- **W4:** fallback. The agent starts local decoding when no worker has
-  been seen for about 2 minutes (`last_client_seen`), and stops it when one
-  asks for a stream; the worker imports the rows and positions logged
-  meanwhile.
+- **W4 (done):** fallback. The QNAP keeps its hackrf-live; the agent
+  (`HACKRF_AGENT_FALLBACK_LIVE_DIR`) holds it paused with renewed
+  three-minute pause leases while a worker streams, runs a tool or sends
+  its 30 s heartbeat, and lets go after 2 minutes without one (or by
+  itself within the lease if the agent dies). Every stream or tool pauses
+  it before opening the HackRF. The worker's live service imports what was
+  logged meanwhile through the agent's "export" (messages, positions,
+  start/stop/error events), with a watermark in `agent-import.json`;
+  fallback spectrum stays on the QNAP. The QNAP's hackrf-live keeps no
+  `HACKRF_LIVE_AGENT`.
 - **W5:** cutover, with the owner's approval: the agent's port allowed to
   the worker only, the data copied to the worker's volume, the web and MCP
-  addresses moved.
+  addresses moved. Order matters for the log, since the worker's first
+  contact records the QNAP's ids and imports nothing: stop the QNAP's
+  hackrf-live, copy live.db (and spectrum.db), start the agent and the
+  worker so its first contact sees the ids the copy has, then start the
+  QNAP's hackrf-live again as the fallback. Rows logged on the QNAP between
+  the copy and the first contact would reach neither side; a worker started
+  before the copy would import rows the copy also has.
 
 ### Constraints
 

@@ -3,11 +3,13 @@
 // (/static/bandplan-us.json), not code. Bands overlap as a rule (902-928 MHz
 // is ISM and amateur at once; 1090 MHz sits inside 960-1215 MHz), so they're
 // laid out in lanes, broadest on top; pointing at the strip (or tapping it)
-// lists everything at that frequency.
+// lists everything at that frequency, and under it the official allocation
+// from the FCC's Table of Frequency Allocations (/static/fcc-us-allocations.json).
 
 import { clear, h, mhz } from './util.js';
 
 let planPromise = null;
+let officialPromise = null;
 
 export function loadPlan(url = '/static/bandplan-us.json') {
   if (!planPromise) {
@@ -16,6 +18,28 @@ export function loadPlan(url = '/static/bandplan-us.json') {
       .catch(() => null);
   }
   return planPromise;
+}
+
+export function loadOfficial(url = '/static/fcc-us-allocations.json') {
+  if (!officialPromise) {
+    officialPromise = fetch(url, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  return officialPromise;
+}
+
+// The official table's band holding f in one column (the bands tile the
+// spectrum, so there is at most one), or null.
+export function officialAt(rows, f) {
+  return rows.find((b) => b.lo <= f && f < b.hi) || null;
+}
+
+// "Mobile" -> "Mobile (secondary)": the table prints a primary allocation's
+// first word in capitals ("MOBILE except aeronautical mobile") and a
+// secondary one's in mixed case.
+export function serviceText(name) {
+  return /[a-z]/.test(name.split(' ')[0]) ? `${name} (secondary)` : name;
 }
 
 // The bands overlapping [lo, hi], each with a lane (0 at the top) and its
@@ -87,7 +111,7 @@ export class BandStrip {
   async show(lo, hi) {
     this.lo = lo;
     this.hi = hi;
-    if (!this.plan) this.plan = await loadPlan();
+    if (!this.plan) [this.plan, this.official] = await Promise.all([loadPlan(), loadOfficial()]);
     if (this.lo !== lo || this.hi !== hi) return; // a newer view came in meanwhile
     this.draw();
   }
@@ -142,6 +166,22 @@ export class BandStrip {
       this.tip.append(row);
     }
     this.tip.append(h('div', { class: 'muted bsrc' }, `${this.plan.name} band plan (${this.plan.updated}); approximate edges`));
+    const off = this.official;
+    if (off) {
+      const nf = officialAt(off.non_federal, f);
+      const fed = officialAt(off.federal, f);
+      const sec = h('div', { class: 'boff' }, h('b', {}, 'Official allocation'));
+      const line = (label, b) => {
+        if (!b) return;
+        const what = b.services.length ? b.services.map(serviceText).join(', ') : 'no allocation';
+        sec.append(h('div', {}, h('span', { class: 'muted' }, `${label} ${rangeText(b.lo, b.hi)}: `), what));
+        if (b.parts && b.parts.length) sec.append(h('div', { class: 'muted' }, `FCC rule parts: ${b.parts.join(', ')}`));
+      };
+      line('Non-Federal', nf);
+      line('Federal', fed);
+      sec.append(h('div', { class: 'muted bsrc' }, `${off.source}, revised ${off.revised}`));
+      this.tip.append(sec);
+    }
     this.tip.hidden = false;
     // Keep the tip inside the strip's width, next to the pointer.
     const tw = Math.min(360, r.width);

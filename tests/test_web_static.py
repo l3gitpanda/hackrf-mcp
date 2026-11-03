@@ -106,3 +106,27 @@ def test_the_band_plan_is_well_formed():
     # What the station's own profiles listen to is named.
     for n in ("ADS-B / Mode S 1090 MHz", "AIS 1 (161.975 MHz)", "AIS 2 (162.025 MHz)", "NOAA Weather Radio", "Paging"):
         assert n in names
+
+
+def test_the_official_table_tiles_the_spectrum_and_reads_right():
+    data = json.loads((STATIC / "fcc-us-allocations.json").read_text())
+    assert data["revised"] and data["url"].startswith("https://")
+    for col in ("federal", "non_federal"):
+        rows = data[col]
+        assert rows[0]["lo"] <= 1_000_000 and rows[-1]["hi"] >= 6_000_000_000, col
+        for a, b in zip(rows, rows[1:]):
+            assert a["hi"] == b["lo"], (col, a, b)  # no gaps, no overlaps
+        for r in rows:
+            assert r["lo"] < r["hi"] and all(isinstance(s, str) and s for s in r["services"]), r
+
+    def at(col, f):
+        return next(r for r in data[col] if r["lo"] <= f < r["hi"])
+
+    # Read against the PDF when it was parsed.
+    assert at("non_federal", 98e6)["services"] == ["BROADCASTING"]
+    assert "Broadcast Radio (FM)(73)" in at("non_federal", 98e6)["parts"]
+    assert at("federal", 110e6)["services"] == ["AERONAUTICAL RADIONAVIGATION"]
+    assert at("non_federal", 145e6)["services"] == ["AMATEUR", "AMATEUR-SATELLITE"]
+    assert at("non_federal", 156.8e6)["services"][0].startswith("MARITIME MOBILE")
+    assert at("federal", 1090e6)["services"] == ["AERONAUTICAL MOBILE (R)", "AERONAUTICAL RADIONAVIGATION"]
+    assert "RF Devices (15)" in at("non_federal", 915e6)["parts"]

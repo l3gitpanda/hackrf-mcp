@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
 import { AutoLevel, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
-import { bandsAt, layoutBands, rangeText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
+import { bandsAt, layoutBands, officialAt, rangeText, serviceText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
@@ -192,4 +192,15 @@ test('band ranges read in the unit that suits them', () => {
   assert.equal(rangeText(162400000, 162550000), '162.4–162.55 MHz');
   assert.equal(rangeText(535000, 1705000), '535–1705 kHz');
   assert.equal(rangeText(2400000000, 2483500000), '2.4–2.4835 GHz');
+});
+
+test('the official table: the band at a frequency, and primary or secondary from the printed case', () => {
+  const rows = [{ lo: 88e6, hi: 108e6, services: ['BROADCASTING'] }, { lo: 108e6, hi: 117.975e6, services: ['AERONAUTICAL RADIONAVIGATION'] }];
+  assert.equal(officialAt(rows, 98e6).services[0], 'BROADCASTING');
+  assert.equal(officialAt(rows, 108e6).lo, 108e6);
+  assert.equal(officialAt(rows, 120e6), null);
+  assert.equal(serviceText('MOBILE except aeronautical mobile'), 'MOBILE except aeronautical mobile');
+  assert.equal(serviceText('AERONAUTICAL MOBILE (R)'), 'AERONAUTICAL MOBILE (R)');
+  assert.equal(serviceText('Mobile except aeronautical mobile'), 'Mobile except aeronautical mobile (secondary)');
+  assert.equal(serviceText('Radiolocation'), 'Radiolocation (secondary)');
 });

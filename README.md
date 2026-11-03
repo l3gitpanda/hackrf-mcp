@@ -387,8 +387,14 @@ weather, science). Overlapping bands sit in lanes, broadest on top, and
 pointing at the strip (or tapping it) lists every band at that frequency
 with its FCC rule part. The plan is data, `web/static/bandplan-us.json`: a
 practical United States plan of about 135 bands compiled from FCC rules,
-with coarse edges where the real structure is intricate. Live's **Bands**
-button hides it, and History has a view toggle.
+with coarse edges where the real structure is intricate. Under the plan's
+bands the readout gives the **official allocation** at that frequency, Non-Federal and
+Federal, with the FCC rule parts: the United States part of the FCC's Online
+Table of Frequency Allocations (47 CFR 2.106, revised 2022-07-01; the eCFR
+prints it only as images), parsed from the FCC's PDF by
+`tools/fcc_us_table.py` and compacted by `tools/fcc_web_json.py` into
+`web/static/fcc-us-allocations.json`. Live's **Bands** button hides the
+strip, and History has a view toggle.
 
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and

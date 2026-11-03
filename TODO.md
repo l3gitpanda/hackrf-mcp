@@ -100,8 +100,10 @@ after the owner approves.
    channels, since segments don't record a run's custom frequencies),
    9. **Band plan strip** (done: `bandstrip.js`, `bandplan-us.json`, on
    Live, History and the Log's thumbnail), 10. **Official allocations**
-   (the FCC Table of Frequency Allocations, 47 CFR 2.106, parsed from the
-   FCC's PDF into JSON, shown under the strip's pointer readout), 11.
+   (done: the FCC Table of Frequency Allocations, 47 CFR 2.106, revised
+   2022-07-01, parsed from the FCC's PDF by `tools/fcc_us_table.py` into
+   `fcc-us-allocations.json`, shown under the strip's pointer readout; to
+   refresh it, download a newer PDF and run the two tools), 11.
    **Watch a range** (below), then Summaries, Alerts and Plugins.
 
 ### Watching a custom range (milestone 11)

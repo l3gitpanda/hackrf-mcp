@@ -396,3 +396,8 @@ test('subjects with an unacknowledged hit, keyed as the Map keys targets', () =>
   assert.ok(sameKeys(k, new Set(['p2|42', 'p1|A1'])));
   assert.ok(!sameKeys(k, new Set(['p1|A1'])));
 });
+
+test('the sixth profile colour is no longer the fifth one under colour blindness', () => {
+  assert.equal(PALETTE[4], '#8fd46a');
+  assert.equal(PALETTE[5], '#fff27a');
+});

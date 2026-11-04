@@ -154,7 +154,7 @@ def test_a_rebuilt_log_resets_the_watermark(env):
     assert [h["subject"] for h in eng.poll_once(NOW + 40)] == ["Y2"]  # not silent forever
 
 
-def test_pager_text_never_reaches_a_hit(env):
+def test_pager_text_reaches_a_hit_only_when_the_operator_allows_it(env):
     writer, store, tmp = env
     rule = alerts.parse_rule(
         {"name": "dock", "profiles": ["flex"], "conditions": [{"field": "message", "op": "matches", "values": ["*dock*"]}]},
@@ -170,7 +170,14 @@ def test_pager_text_never_reaches_a_hit(env):
     writer.write([_page(NOW)])
     hits = eng.poll_once(NOW + 1)
     assert {h["rule_name"] for h in hits} == {"dock", "capcode"}
-    assert SECRET_TEXT not in json.dumps(hits) and SECRET_TEXT not in json.dumps(store.hits())
+    # Allowed: the text it matched is in the hit, as any other field is.
+    assert next(h for h in hits if h["rule_name"] == "dock")["detail"] == f"message={SECRET_TEXT}"
+    # Not allowed (the setting turned off later): the hit records the rule.
+    off = alerts.AlertEngine(store, tmp / "live.db", pager_content=False)
+    off.poll_once(NOW)
+    writer.write([_page(NOW + 700)])
+    hits = off.poll_once(NOW + 701)
+    assert SECRET_TEXT not in json.dumps(hits)
     assert next(h for h in hits if h["rule_name"] == "dock")["detail"] == "message matches *dock*"
 
 

@@ -11,8 +11,9 @@ import shutil
 import subprocess
 import sys
 
-# Capture decoders the original station never had installed: reported, not required.
-OPTIONAL = {"uat", "rds"}
+# Capture decoders that may be missing: reported, not required. Since the
+# worker image builds redsea and dump978-fa (uat, rds), there are none.
+OPTIONAL: set[str] = set()
 
 
 def check() -> tuple[list[str], list[str]]:

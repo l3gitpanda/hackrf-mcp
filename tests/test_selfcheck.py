@@ -1,13 +1,22 @@
 from hackrf_mcp import decoders, live_profiles, selfcheck
 
 
-def test_selfcheck_requires_every_live_and_capture_decoder_but_the_optional_ones(monkeypatch):
+def test_selfcheck_requires_every_live_and_capture_decoder(monkeypatch):
     monkeypatch.setattr(live_profiles, "available", lambda: {"adsb": "/usr/bin/dump1090-mutability", "ais": None})
     monkeypatch.setattr(decoders, "available", lambda: {"adsb": "/usr/bin/dump1090-mutability", "uat": None, "rds": None, "acars": None})
     monkeypatch.setattr(selfcheck.shutil, "which", lambda name: None)  # no ldd: skip the library check
     lines, problems = selfcheck.check()
-    assert problems == ["missing  live profile ais", "missing  decoder acars"]
-    assert any("optional decoder uat" in l for l in lines) and any("optional decoder rds" in l for l in lines)
+    # The image builds redsea and dump978-fa, so uat and rds are required too.
+    assert problems == ["missing  live profile ais", "missing  decoder uat", "missing  decoder rds", "missing  decoder acars"]
+
+
+def test_selfcheck_still_reports_optional_decoders(monkeypatch):
+    monkeypatch.setattr(selfcheck, "OPTIONAL", {"uat"})
+    monkeypatch.setattr(live_profiles, "available", lambda: {})
+    monkeypatch.setattr(decoders, "available", lambda: {"uat": None})
+    monkeypatch.setattr(selfcheck.shutil, "which", lambda name: None)
+    lines, problems = selfcheck.check()
+    assert problems == [] and any("optional decoder uat" in l for l in lines)
 
 
 def test_selfcheck_reports_a_library_that_does_not_resolve(monkeypatch):

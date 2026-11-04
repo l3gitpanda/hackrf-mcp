@@ -137,3 +137,35 @@ def test_the_live_scanner_reports_frames_as_they_are_found():
         sc.feed(y[i : i + 50_000])
     sc.finish()
     assert [f.frame.payload for f in got] == [b"pushed in pieces"] and preset.sf == got[0].frame.sf
+
+
+def test_the_status_says_where_frames_were_turned_away(tmp_path):
+    """A frame whose header fails and one with another sync word, through
+    the pipeline: the summary hackrf_live_status prints counts both."""
+    live = settings.LiveSettings(live_dir=tmp_path / "live")
+    tuning = lp.resolve(Spec("meshtastic"), live)
+    slot = 906_875_000
+    raw = packet(SENDER, 9, TEXT)
+    syms = encode(raw, LONG.sf, LONG.cr)
+    for k in range(1, 6):  # the header block, past what its code corrects
+        syms[k] = (syms[k] + 4 * 37 * k) % (1 << LONG.sf)
+    fs = 2_000_000
+    y = modulate(syms, LONG.sf, bw_hz=250e3, os=8, lead=2000.3, amplitude=0.05, cfo_hz=3000, fc_hz=slot)
+    y2 = modulate(encode(b"\x40" + bytes(10), LONG.sf, 1), LONG.sf, bw_hz=250e3, os=8, lead=1000.3,
+                  amplitude=0.05, sync_word=0x34, fc_hz=slot)
+    x = np.concatenate([y, y2]).astype(np.complex64)
+    x = x * np.exp(2j * np.pi * (slot - tuning.center_hz) / fs * np.arange(x.size)).astype(np.complex64)
+    path = tmp_path / "bad.cs8"
+    path.write_bytes(iq.complex_to_cs8(x, 127 / 0.15))
+    ctx = lp.Context(settings=live, emit=lambda r: None, count=lambda n: None, run_dir=tmp_path / "run",
+                     make_source=lambda tu: lp.FileSource(path, tu.sample_rate_hz, realtime=False))
+    pipe = lp.make_pipeline(tuning, ctx)
+    pipe.start()
+    deadline = time.monotonic() + 30
+    while not pipe.finished() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    pipe.stop()
+    text = "\n".join(pipe.health()["decoder_summary"])
+    # Both sample phases find the bad header's preamble, so it counts twice.
+    assert "header checksum failed 2" in text and "another sync word 1" in text and "packets logged 0" in text
+    assert "turned away (header failed): SF11 250 kHz at 906.8750 MHz, sync symbols 16,88" in text

@@ -40,6 +40,7 @@ decoding), so sensitivity is about a dB or two short of a LoRa radio's.
 
 from __future__ import annotations
 
+import collections
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -371,6 +372,11 @@ class Demodulator:
         # Once there is a preamble, a downchirp must stand out more.
         self.confirm = np.log(self.n) + 2
         self.up = upchirp(sf)
+        # What became of each preamble-like run (both sample phases count),
+        # and the last few that were turned away, for diagnosing a channel
+        # where frames are on the air but nothing decodes.
+        self.stats = {"runs": 0, "no_downchirp": 0, "no_sfd": 0, "sync_rejected": 0, "header_failed": 0, "frames": 0}
+        self.rejects: collections.deque = collections.deque(maxlen=5)
         self.down = np.conj(self.up)
         self._ramp = np.arange(self.n, dtype=np.float64) / self.n
 
@@ -509,8 +515,15 @@ class Demodulator:
                 return g, k
         return None
 
+    def _reject(self, why: str, sync: tuple[int, int] | None, snr_db: float, cfo: float) -> None:
+        self.stats[why] += 1
+        self.rejects.append(
+            {"why": why, "sf": self.sf, "sync": sync, "snr_db": round(snr_db, 1), "cfo_hz": round(cfo * self.bw_hz / self.n)}
+        )
+
     def _frame(self, x: np.ndarray, xs: np.ndarray, a: int, b: int, offset: float) -> Frame | None:
         n = self.n
+        self.stats["runs"] += 1
         # The upchirps' bin (CFO + STO), finer than a bin, from the windows
         # inside the run (the first may be partly something else).
         inner = list(range(a + 1, b)) if b - a >= 3 else list(range(a, b + 1))
@@ -537,7 +550,10 @@ class Demodulator:
             ratio = top * (n - 1) / max(float(p.sum()) - top, 1e-30)
             if ratio > best:
                 best, best_w, k_down = ratio, w, _peak(p)
+        noise = (pre.sum() - pre.max()) / (n - 1)
+        snr_db = float(10 * np.log10(max(pre.max() / max(noise, 1e-30) - 1, 1e-6) / n))
         if best_w < 0 or best < self.confirm:
+            self.stats["no_downchirp"] += 1
             return None
         # The fraction comes from the phase turn, which nothing biases; the
         # integer part from the up and down bins together.
@@ -557,6 +573,7 @@ class Demodulator:
                     cfo += fix
                     aligned = self._align(x, inner, a, best_w, k_up, cfo, offset)
         if aligned is None:
+            self._reject("no_sfd", None, snr_db, cfo)
             return None
         g, k_d = aligned
         cfo_hz = cfo * self.bw_hz / n
@@ -569,10 +586,9 @@ class Demodulator:
         sync = (int(np.argmax(s0)), int(np.argmax(s1)))
         word = sync_word(sync, n)
         if word is None:
+            self._reject("sync_rejected", sync, snr_db, cfo)
             return None
         data0 = g(k_d + 2.25)
-        noise = (pre.sum() - pre.max()) / (n - 1)
-        snr_db = float(10 * np.log10(max(pre.max() / max(noise, 1e-30) - 1, 1e-6) / n))
         frame = Frame(
             sample=int(round(data0)),
             sf=self.sf,
@@ -600,6 +616,7 @@ class Demodulator:
         frame.symbols = head
         header, _ = decode_header(head, self.sf)
         if not header.checksum_ok or header.length == 0:
+            self._reject("header_failed", sync, snr_db, cfo)
             return frame
         total = frame_symbols(header.length, self.sf, header.cr, header.has_crc, self.ldro)
         rest = symbols(8, total - 8)
@@ -609,6 +626,7 @@ class Demodulator:
         decoded = decode_symbols(frame.symbols, self.sf, self.ldro)
         if decoded is None:
             return frame
+        self.stats["frames"] += 1
         frame.header = decoded.header
         frame.payload = decoded.payload
         frame.crc_ok = decoded.crc_ok
@@ -772,6 +790,18 @@ class Scanner:
             for t in tracks:
                 t.finish(deadline)
         self._report()
+
+    def stats(self) -> tuple[dict, list[dict]]:
+        """Every demodulator's counts added up, and the latest rejects."""
+        total: dict = {}
+        rejects: list[dict] = []
+        for tracks in self.groups.values():
+            for t in tracks:
+                for d in t.demods:
+                    for k, v in d.stats.items():
+                        total[k] = total.get(k, 0) + v
+                    rejects += [{**r, "freq_hz": t.channel.freq_hz, "bw_hz": t.channel.bw_hz} for r in d.rejects]
+        return total, rejects[-5:]
 
     def results(self) -> list[Found]:
         """Without on_found: everything found, in time order."""

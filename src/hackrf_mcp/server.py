@@ -1560,6 +1560,8 @@ def _format_live_status(st: dict) -> str:
             "  Channel levels (last ~40 ms, dBFS): "
             + ", ".join(f"{f} MHz {v if v is not None else '-'}" for f, v in h["channel_levels_dbfs"].items())
         )
+    for line in h.get("decoder_summary") or []:
+        lines.append(f"  Decoder: {line}")
     if st.get("last_error"):
         lines.append(f"  Last error ({_utc(st.get('last_error_at'))}): {st['last_error']}")
     if st.get("restarts"):

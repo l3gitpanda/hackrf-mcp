@@ -39,3 +39,40 @@ export function leftText(seconds) {
   if (!(seconds > 0)) return 'ending';
   return seconds >= 90 ? `${Math.round(seconds / 60)} min left` : `${Math.round(seconds)} s left`;
 }
+
+// The band plan as a list to pick from: every band the HackRF can tune
+// (inside minHz-maxHz), lowest first (the wider first where two start
+// together), with its category's label and colour. A query keeps the bands
+// holding that frequency when it reads as one (in MHz, e.g. "915" or
+// "162.4"), else those whose name, category, FCC part or note contain it.
+export function bandList(plan, query, minHz, maxHz) {
+  if (!plan || !plan.bands) return [];
+  const cats = plan.categories || {};
+  const q = String(query || '').trim().toLowerCase();
+  const hz = q && /^[0-9.]+$/.test(q) ? parseMhz(q) : NaN;
+  const out = [];
+  for (const b of plan.bands) {
+    if (!(b.hi > minHz && b.lo < maxHz)) continue;
+    const cat = cats[b.cat] || {};
+    const item = { name: b.name, lo: b.lo, hi: b.hi, cat: b.cat, label: cat.label || b.cat || '', color: cat.color || '#8a96a6', note: b.note || '' };
+    if (q) {
+      if (isFinite(hz)) {
+        if (!(b.lo <= hz && hz <= b.hi)) continue;
+      } else {
+        const text = `${b.name} ${item.label} ${b.part ? `part ${b.part}` : ''} ${item.note}`.toLowerCase();
+        if (!text.includes(q)) continue;
+      }
+    }
+    out.push(item);
+  }
+  return out.sort((a, b) => a.lo - b.lo || b.hi - b.lo - (a.hi - a.lo));
+}
+
+// Which of a list's bands overlap lo-hi (the range in view): their indexes.
+export function bandsInView(list, lo, hi) {
+  const out = [];
+  list.forEach((b, i) => {
+    if (b.hi > lo && b.lo < hi) out.push(i);
+  });
+  return out;
+}

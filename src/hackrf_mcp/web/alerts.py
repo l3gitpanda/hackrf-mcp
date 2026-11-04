@@ -622,13 +622,21 @@ class AlertEngine:
 
     def _run(self) -> None:
         while not self._stop.wait(POLL_S):
-            try:
-                self.poll_once()
-                self.error = None
-            except live_log.LogNotFound:
-                self.error = "the live log isn't there yet"
-            except sqlite3.Error as exc:
-                self.error = f"reading the live log: {exc}"
+            self.tick()
+
+    def tick(self) -> None:
+        """One look, as the thread takes it: whatever goes wrong is kept in
+        `error` (shown in /api/status) and the next look tries again, so a
+        surprise can't silently end the checking."""
+        try:
+            self.poll_once()
+            self.error = None
+        except live_log.LogNotFound:
+            self.error = "the live log isn't there yet"
+        except sqlite3.Error as exc:
+            self.error = f"reading the live log: {exc}"
+        except Exception as exc:  # noqa: BLE001 - the thread must outlive any one row
+            self.error = f"checking rows: {type(exc).__name__}: {exc}"
 
     def poll_once(self, now: float | None = None) -> list[dict]:
         """Checks the rows logged since the last look; returns the new hits."""

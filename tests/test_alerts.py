@@ -280,3 +280,24 @@ def test_the_engine_posts_new_hits_and_not_old_ones(env, catcher):
         assert len(_Catcher.got) == 1 and json.loads(_Catcher.got[0]["body"])["subject"] == "NEW"
     finally:
         wh.q.put(None)
+
+
+def test_a_failing_look_is_reported_and_the_next_one_tries_again(env, monkeypatch):
+    writer, store, tmp = env
+    missing = alerts.AlertEngine(store, tmp / "no-such.db", pager_content=False)
+    missing.tick()
+    assert missing.summary()["error"] == "the live log isn't there yet"
+    eng = alerts.AlertEngine(store, tmp / "live.db", pager_content=False)
+    writer.write([_aircraft(NOW, "A1")])
+    calls = []
+
+    def boom(now=None):
+        calls.append(1)
+        raise KeyError("surprise")
+
+    monkeypatch.setattr(eng, "poll_once", boom)
+    eng.tick()
+    assert eng.summary()["error"] == "checking rows: KeyError: 'surprise'"
+    monkeypatch.undo()
+    eng.tick()
+    assert eng.summary()["error"] is None and calls == [1]

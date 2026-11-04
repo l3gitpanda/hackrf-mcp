@@ -25,8 +25,8 @@ def _gray_inverse(v: int) -> int:
 
 def _codeword(nibble: int, cr: int) -> list[int]:
     """Bits of the codeword, first bit first: data bits w0..w3 (w0 the
-    nibble's most significant bit) times the generator matrices G0/G1."""
-    w = [(nibble >> (3 - i)) & 1 for i in range(4)]
+    nibble's least significant bit) times the generator matrices G0/G1."""
+    w = [(nibble >> i) & 1 for i in range(4)]
     if cr == 1:
         return w + [w[0] ^ w[1] ^ w[2] ^ w[3]]
     g1 = [  # columns 4..7 of G1, one row per data bit

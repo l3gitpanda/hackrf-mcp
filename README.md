@@ -195,6 +195,22 @@ unless the server operator sets `HACKRF_MCP_PAGER_CONTENT=true`: by default a
 page shows only its time, rate, frame, capcode and type (see
 [Live decoding](#live-decoding), which follows the same setting).
 
+**Meshtastic and other LoRa** need no program: `meshtastic` and `lora` use
+the LoRa receiver in [`lora_phy.py`](src/hackrf_mcp/lora_phy.py), written
+in numpy from the published description of the LoRa physical layer and
+checked against frames from real radios (the tests keep three, from the
+EPFL LoRaIQ dataset). Capture at a multiple of 2 MS/s, 60 s or more, with
+the channel inside the capture: LongFast's US slot is 906.875 MHz, so tune
+906.575 MHz to keep it off the HackRF's centre spike. `meshtastic` tries
+every modem preset on the presets' default US slots inside the capture (or
+on `frequencies_hz`), reads each packet's header, decrypts packets on a
+preset's default channel with the key the firmware publishes, and shows
+node names and hardware, positions as the node sent them, telemetry,
+routes, and text sent to everyone. A direct message's text is not shown,
+and packets on other channels stay encrypted. `lora` lists any LoRa frame
+(SF 7–12 at 125, 250 or 500 kHz) on the `frequencies_hz` given, with its
+sync word and its payload in hex.
+
 ISM-band devices go through `hackrf_decode_ism` (`rtl_433`).
 [`deploy/build-decoders.sh`](deploy/build-decoders.sh) builds `redsea` and
 `dump978-fa`, which Ubuntu doesn't package; the others come from the
@@ -649,6 +665,12 @@ decoders.register(
     )
 )
 ```
+
+A decoder written in Python needs no program: give it no `programs`
+(`()`). It is then always available, `hackrf_server_status` and the
+Plugins screen show it as built in, and the image's self-check doesn't
+look for it. [`meshtastic.py`](src/hackrf_mcp/protocols/meshtastic.py) is
+one, on top of [`lora_phy.py`](src/hackrf_mcp/lora_phy.py).
 
 A live profile registers a `live_profiles.Profile` the same way, with a
 `Pipeline` subclass whose `start()` opens a source (`self.ctx.make_source`,

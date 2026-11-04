@@ -1,20 +1,24 @@
 """The LoRa physical layer, receive side, in numpy: finding frames in a
-channel sampled at its bandwidth (one sample per chip) and decoding them to
-bytes.
+channel sampled at four times its bandwidth (four samples a chip) and
+decoding them to bytes, then scanning a whole capture for them.
 
 Written from the published descriptions of the LoRa PHY, chiefly J.
 Tapparel and A. Burg, "Design and Implementation of LoRa Physical Layer in
 GNU Radio" (GRCon 2024), with the synchronisation of Bernier et al. (2020)
 and Xhonneux et al. (2022) as that paper summarises them. No decoder's code
-was copied. The steps, transmitter side first:
+was copied. Where the description left a bit order open, frames received
+from real radios settled it (the EPFL LoRaIQ dataset; three of its frames
+are in the tests). The steps, transmitter side first:
 
 - whitening: payload bytes XORed with an LFSR sequence (x^8+x^6+x^5+x^4+1,
   seeded 0xFF, one byte per step); the header and the CRC are not whitened;
-- nibbles: payload bytes low nibble first; the explicit header is five
-  nibbles, high nibble first: length (2), coding rate and CRC flag, and a
-  5-bit checksum (header_checksum);
+- nibbles: payload bytes low nibble first, then the CRC (of all but the
+  last two bytes, XORed with those two), low byte first; the explicit
+  header is five nibbles, high nibble first: length (2), coding rate and
+  CRC flag, and a 5-bit checksum (header_checksum);
 - Hamming coding of each nibble to 4 + cr bits (cr = 1..4 parity bits, code
-  rate 4/(4+cr)); cr = 1 is a single parity bit, no correction;
+  rate 4/(4+cr)), the nibble's bits least significant first, then the
+  parity bits; cr = 1 is a single parity bit, no correction;
 - diagonal interleaving of blocks of sf codewords into 4 + cr symbols;
 - Gray mapping, plus an offset of one, to symbol values;
 - the first block (8 symbols) always uses cr = 4 and the reduced rate
@@ -23,13 +27,15 @@ was copied. The steps, transmitter side first:
 - a frame is a preamble of upchirps, two sync-word symbols, 2.25
   downchirps, then the data symbols.
 
-The receiver dechirps windows of N = 2^sf samples and takes the strongest
+The receiver dechirps windows of N = 2^sf chips and takes the strongest
 FFT bin. A run of windows with the same bin is a preamble; the bin of the
 upchirps (CFO + STO) and of the downchirps (CFO - STO) separate the
 frequency offset from the timing offset, the phase from one preamble
-symbol to the next gives the fractional frequency offset, and the
-sampling clock offset follows from the frequency offset (both come from
-the same crystals), so long frames stay in step.
+symbol to the next gives the fractional frequency offset, the timing is
+settled to a quarter chip on the samples themselves, and the sampling
+clock offset follows from the frequency offset (both come from the same
+crystals), so long frames stay in step. Decisions are hard (no soft
+decoding), so sensitivity is about a dB or two short of a LoRa radio's.
 """
 
 from __future__ import annotations
@@ -72,7 +78,8 @@ def payload_crc(payload: bytes) -> int:
 
 
 # Rows of the header checksum's generator matrix, as masks over the twelve
-# header bits (first nibble's high bit = bit 11). Checksum bit 4 first.
+# header bits (the length's top bit = bit 11, the CRC flag = bit 0).
+# Checksum bit 4 first; it is sent as the low bit of the fourth nibble.
 _HEADER_ROWS = (0xF00, 0x8E1, 0x49A, 0x257, 0x12F)
 
 
@@ -85,9 +92,10 @@ def header_checksum(n0: int, n1: int, n2: int) -> int:
 
 
 def hamming_encode(nibble: int, cr: int) -> int:
-    """The 4 + cr bit codeword of a nibble, first bit most significant: the
-    nibble's bits from its most significant, then the parity bits."""
-    d = [(nibble >> (3 - i)) & 1 for i in range(4)]
+    """The 4 + cr bit codeword of a nibble, its first bit (as sent) most
+    significant: the nibble's bits from its least significant, then the
+    parity bits."""
+    d = [(nibble >> i) & 1 for i in range(4)]
     if cr == 1:
         parity = [d[0] ^ d[1] ^ d[2] ^ d[3]]
     else:
@@ -97,13 +105,14 @@ def hamming_encode(nibble: int, cr: int) -> int:
             d[0] ^ d[1] ^ d[3],
             d[0] ^ d[2] ^ d[3],
         ][:cr]
-    word = nibble
-    for p in parity:
-        word = (word << 1) | p
+    word = 0
+    for bit in d + parity:
+        word = (word << 1) | bit
     return word
 
 
 _CODEBOOK = {cr: [hamming_encode(v, cr) for v in range(16)] for cr in (1, 2, 3, 4)}
+_REV4 = [int(f"{v:04b}"[::-1], 2) for v in range(16)]
 
 
 def hamming_decode(word: int, cr: int) -> tuple[int, int]:
@@ -111,7 +120,7 @@ def hamming_decode(word: int, cr: int) -> tuple[int, int]:
     corrected (cr 3 and 4 correct one bit error), 2 for one that wasn't (its
     data bits are kept as received)."""
     book = _CODEBOOK[cr]
-    data = word >> cr
+    data = _REV4[word >> cr]
     if book[data] == word:
         return data, 0
     if cr >= 3:
@@ -266,6 +275,7 @@ class Frame:
     cfo_hz: float
     snr_db: float
     sync: tuple[int, int]  # the two sync-word symbols as received
+    sync_word: int  # what they carry (0x2B Meshtastic, 0x34 LoRaWAN, 0x12 private)
     preamble: int  # preamble windows seen
     header: Header | None
     payload: bytes = b""
@@ -290,6 +300,23 @@ def _rank(f: Frame) -> tuple:
 def sync_symbols(sync_word: int) -> tuple[int, int]:
     """The two symbol values that carry a sync word (0x2B -> 16, 88)."""
     return ((sync_word >> 4) * 8, (sync_word & 0x0F) * 8)
+
+
+def sync_word(sync: tuple[int, int], n: int) -> int | None:
+    """The sync word two received sync symbols carry (each nibble times 8,
+    give or take one), or None if they can't be one: sync words run from
+    0x10, so the first symbol is at least 8. Something that merely repeats
+    (an artefact that looks like a preamble) reads as about 0 there."""
+    s0, s1 = sync
+    nibbles = []
+    for s in (s0, s1):
+        k = int(round(_circ(s, n) / 8))
+        if abs(_circ(s - 8 * k, n)) > 1:
+            return None
+        nibbles.append(k % (n // 8))
+    if not 1 <= nibbles[0] <= 15 or nibbles[1] > 15:
+        return None
+    return (nibbles[0] << 4) | nibbles[1]
 
 
 def _circ(a: float, n: int) -> float:
@@ -400,11 +427,19 @@ class Demodulator:
         m = xs.size // n
         if m < self.min_preamble + 4:
             return []
-        spec = np.abs(np.fft.fft(xs[: m * n].reshape(m, n) * self.down, axis=1)) ** 2
-        bins = np.argmax(spec, axis=1)
-        peak = spec[np.arange(m), bins]
-        rest = (spec.sum(axis=1) - peak) / (n - 1)
-        strong = peak > self.threshold * np.maximum(rest, 1e-30)
+        # Each window's strongest bin, a block of windows at a time (a whole
+        # segment's spectra would be several times the samples' size).
+        bins = np.empty(m, dtype=np.int64)
+        strong = np.empty(m, dtype=bool)
+        block = max(1, (1 << 20) // n)
+        for w0 in range(0, m, block):
+            w1 = min(m, w0 + block)
+            spec = np.abs(np.fft.fft(xs[w0 * n : w1 * n].reshape(w1 - w0, n) * self.down, axis=1)) ** 2
+            k = np.argmax(spec, axis=1)
+            peak = spec[np.arange(w1 - w0), k]
+            rest = (spec.sum(axis=1) - peak) / (n - 1)
+            bins[w0:w1] = k
+            strong[w0:w1] = peak > self.threshold * np.maximum(rest, 1e-30)
         offset = ph / self.os  # where window 0 starts, in chips
         frames: list[Frame] = []
         i = 1
@@ -423,7 +458,7 @@ class Demodulator:
             if b - a + 1 < self.min_preamble:
                 i = b + 1
                 continue
-            frame = self._frame(x, xs, spec, a, b, offset)
+            frame = self._frame(x, xs, a, b, offset)
             if frame is None:
                 i = b + 1
                 continue
@@ -470,14 +505,13 @@ class Demodulator:
                 return g, k
         return None
 
-    def _frame(
-        self, x: np.ndarray, xs: np.ndarray, spec: np.ndarray, a: int, b: int, offset: float
-    ) -> Frame | None:
+    def _frame(self, x: np.ndarray, xs: np.ndarray, a: int, b: int, offset: float) -> Frame | None:
         n = self.n
         # The upchirps' bin (CFO + STO), finer than a bin, from the windows
         # inside the run (the first may be partly something else).
         inner = list(range(a + 1, b)) if b - a >= 3 else list(range(a, b + 1))
-        pre = spec[inner].sum(axis=0)
+        rows = xs[inner[0] * n : (inner[-1] + 1) * n].reshape(len(inner), n)
+        pre = (np.abs(np.fft.fft(rows * self.down, axis=1)) ** 2).sum(axis=0)
         k_up = _peak(pre)
         # The fractional CFO from the phase turn from one preamble window to
         # the next: an offset of d bins turns it by 2*pi*d per symbol.
@@ -526,7 +560,12 @@ class Demodulator:
         step = n * (1 - eps)  # the transmitter's symbol, in our chips
         s0 = self._power(x, g(k_d - 2), self.down, cfo)
         s1 = self._power(x, g(k_d - 1), self.down, cfo)
-        sync = (int(np.argmax(s0)), int(np.argmax(s1))) if s0 is not None and s1 is not None else (-1, -1)
+        if s0 is None or s1 is None:
+            return None
+        sync = (int(np.argmax(s0)), int(np.argmax(s1)))
+        word = sync_word(sync, n)
+        if word is None:
+            return None
         data0 = g(k_d + 2.25)
         noise = (pre.sum() - pre.max()) / (n - 1)
         snr_db = float(10 * np.log10(max(pre.max() / max(noise, 1e-30) - 1, 1e-6) / n))
@@ -537,6 +576,7 @@ class Demodulator:
             cfo_hz=cfo_hz,
             snr_db=snr_db,
             sync=sync,
+            sync_word=word,
             preamble=b - a + 1,
             header=None,
         )
@@ -609,17 +649,20 @@ class _Track:
     """One channel's samples and its demodulators, processed in segments
     that overlap by the longest frame, so memory stays bounded."""
 
+    min_segment = 1 << 21  # samples
+
     def __init__(self, channel: Channel, fc_hz: float):
         self.channel = channel
         self.demods = [Demodulator(sf, channel.bw_hz, fc_hz, os=OS) for sf in channel.sfs]
         longest = max(d.max_frame_chips() for d in self.demods)
         self.overlap = longest * OS  # samples
-        self.segment = max(self.overlap, 1 << 21)
+        self.segment = max(self.overlap, self.min_segment)
         self.parts: list[np.ndarray] = []
         self.size = 0
         self.start = 0  # samples before parts[0]
         self.seen: list[tuple[int, int]] = []  # (sf, chip) of frames found
         self.found: list[Found] = []
+        self.delay_s = 0.0  # the channel filter's delay, taken off the times
 
     def feed(self, y: np.ndarray, deadline: float | None) -> None:
         if y.size:
@@ -634,6 +677,7 @@ class _Track:
 
     def _process(self, deadline: float | None, final: bool) -> None:
         x = np.concatenate(self.parts) if len(self.parts) > 1 else self.parts[0]
+        self.parts = [x]
         stop = None if final else self.segment / OS
         base = self.start / OS
         for d in self.demods:
@@ -642,7 +686,7 @@ class _Track:
                 if any(sf == d.sf and abs(chip - c) < d.n for sf, c in self.seen):
                     continue
                 self.seen.append((d.sf, chip))
-                self.found.append(Found(self.channel, f, chip / self.channel.bw_hz))
+                self.found.append(Found(self.channel, f, chip / self.channel.bw_hz - self.delay_s))
         if final:
             self.parts, self.size = [], 0
             return
@@ -677,11 +721,22 @@ def scan(
         )
         for bw, tracks in groups.items()
     }
+    for bw, tracks in groups.items():
+        for t in tracks:
+            # A linear-phase FIR as long as the overlap delays by half of it.
+            t.delay_s = splitters[bw].overlap / 2 / sample_rate_hz
     for chunk in chunks:
         if deadline is not None and time.monotonic() > deadline:
             break
         for bw, tracks in groups.items():
             for t, y in zip(tracks, splitters[bw](chunk)):
+                t.feed(y, deadline)
+    else:
+        # The channeliser holds back up to a block, and its filter's delay,
+        # at the end: push them out, so a frame ending there is seen.
+        for bw, tracks in groups.items():
+            sp = splitters[bw]
+            for t, y in zip(tracks, sp(np.zeros(sp.step + sp.overlap, np.complex64))):
                 t.feed(y, deadline)
     found = []
     for tracks in groups.values():

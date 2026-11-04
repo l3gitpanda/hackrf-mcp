@@ -1223,7 +1223,8 @@ def hackrf_decode(
     receiver_lon: float | None = None,
 ) -> str:
     """Decode a protocol in a raw IQ capture (from hackrf_transfer, 8-bit
-    signed interleaved I/Q) with an external decoder program, and summarise
+    signed interleaved I/Q) with an external decoder program (meshtastic
+    and lora use the LoRa receiver built into this server), and summarise
     what it found. For ISM-band sensors, remotes and meters use
     hackrf_decode_ism (rtl_433).
 
@@ -1244,8 +1245,9 @@ def hackrf_decode(
         center_freq_hz: Center frequency the capture was recorded at, in Hz.
         frequencies_hz: Channel frequencies to decode, in Hz, for the
             channelised decoders (acars, vdl2, pocsag, flex, aprs, eas,
-            dtmf, rds). Defaults to the protocol's usual US channels where
-            it has them; channels outside the capture are skipped.
+            dtmf, rds, meshtastic, lora). Defaults to the protocol's usual
+            US channels where it has them; channels outside the capture
+            are skipped.
         max_events: Maximum number of aircraft/ships/messages listed.
         max_duration_seconds: Only decode up to this many seconds of the
             capture (from the start). None (default) decodes all of it.

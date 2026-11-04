@@ -38,6 +38,8 @@ async function pollStatus() {
 
 const status = (ok, missing) =>
   h('span', { class: `pst ${ok ? 'ok' : 'miss'}` }, h('span', { class: 'dot' }), ok ? 'installed' : `missing ${missing}`);
+// A decoder written in Python in the package names no program.
+const programs = (p) => (p.programs.length ? p.programs.join(' or ') : 'built in');
 
 function tuning(p) {
   if (!p.sample_rate_hz) return 'its program tunes itself';
@@ -60,7 +62,7 @@ function renderProfiles() {
         { '--pc': color(p.name) },
         h('td', {}, h('span', { class: 'pbadge' }, p.name)),
         h('td', { class: 'wc' }, p.summary, p.redacted ? h('span', { class: 'tag' }, 'metadata only') : null),
-        h('td', { class: 'mono' }, p.programs.join(' or ')),
+        h('td', { class: 'mono' }, programs(p)),
         h('td', {}, status(p.installed, p.programs[0])),
         h('td', { class: 'mono sm' }, tuning(p)),
         h('td', { class: 'mono sm' }, (p.summary_kinds || []).join(', ') || '—'),
@@ -81,7 +83,7 @@ function renderDecoders() {
         {},
         h('td', { class: 'mono' }, d.name),
         h('td', { class: 'wc' }, d.summary),
-        h('td', { class: 'mono' }, d.programs.join(' or ')),
+        h('td', { class: 'mono' }, programs(d)),
         h('td', {}, status(d.installed, d.programs[0])),
       ),
     );

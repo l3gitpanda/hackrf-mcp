@@ -12,7 +12,9 @@ module holds what they share: the Job they are given, running a program,
 the Capture description, and helpers for channelising and formatting.
 
 The programs are found on PATH; none of them is a Python dependency. Which
-ones are installed is reported by available().
+ones are installed is reported by available(). A decoder written in Python
+here (Meshtastic, with hackrf_mcp.lora_phy) names no program: it is always
+available, and reported as BUILT_IN.
 """
 
 from __future__ import annotations
@@ -54,10 +56,16 @@ class Job:
     pager_content: bool = False
 
 
+# What find_program() returns for a decoder that needs no program.
+BUILT_IN = "built-in"
+
+
 @dataclass(frozen=True)
 class Decoder:
     name: str
-    programs: tuple[str, ...]  # any one of these will do, in preference order
+    # Any one of these will do, in preference order; none for a decoder
+    # written in Python here.
+    programs: tuple[str, ...]
     summary: str
     recipe: str  # how to capture for it
     run: Callable[[Job], Result]
@@ -95,6 +103,8 @@ def tool_help() -> str:
 
 
 def find_program(decoder: Decoder) -> str | None:
+    if not decoder.programs:
+        return BUILT_IN
     for name in decoder.programs:
         if path := shutil.which(name):
             return path

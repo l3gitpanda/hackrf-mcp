@@ -32,6 +32,8 @@ def check() -> tuple[list[str], list[str]]:
                 problems.append(f"missing  {kind} {name}")
     if shutil.which("ldd"):
         for path, name in sorted(found.items()):
+            if not path.startswith("/"):
+                continue  # a decoder built into the package, no program
             out = subprocess.run(["ldd", path], capture_output=True, text=True).stdout
             for line in out.splitlines():
                 if "not found" in line:

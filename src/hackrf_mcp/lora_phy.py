@@ -427,6 +427,10 @@ class Demodulator:
         m = xs.size // n
         if m < self.min_preamble + 4:
             return []
+        limit = m if stop is None else min(m, int(np.ceil(stop / n)))
+        # Windows past where a preamble may start matter only to finish a
+        # run: look that far, not through the whole overlap.
+        m = min(m, limit + 80)
         # Each window's strongest bin, a block of windows at a time (a whole
         # segment's spectra would be several times the samples' size).
         bins = np.empty(m, dtype=np.int64)
@@ -443,7 +447,6 @@ class Demodulator:
         offset = ph / self.os  # where window 0 starts, in chips
         frames: list[Frame] = []
         i = 1
-        limit = m if stop is None else min(m, int(np.ceil(stop / n)))
         while i < limit:
             if deadline is not None and time.monotonic() > deadline:
                 break
@@ -646,38 +649,40 @@ def rate_fits(sample_rate_hz: int, bw_hz: float) -> bool:
 
 
 class _Track:
-    """One channel's samples and its demodulators, processed in segments
-    that overlap by the longest frame, so memory stays bounded."""
+    """One channel's samples and its demodulators. The samples go into one
+    buffer, processed a segment at a time; what follows a segment, as long
+    as the longest frame, stays for the next, so every frame that starts in
+    a segment is whole, and memory stays at segment + overlap."""
 
     min_segment = 1 << 21  # samples
 
     def __init__(self, channel: Channel, fc_hz: float):
         self.channel = channel
         self.demods = [Demodulator(sf, channel.bw_hz, fc_hz, os=OS) for sf in channel.sfs]
-        longest = max(d.max_frame_chips() for d in self.demods)
-        self.overlap = longest * OS  # samples
-        self.segment = max(self.overlap, self.min_segment)
-        self.parts: list[np.ndarray] = []
-        self.size = 0
-        self.start = 0  # samples before parts[0]
+        self.overlap = max(d.max_frame_chips() for d in self.demods) * OS  # samples
+        self.segment = self.min_segment
+        self.buf = np.empty(self.segment + self.overlap, dtype=np.complex64)
+        self.fill = 0
+        self.start = 0  # samples before buf[0]
         self.seen: list[tuple[int, int]] = []  # (sf, chip) of frames found
         self.found: list[Found] = []
         self.delay_s = 0.0  # the channel filter's delay, taken off the times
 
     def feed(self, y: np.ndarray, deadline: float | None) -> None:
-        if y.size:
-            self.parts.append(y)
-            self.size += y.size
-        while self.size >= self.segment + self.overlap:
-            self._process(deadline, final=False)
+        while y.size:
+            take = min(y.size, self.buf.size - self.fill)
+            self.buf[self.fill : self.fill + take] = y[:take]
+            self.fill += take
+            y = y[take:]
+            if self.fill == self.buf.size:
+                self._process(deadline, final=False)
 
     def finish(self, deadline: float | None) -> None:
-        if self.size:
+        if self.fill:
             self._process(deadline, final=True)
 
     def _process(self, deadline: float | None, final: bool) -> None:
-        x = np.concatenate(self.parts) if len(self.parts) > 1 else self.parts[0]
-        self.parts = [x]
+        x = self.buf[: self.fill]
         stop = None if final else self.segment / OS
         base = self.start / OS
         for d in self.demods:
@@ -688,10 +693,15 @@ class _Track:
                 self.seen.append((d.sf, chip))
                 self.found.append(Found(self.channel, f, chip / self.channel.bw_hz - self.delay_s))
         if final:
-            self.parts, self.size = [], 0
+            self.fill = 0
             return
-        rest = x[self.segment :]
-        self.parts, self.size = [rest], rest.size
+        # Move what follows the segment to the front, a piece no longer
+        # than the segment at a time, so source and destination never meet.
+        keep = self.fill - self.segment
+        for i in range(0, keep, self.segment):
+            j = min(keep, i + self.segment)
+            self.buf[i:j] = self.buf[self.segment + i : self.segment + j]
+        self.fill = keep
         self.start += self.segment
 
 

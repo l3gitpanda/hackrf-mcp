@@ -430,6 +430,23 @@ def _channels(job: Job, presets: tuple[Preset, ...] | None) -> list[lora_phy.Cha
     return out
 
 
+def _slot_channels(job: Job) -> list[lora_phy.Channel]:
+    """On the default slots, each preset at its own slot only."""
+    cap = job.cap
+    out = [
+        lora_phy.Channel(float(slot_hz(p)), float(p.bw_hz), (p.sf,))
+        for p in PRESETS
+        if cap.covers(slot_hz(p), p.bw_hz / 2) and lora_phy.rate_fits(cap.sample_rate_hz, p.bw_hz)
+    ]
+    if not out:
+        _channels(job, PRESETS)  # says why: the rate, or no slot inside the capture
+        raise DecodeError(
+            "no preset's default slot fits inside the usable part of this capture with its bandwidth; "
+            "pass frequencies_hz, or recapture centred nearer a slot (LongFast 906.875 MHz)."
+        )
+    return out
+
+
 def _scan(job: Job, channels: list[lora_phy.Channel]) -> tuple[list[lora_phy.Found], float, bool]:
     """(frames, seconds of the capture read, whether the timeout cut it)."""
     deadline = time.monotonic() + job.timeout
@@ -470,7 +487,8 @@ def _where(found_on: Counter) -> str:
 
 
 def run_meshtastic(job: Job) -> Result:
-    channels = _channels(job, PRESETS)
+    on_slots = tuple(sorted(job.freqs)) == SLOTS_HZ
+    channels = _slot_channels(job) if on_slots else _channels(job, PRESETS)
     found, seconds, cut = _scan(job, channels)
     notes = [f"(stopped at the timeout after {seconds:.1f} s of the capture)"] if cut else []
     raw, messages = [], []
@@ -541,7 +559,10 @@ def run_meshtastic(job: Job) -> Result:
     if other:
         words = ", ".join(f"{w:#04x}" + (" LoRaWAN" if w == 0x34 else "") for w in sorted(other_words))
         extra.append(f"{other} LoRa frame(s) with another sync word ({words}; try decoder lora)")
-    searched = ", ".join(sorted({f"{c.freq_hz / 1e6:.4f}" for c in channels})) + " MHz"
+    if on_slots:
+        searched = ", ".join(f"{BY_RADIO[(int(c.bw_hz), c.sfs[0])].name} {c.freq_hz / 1e6:.4f} MHz" for c in channels)
+    else:
+        searched = ", ".join(sorted({f"{c.freq_hz / 1e6:.4f}" for c in channels})) + " MHz (every preset that fits)"
     if not messages:
         headline = f"meshtastic: nothing decoded on {searched}"
         headline += (" (" + "; ".join(extra) + ")") if extra else ""

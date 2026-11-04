@@ -182,7 +182,10 @@ def test_longfast_at_its_default_slot(tmp_path):
 def test_nothing_on_the_air(tmp_path):
     path = _capture(tmp_path, 906_575_000, [], 0.3)
     out = server.hackrf_decode("meshtastic", str(path), 2_000_000, 906_575_000)
-    assert out.startswith("meshtastic: nothing decoded on 906.8750 MHz.")
+    assert out.startswith("meshtastic: nothing decoded on LongFast 906.8750 MHz.")
+    # Frequencies given are tried with every preset that fits.
+    out = server.hackrf_decode("meshtastic", str(path), 2_000_000, 906_575_000, frequencies_hz=[906_875_000])
+    assert out.startswith("meshtastic: nothing decoded on 906.8750 MHz (every preset that fits).")
 
 
 def test_a_failed_crc_is_counted_not_shown(tmp_path):
@@ -212,6 +215,8 @@ def test_rates_and_frequencies_are_checked(tmp_path):
     path.write_bytes(bytes(4000))
     assert "multiple of 2 MS/s" in server.hackrf_decode("meshtastic", str(path), 2_400_000, 906_875_000)
     out = server.hackrf_decode("meshtastic", str(path), 2_000_000, 924_000_000)  # no slot within reach
+    assert "none of the frequencies (902.6875, 905.3125, 906.8750" in out
+    out = server.hackrf_decode("meshtastic", str(path), 2_000_000, 924_000_000, frequencies_hz=[906_875_000])
     assert "none of the frequencies" in out
 
 

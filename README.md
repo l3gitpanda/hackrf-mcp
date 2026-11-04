@@ -241,6 +241,7 @@ how an assistant moves the receiver to another band, and search the log.
 | `flex`, `pocsag` | `multimon-ng` | the channels given, 2.205 MS/s | one row per page: time, channel, capcode, message type (see below) |
 | `aprs` | `multimon-ng` | 144.390 MHz, 2.205 MS/s | one row per packet |
 | `eas` | `multimon-ng` | the seven NOAA Weather Radio channels, 162.400–162.550 MHz | one row per SAME header |
+| `meshtastic` | built in (`lora_phy`) | LongFast's US slot, 906.875 MHz (tuned 907.150), 2 MS/s; or the slots given | one row per packet: node info, position, telemetry, text sent to everyone, routes |
 
 The service reads `hackrf_transfer -r -` and streams the samples to the
 decoder: AIS-catcher takes them as they are (cs8, on its stdin since
@@ -270,6 +271,18 @@ lease (the tool's timeout plus 30 s), so if the MCP server dies mid-call the
 service resumes by itself. If the service doesn't release the device the
 tool is refused with a message saying so. Without the service, the tools
 behave exactly as before.
+
+**Meshtastic.** The `meshtastic` profile runs the LoRa receiver the
+`meshtastic` capture decoder uses (see [Decoders](#decoders)) on the live
+stream: the source's thread only queues the samples (dropping, and
+counting, what the decoder can't keep up with, so the HackRF is never held
+up), and a worker reports each packet a few seconds after it ends. A
+preset's default slot is searched with that preset; another frequency in
+`frequencies_hz` with every preset. The tuning keeps each whole channel
+clear of the centre's DC spike. A row's subject is the node (`!a1b2c3d4`),
+labelled with its name once its node info has been heard; positions go to
+the `positions` table, as the node sent them. Text sent to everyone is
+logged; a direct message's text is not.
 
 **Pager privacy.** By default only the time, channel, capcode and message
 type of a FLEX or POCSAG page are stored: the message text, and any
@@ -666,11 +679,13 @@ decoders.register(
 )
 ```
 
-A decoder written in Python needs no program: give it no `programs`
-(`()`). It is then always available, `hackrf_server_status` and the
-Plugins screen show it as built in, and the image's self-check doesn't
-look for it. [`meshtastic.py`](src/hackrf_mcp/protocols/meshtastic.py) is
-one, on top of [`lora_phy.py`](src/hackrf_mcp/lora_phy.py).
+A decoder or live profile written in Python needs no program: give it no
+`programs` (`()`). It is then always available, `hackrf_server_status` and
+the Plugins screen show it as built in, and the image's self-check doesn't
+look for it. [`meshtastic.py`](src/hackrf_mcp/protocols/meshtastic.py) has
+both, on top of [`lora_phy.py`](src/hackrf_mcp/lora_phy.py); its pipeline
+queues the samples for a worker thread, since a decoder in the source's
+thread would hold the HackRF up.
 
 A live profile registers a `live_profiles.Profile` the same way, with a
 `Pipeline` subclass whose `start()` opens a source (`self.ctx.make_source`,

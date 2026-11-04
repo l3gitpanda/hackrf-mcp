@@ -66,11 +66,17 @@ class View:
         return {"name": self.name, "kinds": list(self.kinds), "fields": list(self.fields), "roles": dict(self.roles)}
 
 
+# What find_program() returns for a profile that runs no program (its
+# decoding is Python in the package, like Meshtastic's).
+BUILT_IN = "built-in"
+
+
 @dataclass(frozen=True)
 class Profile:
     name: str
     summary: str
-    programs: tuple[str, ...]  # any one of these, in preference order
+    # Any one of these, in preference order; none for a built-in decoder.
+    programs: tuple[str, ...]
     pipeline: type[Pipeline]
     sample_rate_hz: int  # 0: the decoder opens the HackRF and picks its own
     center_hz: int | None = None  # fixed tuning; None = chosen from the channels
@@ -100,6 +106,10 @@ class Profile:
     redact: Callable[[dict], dict] | None = None
     # A profile that decodes nothing: the waterfall only (WATCH).
     spectrum_only: bool = False
+    # How wide its channels are, when the tuning is chosen from them: each
+    # whole channel then stays inside the usable band and clear of the DC
+    # spike at the centre (LoRa's are 125-500 kHz; the others' are narrow).
+    channel_bw_hz: int = 0
 
     def ui_views(self) -> tuple[View, ...]:
         if self.views:
@@ -135,6 +145,8 @@ def tool_help() -> str:
 
 
 def find_program(profile: Profile) -> str | None:
+    if not profile.programs:
+        return BUILT_IN
     for name in profile.programs:
         if path := shutil.which(name):
             return path
@@ -268,7 +280,8 @@ def resolve(spec: Spec, settings: LiveSettings, program_finder: Callable[[Profil
                         f"outside it: {', '.join(f'{f / 1e6:.4f}' for f in outside)} MHz."
                     )
         else:
-            center = choose_center(freqs, rate)
+            half = profile.channel_bw_hz // 2
+            center = choose_center(freqs, rate, margin_hz=10_000 + half, avoid_hz=20_000 + half)
     lna = spec.lna_gain_db if spec.lna_gain_db is not None else settings.lna_gain_db
     vga = spec.vga_gain_db if spec.vga_gain_db is not None else settings.vga_gain_db
     lna = profile.lna_gain_db if lna is None else lna

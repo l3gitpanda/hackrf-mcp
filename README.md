@@ -504,7 +504,7 @@ panel never shows a row's raw text, shows pager text only when
 
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
-about four FFT rows a second) to browsers over a websocket, and starts,
+ten FFT rows a second) to browsers over a websocket, and starts,
 switches and stops profiles over the control socket, as the MCP tools do.
 
 | Route | |

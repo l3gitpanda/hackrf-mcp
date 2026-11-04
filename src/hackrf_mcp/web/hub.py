@@ -16,7 +16,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-CLIENT_QUEUE = 256
+# Messages a browser may fall behind by: about a minute of FFT rows (ten a
+# second) and the decoded rows among them.
+CLIENT_QUEUE = 640
 # Longest line accepted from the feed (an FFT row is about 1.5 KB; a row's
 # raw text is capped at 4000 characters).
 MAX_LINE = 1 << 20

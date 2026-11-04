@@ -21,7 +21,7 @@ from hackrf_mcp.live_spectrum import (
 RATE = 2_400_000
 BIN_HZ = RATE / BINS  # 4687.5 Hz
 BLOCK = 131072  # samples per block, as live_profiles.READ_BYTES gives
-# Enough samples for one row: rows come out up to one batch (0.25 s) late.
+# Enough samples for one row: rows come out up to one batch (0.1 s) late.
 ONE_ROW = int(1.3 * RATE)
 
 
@@ -236,13 +236,17 @@ def test_a_new_tap_ends_the_previous_segment():
     assert rec.tap.sample_rate_hz == 2_100_000
 
 
-def test_live_sinks_get_about_four_rows_a_second():
+def test_live_sinks_get_ten_rows_a_second_evenly():
     got = []
     rec = SpectrumRecorder(lambda item: None)
-    rec.add_live_sink(lambda seg, row: got.append((seg["profile"], row.frames)))
+    rec.add_live_sink(lambda seg, row: got.append((seg["profile"], row.frames, row.seconds)))
     tap = rec.tap_for(tuning())
-    feed(tap, noise(ONE_ROW))
-    assert 3 <= len(got) <= 5 and got[0][0] == "adsb"
+    feed(tap, noise(ONE_ROW))  # 1.3 s of samples
+    assert 11 <= len(got) <= 13 and got[0][0] == "adsb"
+    # Each row holds the same 0.1 s of frames: none is a clump of several.
+    assert {round(s, 3) for _, _, s in got} == {0.1}
+    frames = [f for _, f, _ in got]
+    assert max(frames) - min(frames) <= 1
 
 
 def test_writer_prunes_by_age_per_tier_then_by_size(tmp_path):

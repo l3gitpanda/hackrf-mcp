@@ -35,9 +35,9 @@ from pathlib import Path
 from hackrf_mcp.live_log import Position, Row
 from hackrf_mcp.live_spectrum import SpectrumRow, quantise
 
-# Messages a client may fall behind by before newer ones are dropped: about
-# a minute of FFT rows plus a burst of decoded rows.
-QUEUE_MESSAGES = 512
+# Messages a client may fall behind by before newer ones are dropped: over
+# a minute and a half of FFT rows (ten a second) plus a burst of decoded rows.
+QUEUE_MESSAGES = 1024
 
 
 def row_message(row: Row) -> dict:

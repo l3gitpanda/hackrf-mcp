@@ -226,7 +226,7 @@ export class Waterfall {
   }
 
   // One row of mean and peak dB per bin, drawn `rows` pixels tall (history
-  // rows of a second are drawn as tall as four live rows of a quarter).
+  // rows of a second are drawn as tall as the live rows in a second).
   pushRow(meanDb, peakDb, ts, rows = 1) {
     const W = this.W;
     const H = this.H;

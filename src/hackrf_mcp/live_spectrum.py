@@ -52,8 +52,11 @@ DB_MIN = -130.0
 DB_STEP = 0.5
 TIER_SECOND = 1
 TIER_MINUTE = 60
-# How often the live view (SpectrumRecorder.add_live_sink) gets a row.
-LIVE_ROW_S = 0.25
+# How often the live view (SpectrumRecorder.add_live_sink) gets a row: ten
+# a second, so the waterfall moves smoothly and a burst of a few tens of
+# milliseconds stands out from the row around it. The tap transforms its
+# blocks this often too, so the rows come out evenly, not in clumps.
+LIVE_ROW_S = 0.1
 
 
 def quantise(db: np.ndarray, db_min: float = DB_MIN, db_step: float = DB_STEP) -> bytes:
@@ -324,7 +327,7 @@ class SpectrumRecorder:
             return self.tap
 
     def add_live_sink(self, sink: Callable[[dict, SpectrumRow], None]) -> None:
-        """Call sink(segment, row) about four times a second while a segment
+        """Call sink(segment, row) ten times a second while a segment
         runs, from the source's thread; it must return quickly."""
         self.live_sinks.append(sink)
 

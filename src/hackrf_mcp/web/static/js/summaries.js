@@ -187,6 +187,7 @@ function renderCoverage() {
     leg.append(h('span', { '--pc': color(name) }, h('span', { class: 'sw' }), name, ' ', h('span', { class: 'mono muted' }, durText(s))));
   }
   for (const [state, s] of Object.entries(S.air.gaps)) {
+    if (s < 1) continue; // a stop and start a moment apart: nothing to show
     leg.append(h('span', {}, h('i', { class: `hatch ${GAP_CLASS[state] || ''}` }), GAP_LABEL[state] || state, ' ', h('span', { class: 'mono muted' }, durText(s))));
   }
   if (!on.length) leg.append(h('span', { class: 'muted' }, 'Nothing was on the air in this period.'));
@@ -473,6 +474,11 @@ async function loadHeat() {
     const n = Math.min(90, box.getNorth());
     params.set('bbox', [w, s, e, n].map((v) => v.toFixed(4)).join(','));
   }
+  // The same request already on its way (moveend and the follow-up after
+  // fitting can both ask): let that one answer.
+  const key = params.toString();
+  if (S.heat.pending === key) return;
+  S.heat.pending = key;
   const seq = ++S.heat.seq;
   let grid;
   try {
@@ -480,6 +486,8 @@ async function loadHeat() {
   } catch (e) {
     $('hm-info').textContent = `Could not read positions: ${e.message}`;
     return;
+  } finally {
+    if (S.heat.pending === key) S.heat.pending = null;
   }
   if (seq !== S.heat.seq) return; // a newer request has gone out
   S.heat.grid = grid;

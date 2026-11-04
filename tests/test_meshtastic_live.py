@@ -168,4 +168,4 @@ def test_the_status_says_where_frames_were_turned_away(tmp_path):
     text = "\n".join(pipe.health()["decoder_summary"])
     # Both sample phases find the bad header's preamble, so it counts twice.
     assert "header checksum failed 2" in text and "another sync word 1" in text and "packets logged 0" in text
-    assert "turned away (header failed): SF11 250 kHz at 906.8750 MHz, sync symbols 16,88" in text
+    assert "turned away (header failed): SF11 250 kHz at 906.8750 MHz, sync symbols 16,2008" in text

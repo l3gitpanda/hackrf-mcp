@@ -37,7 +37,14 @@ def test_hamming_round_trip_and_single_errors(cr):
 
 
 def test_sync_words_from_symbols():
-    assert L.sync_symbols(0x2B) == (16, 88)
+    # A nibble of 8-15 is a signed offset on the air: 0x2B at SF11 is
+    # (16, -40), as the station heard Meshtastic radios send it; at SF7 it is
+    # the same symbol as the unsigned 88.
+    assert L.sync_symbols(0x2B, 2048) == (16, 2008)
+    assert L.sync_symbols(0x2B, 128) == (16, 88)
+    assert L.sync_symbols(0x34, 2048) == (24, 32)
+    assert L.sync_word((16, 2008), 2048) == 0x2B
+    assert L.sync_word((16, 2009), 2048) == 0x2B
     assert L.sync_word((16, 88), 2048) == 0x2B
     assert L.sync_word((15, 89), 2048) == 0x2B  # a bin either way
     assert L.sync_word((8, 16), 1024) == 0x12

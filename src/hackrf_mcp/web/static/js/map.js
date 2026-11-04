@@ -9,6 +9,7 @@ import { api, LiveSocket } from './api.js';
 import { paintAppBar, paintClock } from './appbar.js';
 import { ago, assignColors, clear, fmtUtc, h, parseUtc, utc } from './util.js';
 import { heading, positionAt, prune, targetKey, trackWindow } from './maputil.js';
+import { addBasemap } from './basemap.js';
 
 const $ = (id) => document.getElementById(id);
 const NOW = () => Date.now() / 1000;
@@ -429,24 +430,8 @@ function drawGrid() {
   }
 }
 
-// The operator's base map, if there is one: OpenStreetMap vector tiles that
-// the browser reads from hackrf-web in byte ranges and draws itself
-// (protomaps-leaflet, the global protomapsL). The archive covers its whole
-// area down to full_zoom and only a core below that, so a layer of the whole
-// area, stretched past full_zoom, lies under a layer of the core's detail
-// that asks for nothing outside the core. protomaps-leaflet draws each zoom
-// from the data one zoom up, hence the + 2.
 function loadBasemap() {
-  const b = S.registry.basemap;
-  if (!b || !window.protomapsL) return; // none on the server: the graticule alone
-  const opts = { url: '/api/basemap.pmtiles', flavor: 'dark', lang: 'en', noWrap: true };
-  window.protomapsL.leafletLayer({ ...opts, maxDataZoom: b.full_zoom, zIndex: 1 }).addTo(S.layers.base);
-  if (b.core && b.maxzoom > b.full_zoom) {
-    const [w, s, e, n] = b.core;
-    window.protomapsL
-      .leafletLayer({ ...opts, maxDataZoom: b.maxzoom, minZoom: b.full_zoom + 2, bounds: L.latLngBounds([s, w], [n, e]), zIndex: 2 })
-      .addTo(S.layers.base);
-  }
+  addBasemap(S.layers.base, S.registry.basemap); // none on the server: the graticule alone
 }
 
 function drawRings() {

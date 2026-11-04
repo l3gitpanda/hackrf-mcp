@@ -130,3 +130,14 @@ def test_the_official_table_tiles_the_spectrum_and_reads_right():
     assert at("non_federal", 156.8e6)["services"][0].startswith("MARITIME MOBILE")
     assert at("federal", 1090e6)["services"] == ["AERONAUTICAL MOBILE (R)", "AERONAUTICAL RADIONAVIGATION"]
     assert "RF Devices (15)" in at("non_federal", 915e6)["parts"]
+
+
+def test_every_screen_links_every_other_screen():
+    screens = ("/", "/map", "/log", "/history", "/bands", "/summaries")
+    for page in PAGES:
+        if page.name == "login.html":
+            continue
+        html = page.read_text()
+        for path in screens:
+            assert f'href="{path}"' in html, f"{page.name} has no link to {path}"
+        assert 'aria-disabled="true"' not in html, f"{page.name} still has a disabled screen"

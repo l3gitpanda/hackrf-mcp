@@ -10,8 +10,11 @@ and the static UI.
   GET  /api/coverage             what the receiver was doing over a range:
                                  running (which profile), paused, error, idle
   GET  /api/summary              one entry per subject (as hackrf_live_summary)
+  GET  /api/summaries            per profile over a range: messages over time,
+                                 subjects heard and the busiest, with coverage
   GET  /api/events               starts, stops, pauses, errors
   GET  /api/positions            map-track points, thinned for long ranges
+  GET  /api/positions/grid       positions counted per map cell (a heat map)
   GET  /api/basemap.pmtiles      the map's base map (vector tiles, byte
                                  ranges), if the operator has put one in the
                                  web state directory (see web/basemap.py)
@@ -81,6 +84,15 @@ STATUS_PUSH_S = 3.0
 STATUS_CACHE_S = 2.0
 # Seconds between the fixes kept per target when a range of positions is thinned.
 POSITION_STEPS = (20, 30, 60, 120, 300, 600, 1800, 3600)
+# The screens: path -> page.
+PAGES = {
+    "/": "index.html",
+    "/log": "log.html",
+    "/map": "map.html",
+    "/history": "history.html",
+    "/bands": "bands.html",
+    "/summaries": "summaries.html",
+}
 
 
 # --- Reading helpers -----------------------------------------------------------
@@ -174,6 +186,18 @@ def registry_json(live: LiveSettings) -> dict:
     }
 
 
+def summary_fields(profile: live_profiles.Profile) -> tuple[str, ...]:
+    """The fields the Summaries screen shows for a profile's subjects: its
+    summary fields, then those of its table view, less the position (the
+    heat map has those). Nothing else is read out of the log for it, so a
+    field like pager text can't come along."""
+    out = [f for f in profile.summary_fields if f not in ("lat", "lon")]
+    for v in profile.ui_views():
+        if v.name == "table":
+            out += [f for f in v.fields if f not in out and f not in ("lat", "lon")]
+    return tuple(out)
+
+
 def cgroup_stats(unit: str, root: Path = CGROUP) -> dict | None:
     """Memory and CPU of a systemd unit from its cgroup (None if not found)."""
     base = root / unit
@@ -243,7 +267,7 @@ class Gate:
                 h += SECURITY_HEADERS
                 if path.startswith("/api/"):
                     h.append((b"cache-control", b"no-store"))
-                elif path in ("/", "/log", "/map", "/history", "/bands", "/login") or path.startswith("/static/"):
+                elif path in PAGES or path == "/login" or path.startswith("/static/"):
                     # Revalidate every time, so a deploy reaches browsers at once.
                     h.append((b"cache-control", b"no-cache"))
                 message = {**message, "headers": h}
@@ -317,20 +341,8 @@ def create_app(
 
     # --- pages and sign-in
 
-    async def index(request: Request) -> Response:
-        return FileResponse(STATIC / "index.html")
-
-    async def log_page(request: Request) -> Response:
-        return FileResponse(STATIC / "log.html")
-
-    async def map_page(request: Request) -> Response:
-        return FileResponse(STATIC / "map.html")
-
-    async def history_page(request: Request) -> Response:
-        return FileResponse(STATIC / "history.html")
-
-    async def bands_page(request: Request) -> Response:
-        return FileResponse(STATIC / "bands.html")
+    async def page(request: Request) -> Response:
+        return FileResponse(STATIC / PAGES[request.url.path])
 
     basemap_path = web.state_path(live) / basemap.FILENAME
 
@@ -475,6 +487,70 @@ def create_app(
             if profile.redact is not None and not live.pager_content:
                 e["fields"].pop("message", None)
         return JSONResponse({"profile": profile.name, "subjects": entries})
+
+    @guarded
+    def api_summaries(request: Request) -> Response:
+        # The Summaries screen's numbers for one range, from one reading of
+        # the log, so the cards, the rate chart and the coverage agree.
+        now = time.time()
+        since = _when(request, "since", now)
+        until = _when(request, "until", now) or now
+        if since is None or since >= until:
+            raise ValueError("since (before until) is required")
+        live_profiles.load()
+        profiles = {
+            p.name: (p.summary_kinds, summary_fields(p)) for p in live_profiles.PROFILES.values() if not p.spectrum_only
+        }
+        with closing(reader()) as conn:
+            out = live_log.summaries(
+                conn,
+                since,
+                until,
+                profiles,
+                buckets=_int(request, "buckets", 96, 1, 500),
+                top=_int(request, "top", 20, 1, 100),
+            )
+            out["coverage"] = live_log.coverage(conn, since, until)
+        for name, stats in out["profiles"].items():
+            profile = live_profiles.PROFILES[name]
+            for e in stats["top"]:
+                if profile.redact is not None and not live.pager_content:
+                    for kind in e["kinds"] or [""]:
+                        e["fields"] = profile.redact({"kind": kind, "fields": e["fields"], "raw": None})["fields"]
+        return JSONResponse(out)
+
+    @guarded
+    def api_position_grid(request: Request) -> Response:
+        now = time.time()
+        since = _when(request, "since", now)
+        until = _when(request, "until", now) or now
+        if since is None or since >= until:
+            raise ValueError("since (before until) is required")
+        bbox = None
+        if request.query_params.get("bbox"):
+            try:
+                bbox = tuple(float(v) for v in request.query_params["bbox"].split(","))
+            except ValueError as exc:
+                raise ValueError("bbox is west,south,east,north in degrees") from exc
+            if len(bbox) != 4 or not (-90 <= bbox[1] <= bbox[3] <= 90):
+                raise ValueError("bbox is west,south,east,north in degrees")
+        try:
+            cell = float(request.query_params.get("cell", 0.05))
+        except ValueError as exc:
+            raise ValueError("cell is a size in degrees") from exc
+        if not 0 < cell <= 10:
+            raise ValueError("cell is a size in degrees, at most 10")
+        with closing(reader()) as conn:
+            out = live_log.position_grid(
+                conn,
+                since,
+                until,
+                profile=request.query_params.get("profile") or None,
+                cell_deg=cell,
+                bbox=bbox,
+                max_cells=_int(request, "max_cells", 20_000, 100, 50_000),
+            )
+        return JSONResponse({"since": since, "until": until, **out})
 
     @guarded
     def api_events(request: Request) -> Response:
@@ -675,11 +751,7 @@ def create_app(
         await hub.stop()
 
     routes = [
-        Route("/", index),
-        Route("/log", log_page),
-        Route("/map", map_page),
-        Route("/history", history_page),
-        Route("/bands", bands_page),
+        *[Route(path, page) for path in PAGES],
         Route("/login", login_page),
         Route("/auth/login", login, methods=["POST"]),
         Route("/auth/logout", logout, methods=["POST"]),
@@ -689,8 +761,10 @@ def create_app(
         Route("/api/log/histogram", api_histogram),
         Route("/api/coverage", api_coverage),
         Route("/api/summary", api_summary),
+        Route("/api/summaries", api_summaries),
         Route("/api/events", api_events),
         Route("/api/positions", api_positions),
+        Route("/api/positions/grid", api_position_grid),
         Route("/api/basemap.pmtiles", api_basemap),
         Route("/api/spectrum/segments", api_segments),
         Route("/api/spectrum", api_spectrum),

@@ -683,3 +683,187 @@ def summarise(
                 s["fields"][k] = v
     out = sorted(by_subject.values(), key=lambda s: -s["last"])
     return out[: max(1, int(limit))]
+
+
+# How many decoded messages a row stands for: ADS-B and AIS rows are
+# per-minute summaries carrying a `messages` count; any other row is one.
+MESSAGES_SQL = (
+    "CASE WHEN json_valid(fields) THEN coalesce(CAST(json_extract(fields, '$.messages') AS INTEGER), 1) ELSE 1 END"
+)
+# A row's identity, as summarise() keys it.
+SUBJECT_SQL = "coalesce(nullif(subject, ''), nullif(label, ''), '?')"
+# The fields summarise() folds over a subject's rows rather than keeping the latest.
+_FOLDED = {"messages": "sum", "positions": "sum", "altitude_max": "max", "altitude_min": "min"}
+
+
+def summaries(
+    conn: sqlite3.Connection,
+    since: float,
+    until: float,
+    profiles: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
+    buckets: int = 96,
+    top: int = 20,
+) -> dict:
+    """What each profile heard over [since, until], for the Summaries screen,
+    in one pass over the log so the numbers agree with each other:
+
+      rate      decoded messages per time bucket, a row counted in the
+                bucket of its start (clamped to the range)
+      rows / messages   their totals (messages = the sum of the buckets)
+      subjects  how many different subjects (aircraft, ships, capcodes ...)
+                among the profile's summary kinds, and `by_kind` per kind
+      top       the busiest of them by messages: rows, messages, first and
+                last time, strongest level, kinds, channels, labels and the
+                latest value of each of the given fields (counts summed,
+                altitude extremes kept)
+
+    `profiles` maps a profile to (summary_kinds, fields). A row belongs to
+    the range as in summarise(): it ends at or after `since` and starts at
+    or before `until`. The pass reads each row's JSON once; the details are
+    read for the top subjects only, through the subject and label indexes."""
+    buckets = max(1, min(int(buckets), 2000))
+    width = max((until - since) / buckets, 1e-9)
+    window = "ts >= ? AND coalesce(ts_end, ts) >= ? AND ts <= ?"
+    wargs = [since - ROW_SPAN_S, since, until]
+    out: dict[str, dict] = {
+        name: {"rows": 0, "messages": 0, "rate": [0] * buckets, "subjects": 0, "by_kind": {}, "top": []}
+        for name in profiles
+    }
+    subjects: dict[str, dict[str, list]] = {name: {} for name in profiles}
+    by_kind: dict[str, dict[str, set]] = {name: {} for name in profiles}
+    sql = (
+        f"SELECT profile, kind, {SUBJECT_SQL} AS k, CAST((max(ts, ?) - ?) / ? AS INTEGER) AS b, "
+        f"count(*), sum({MESSAGES_SQL}), min(ts), max(coalesce(ts_end, ts)), max(level_db) "
+        f"FROM messages WHERE {window} GROUP BY profile, k, kind, b"
+    )
+    for profile, kind, key, b, rows, msgs, first, last, level in conn.execute(sql, [since, since, width, *wargs]):
+        p = out.get(profile)
+        if p is None:
+            continue
+        p["rate"][min(max(int(b), 0), buckets - 1)] += msgs
+        p["rows"] += rows
+        p["messages"] += msgs
+        kinds = profiles[profile][0]
+        if kinds and kind not in kinds:
+            continue
+        by_kind[profile].setdefault(kind, set()).add(key)
+        e = subjects[profile].get(key)
+        if e is None:
+            subjects[profile][key] = [rows, msgs, first, last, level, {kind}]
+        else:
+            e[0] += rows
+            e[1] += msgs
+            e[2] = min(e[2], first)
+            e[3] = max(e[3], last)
+            if level is not None and (e[4] is None or level > e[4]):
+                e[4] = level
+            e[5].add(kind)
+    for name, (kinds, fields) in profiles.items():
+        p = out[name]
+        p["subjects"] = len(subjects[name])
+        p["by_kind"] = {kind: len(keys) for kind, keys in sorted(by_kind[name].items())}
+        busiest = sorted(subjects[name].items(), key=lambda kv: (-kv[1][1], -kv[1][3]))[: max(1, int(top))]
+        for key, (rows, msgs, first, last, level, seen) in busiest:
+            entry = {
+                "subject": key,
+                "rows": rows,
+                "messages": msgs,
+                "first": first,
+                "last": last,
+                "max_level_db": level,
+                "kinds": sorted(seen),
+                "freqs": [],
+                "labels": [],
+                "fields": {},
+            }
+            _subject_details(conn, name, entry, fields, window, wargs, kinds)
+            p["top"].append(entry)
+    return {"since": since, "until": until, "bucket_s": width, "profiles": out}
+
+
+def _subject_details(conn, profile, entry, fields, window, wargs, kinds) -> None:
+    """Channels, labels, the folded fields (summed counts, altitude extremes)
+    and the latest non-empty value of the other `fields` for one subject in
+    the window, read through the subject index (or the label index, for a
+    subject known only by its label)."""
+    key = entry["subject"]
+    kind_sql = f" AND kind IN ({', '.join('?' * len(kinds))})" if kinds else ""
+    # Field names come from the protocol modules; only plain names go into SQL.
+    folded = [(f, _FOLDED[f]) for f in fields if f in _FOLDED and f != "messages" and f.isidentifier()]
+    fold_sql = "".join(f", {fn}(CASE WHEN json_valid(fields) THEN json_extract(fields, '$.{f}') END)" for f, fn in folded)
+    for col in ("subject", "label"):
+        # The column's own index finds the rows; the key expression keeps
+        # only those summaries() counted under this key.
+        where = (
+            f"{col} = ? COLLATE NOCASE AND profile = ? AND {window}{kind_sql} AND {SUBJECT_SQL} = ?"
+        )
+        args = [key, profile, *wargs, *kinds, key]
+        agg = conn.execute(f"SELECT count(*), group_concat(DISTINCT freq_hz){fold_sql} FROM messages WHERE {where}", args).fetchone()
+        if agg[0]:
+            break
+    else:
+        return
+    agg = tuple(agg)
+    entry["freqs"] = sorted(int(f) for f in (agg[1] or "").split(",") if f)
+    entry["fields"] = {f: v for (f, _), v in zip(folded, agg[2:]) if v is not None}
+    missing = [f for f in fields if f not in _FOLDED]
+    for r in conn.execute(f"SELECT label, fields FROM messages WHERE {where} ORDER BY ts DESC LIMIT 60", args):
+        if r["label"] and r["label"] not in entry["labels"]:
+            entry["labels"].append(r["label"])
+        if not missing:
+            continue
+        try:
+            values = json.loads(r["fields"])
+        except ValueError:
+            continue
+        for f in list(missing):
+            v = values.get(f)
+            if v not in (None, "", [], {}):
+                entry["fields"][f] = v
+                missing.remove(f)
+
+
+# The finest heat-map cell, in degrees (about 220 m of latitude).
+GRID_MIN_DEG = 0.002
+
+
+def position_grid(
+    conn: sqlite3.Connection,
+    since: float,
+    until: float,
+    profile: str | None = None,
+    cell_deg: float = 0.05,
+    bbox: tuple[float, float, float, float] | None = None,
+    max_cells: int = 20_000,
+) -> dict:
+    """Positions over [since, until] counted on a grid of `cell_deg`-degree
+    cells, for a heat map: per profile, [ix, iy, fixes, targets] per cell,
+    where the cell spans lon ix*cell-180 .. +cell and lat iy*cell-90 .. +cell,
+    fixes is the positions logged in it and targets how many different
+    subjects they came from. `bbox` (west, south, east, north) keeps only
+    that area. With more than `max_cells` cells the grid is coarsened
+    (doubling the cell) until it fits; the cell used is returned."""
+    cell = max(GRID_MIN_DEG, float(cell_deg))
+    where, args = _position_filter(since, until, profile, None)
+    if bbox is not None:
+        w, s, e, n = bbox
+        # A box across the antimeridian has its west edge east of its east edge.
+        where += ["lon >= ? AND lon <= ?" if w <= e else "(lon >= ? OR lon <= ?)", "lat >= ?", "lat <= ?"]
+        args += [w, e, s, n]
+    cond = " AND ".join(where)
+    fixes, targets = conn.execute(
+        f"SELECT count(*), count(DISTINCT profile || '|' || subject) FROM positions WHERE {cond}", args
+    ).fetchone()
+    while True:
+        sql = (
+            "SELECT profile, CAST((lon + 180) / ? AS INTEGER) AS x, CAST((lat + 90) / ? AS INTEGER) AS y, "
+            f"count(*), count(DISTINCT subject) FROM positions WHERE {cond} GROUP BY profile, x, y LIMIT ?"
+        )
+        rows = conn.execute(sql, [cell, cell, *args, max_cells + 1]).fetchall()
+        if len(rows) <= max_cells or cell >= 10:
+            break
+        cell *= 2
+    cells: dict[str, list] = {}
+    for p, x, y, n, t in rows[:max_cells]:
+        cells.setdefault(p, []).append([x, y, n, t])
+    return {"cell_deg": cell, "fixes": fixes, "targets": targets, "cells": cells, "truncated": len(rows) > max_cells}

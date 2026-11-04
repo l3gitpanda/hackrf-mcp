@@ -197,3 +197,92 @@ def test_summarise_survives_fields_of_mixed_types(tmp_path):
     [s] = live_log.summarise(live_log.open_reader(w.path), "adsb", ("aircraft",), 0.0)
     assert s["fields"]["altitude_max"] == 4000 and s["fields"]["messages"] == 5
     assert s["fields"]["altitude_min"] == 2500  # the odd "ground" didn't break the comparison
+
+
+def test_summaries_count_messages_subjects_and_the_busiest(tmp_path):
+    w = _writer(tmp_path)
+    w.write(
+        [
+            # A row that started before the range but runs into it counts.
+            _aircraft(970, "A1B2C3", "UAL123", alt=10000, msgs=5, level=-30),
+            _aircraft(1060, "A1B2C3", "UAL123", alt=12000, msgs=7, level=-10),
+            _aircraft(1100, "ABCDEF", None, msgs=40),
+            _aircraft(1500, "OUTSIDE", None, msgs=99),  # after the range
+            Row(1010, "ais", "vessel", {"mmsi": "1", "name": "KILLEEN", "messages": 3}, subject="367000001", label="KILLEEN"),
+            Row(1020, "ais", "aid-to-navigation", {"mmsi": "2", "messages": 2}, subject="993000002"),
+            Row(1030, "ais", "ais", {"mmsi": "1"}, subject="367000001"),  # no count: one message
+            Row(1040, "flex", "page", {"capcodes": ["1234567"], "type": "ALN"}, "FLEX|ALN|", 931_750_000, None, "1234567", "ALN"),
+            Row(1041, "flex", "page", {"capcodes": ["1234567"], "type": "NUM"}, "FLEX|NUM|", 931_937_500, None, "1234567", "NUM"),
+        ]
+    )
+    c = live_log.open_reader(w.path)
+    profiles = {
+        "adsb": (("aircraft",), ("callsign", "altitude_min", "altitude_max", "messages")),
+        "ais": (("vessel", "aid-to-navigation", "ais"), ("name", "messages")),
+        "flex": (("page",), ("type",)),
+        "eas": (("eas",), ()),
+    }
+    out = live_log.summaries(c, 1000.0, 1200.0, profiles, buckets=4, top=1)
+    assert out["bucket_s"] == 50.0
+    adsb = out["profiles"]["adsb"]
+    assert adsb["rows"] == 3 and adsb["messages"] == 52 and adsb["subjects"] == 2
+    assert adsb["rate"] == [5, 7, 40, 0] and sum(adsb["rate"]) == adsb["messages"]
+    (busiest,) = adsb["top"]  # top=1: the one with the most messages
+    assert busiest["subject"] == "ABCDEF" and busiest["messages"] == 40 and busiest["labels"] == []
+    two = live_log.summaries(c, 1000.0, 1200.0, profiles, buckets=4, top=5)["profiles"]
+    a = next(e for e in two["adsb"]["top"] if e["subject"] == "A1B2C3")
+    assert a["rows"] == 2 and a["messages"] == 12 and a["max_level_db"] == -10 and a["labels"] == ["UAL123"]
+    assert a["fields"] == {"callsign": "UAL123", "altitude_min": 10000, "altitude_max": 12500}
+    assert a["kinds"] == ["aircraft"] and a["freqs"] == [1_090_000_000]
+    ais = two["ais"]
+    assert ais["messages"] == 6 and ais["subjects"] == 2
+    assert ais["by_kind"] == {"vessel": 1, "aid-to-navigation": 1, "ais": 1}
+    ship = ais["top"][0]
+    assert ship["subject"] == "367000001" and ship["messages"] == 4 and ship["fields"] == {"name": "KILLEEN"}
+    assert sorted(ship["kinds"]) == ["ais", "vessel"]
+    flex = two["flex"]
+    assert flex["messages"] == 2 and flex["subjects"] == 1
+    assert flex["top"][0]["freqs"] == [931_750_000, 931_937_500] and flex["top"][0]["fields"] == {"type": "NUM"}
+    assert flex["top"][0]["labels"] == ["NUM", "ALN"]
+    assert two["eas"] == {"rows": 0, "messages": 0, "rate": [0, 0, 0, 0], "subjects": 0, "by_kind": {}, "top": []}
+
+
+def test_summaries_read_odd_rows_without_failing(tmp_path):
+    w = _writer(tmp_path)
+    w.write([Row(1000, "adsb", "aircraft", {"messages": "lots"}, subject=None, label=None)])
+    w.conn.execute("UPDATE messages SET fields = 'not json'")
+    w.conn.commit()
+    c = live_log.open_reader(w.path)
+    out = live_log.summaries(c, 900.0, 1100.0, {"adsb": (("aircraft",), ("callsign",))})
+    adsb = out["profiles"]["adsb"]
+    assert adsb["messages"] == 1 and adsb["subjects"] == 1 and adsb["top"][0]["subject"] == "?"
+
+
+def test_position_grid_counts_fixes_and_targets_per_cell(tmp_path):
+    w = _writer(tmp_path)
+    w.write_positions(
+        [
+            live_log.Position(1000, "adsb", "A1", 33.9101, -118.4101),
+            live_log.Position(1010, "adsb", "A1", 33.9102, -118.4102),
+            live_log.Position(1020, "adsb", "B2", 33.9103, -118.4103),
+            live_log.Position(1030, "adsb", "B2", 34.5, -117.0),
+            live_log.Position(1040, "ais", "S1", 33.7, -118.2),
+            live_log.Position(5000, "adsb", "LATE", 33.91, -118.41),  # after the range
+        ],
+        now=1000,
+    )
+    c = live_log.open_reader(w.path)
+    g = live_log.position_grid(c, 900, 2000, cell_deg=0.1)
+    assert g["cell_deg"] == 0.1 and g["fixes"] == 5 and g["targets"] == 3 and not g["truncated"]
+    cells = {tuple(x[:2]): x[2:] for x in g["cells"]["adsb"]}
+    x, y = int((-118.41 + 180) / 0.1), int((33.91 + 90) / 0.1)
+    assert cells[(x, y)] == [3, 2] and len(cells) == 2
+    assert len(g["cells"]["ais"]) == 1
+    only = live_log.position_grid(c, 900, 2000, profile="ais", cell_deg=0.1)
+    assert set(only["cells"]) == {"ais"} and only["fixes"] == 1
+    boxed = live_log.position_grid(c, 900, 2000, cell_deg=0.1, bbox=(-118.5, 33.8, -118.3, 34.0))
+    assert boxed["fixes"] == 3 and list(boxed["cells"]) == ["adsb"]
+    # Too many cells for the cap: the cell doubles until they fit.
+    coarse = live_log.position_grid(c, 900, 2000, cell_deg=0.002, max_cells=2)
+    assert coarse["cell_deg"] > 0.002 and sum(len(v) for v in coarse["cells"].values()) <= 2
+    assert live_log.position_grid(c, 900, 2000, cell_deg=0.0)["cell_deg"] == live_log.GRID_MIN_DEG

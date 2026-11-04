@@ -253,3 +253,106 @@ test('band search: frequencies, ranges and words', () => {
   assert.deepEqual(search(plan, official, '', new Set(['marine'])).bands.map((b) => b.name), ['Marine VHF']);
   assert.equal(search(plan, official, '').official.length, 0);
 });
+
+import {
+  areaPath, binAlpha, binLabels, binOf, bucketsFor, cellFor, columnsOf, dropEchoes, durText, fieldText, gridImage, heatBins,
+  kindsText, mercY, onAir, rangeOf, runsOf, tickTimes,
+} from '../../src/hackrf_mcp/web/static/js/summutil.js';
+
+test('summary periods: back from now, today since UTC midnight, or typed', () => {
+  const now = Date.UTC(2026, 10, 3, 21, 14) / 1000;
+  assert.deepEqual(rangeOf('3600', now), [now - 3600, now]);
+  assert.deepEqual(rangeOf('today', now), [Date.UTC(2026, 10, 3) / 1000, now]);
+  assert.deepEqual(rangeOf('custom', now, '2026-11-02 18:00', '2026-11-02 20:00'), [Date.UTC(2026, 10, 2, 18) / 1000, Date.UTC(2026, 10, 2, 20) / 1000]);
+  assert.deepEqual(rangeOf('custom', now, '2026-11-02 18:00', ' '), [Date.UTC(2026, 10, 2, 18) / 1000, now]);
+  assert.throws(() => rangeOf('custom', now, '2026-11-02 20:00', '2026-11-02 18:00'), /before/);
+  assert.throws(() => rangeOf('soon', now), /unknown range/);
+});
+
+test('rate buckets are round widths, about 120 at most', () => {
+  assert.equal(bucketsFor(86400), 96); // 15 minutes, as the mockup
+  assert.equal(bucketsFor(3600), 60);
+  assert.equal(bucketsFor(7 * 86400), 84); // 2 hours
+  assert.equal(bucketsFor(30), 1);
+});
+
+test('time on the air per profile and in gaps, clipped to the period', () => {
+  const cov = [
+    { state: 'down', profile: null, from: 0, to: 100 },
+    { state: 'running', profile: 'p1', from: 100, to: 400 },
+    { state: 'paused', profile: null, from: 400, to: 430 },
+    { state: 'running', profile: 'p2', from: 430, to: 1000 },
+  ];
+  assert.deepEqual(onAir(cov, 50, 900), { profiles: { p1: 300, p2: 470 }, gaps: { down: 50, paused: 30 } });
+  assert.deepEqual(runsOf(cov, 'p1', 0, 1000, 100), [[10, 30]]);
+  assert.deepEqual(runsOf(cov, 'p2', 500, 1000, 100), [[0, 100]]);
+  assert.deepEqual(runsOf(cov, 'nope', 0, 1000, 100), []);
+});
+
+test('durations read short', () => {
+  assert.equal(durText(0), '0 m');
+  assert.equal(durText(30), '30 s');
+  assert.equal(durText(8 * 60), '8 m');
+  assert.equal(durText(7 * 3600 + 20), '7 h 0 m');
+  assert.equal(durText(2 * 86400 + 3 * 3600), '2 d 3 h');
+});
+
+test('rate areas step per bucket from the baseline; time labels keep their distance', () => {
+  assert.equal(areaPath([0, 10], 100, 30, 10), 'M0,30 L0.0,30.0 L50.0,30.0 L50.0,2.0 L100.0,2.0 L100,30 Z');
+  assert.equal(areaPath([], 100, 30, 0), '');
+  const day = [0, 86400];
+  const wide = tickTimes(...day, 1200, 60, timeTicks);
+  assert.equal(wide[0], 0);
+  assert.equal(wide[wide.length - 1], 86400);
+  assert.ok(wide.length > 4 && wide.every((t, i) => !i || (t - wide[i - 1]) / 86400 * 1200 >= 60));
+  const narrow = tickTimes(...day, 300, 60, timeTicks);
+  assert.ok(narrow.length < wide.length && narrow.every((t, i) => !i || (t - narrow[i - 1]) / 86400 * 300 >= 60));
+  assert.deepEqual(tickTimes(...day, 100, 60, timeTicks), [0, 86400]);
+});
+
+test('summary columns come from the table view, without position and counts', () => {
+  assert.deepEqual(columnsOf({ views: [{ name: 'table', fields: ['callsign', 'lat', 'lon', 'speed', 'messages'] }] }), ['callsign', 'speed']);
+  assert.deepEqual(columnsOf({ views: [{ name: 'map', fields: [] }], summary_fields: ['type', 'positions'] }), ['type']);
+  const top = [{ labels: ['UAL1'], fields: { callsign: 'UAL1', squawk: '1200' } }, { labels: [], fields: { callsign: '' } }];
+  assert.deepEqual(dropEchoes(['callsign', 'squawk', 'speed'], top), ['squawk', 'speed']);
+  assert.equal(kindsText({ vessel: 2, 'aid-to-navigation': 3, 'base-station': 1 }), 'aid to navigation 3 · vessel 2 · base station 1');
+  assert.equal(fieldText(12500), '12,500');
+  assert.equal(fieldText(3.14159), '3.1');
+  assert.equal(fieldText(['a', 'b']), 'a, b');
+  assert.equal(fieldText(''), '—');
+});
+
+test('heat map cells follow the zoom, classes are log-spaced whole numbers', () => {
+  assert.equal(cellFor(2), 5);
+  assert.equal(cellFor(8), 0.05);
+  assert.equal(cellFor(18), 0.002);
+  const edges = heatBins(1000);
+  assert.equal(edges[edges.length - 1], 1000);
+  assert.ok(edges.every((e, i) => !i || e > edges[i - 1]) && edges.length <= 7);
+  assert.deepEqual(heatBins(1), [1]);
+  assert.deepEqual(heatBins(3), [1, 2, 3]);
+  assert.equal(binOf(1, edges), 0);
+  assert.equal(binOf(1000, edges), edges.length - 1);
+  assert.deepEqual(binLabels([1, 3, 9]), ['1', '2–3', '4–9']);
+  assert.ok(binAlpha(0, 6) < binAlpha(5, 6) && binAlpha(5, 6) <= 0.9);
+});
+
+test('a grid in degrees lands on a Mercator image Leaflet can stretch', () => {
+  const cell = 0.5;
+  const cells = [[2 * 180, 2 * 90, 1, 1], [2 * 180 + 3, 2 * 90 + 1, 1, 1]]; // lon 0..2, lat 0..1
+  const img = gridImage(cells, cell, 400);
+  assert.deepEqual([img.west, img.east, img.south, img.north], [0, 2, 0, 1]);
+  assert.equal(img.width, 64); // 4 columns at 16 pixels
+  // Mercator near the equator is nearly square: 1 degree tall, 2 wide.
+  assert.ok(Math.abs(img.height - 32) <= 1);
+  const [x, y, w, h] = img.rect(2 * 180, 2 * 90);
+  assert.deepEqual([x, w], [0, 16]);
+  assert.equal(y + h, img.height); // the southern row sits at the foot
+  const [, y2, , h2] = img.rect(2 * 180 + 3, 2 * 90 + 1);
+  assert.equal(y2, 0); // the northern row at the top
+  assert.equal(y2 + h2, y); // and the rows meet
+  const wide = gridImage([[0, 0, 1, 1], [999, 0, 1, 1]], 0.01, 400);
+  assert.equal(wide.width, 400); // a thousand columns: under a pixel each, capped
+  assert.equal(gridImage([], cell), null);
+  assert.ok(mercY(60) - mercY(59) > mercY(1) - mercY(0)); // rows grow toward the poles
+});

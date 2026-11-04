@@ -76,7 +76,7 @@ filter = [{ field = "squawk", op = "any_of", values = ["7500", "7600", "7700"] }
         <div class="ph"><h2>Adding a decoder</h2></div>
         <div class="pb col">
           <p class="t2 sm">A decoder is a Python module in the fork's <span class="mono">src/hackrf_mcp/protocols/</span>: it registers its capture decoder and live profile, names the kinds of rows it logs, which field is the subject and which the label, and the views it supports. Every screen, the MCP tools and the alert fields come from those registries, so nothing else changes.</p>
-          <p class="t2 sm">Its program has to be in the worker image, so a new decoder is a pull request, a new image and a re-pinned stack, like any other change. The README's "Adding a decoder" walks through one.</p>
+          <p class="t2 sm">Its program, if it runs one, has to be in the worker image, so a new decoder is a pull request, a new image and a re-pinned stack, like any other change. The README's "Adding a decoder" walks through one.</p>
         </div>
       </section>
     </div>

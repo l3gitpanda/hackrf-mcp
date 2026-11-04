@@ -1,0 +1,16 @@
+# An example panel (hackrf_mcp/web/panels.py). Copy it into the panels
+# folder of hackrf-web's state directory (/var/lib/hackrf-mcp/web/panels,
+# or /data/web/panels in the worker container), readable by the service's
+# user; it shows on the Summaries screen at the next page load.
+
+[panel]
+title = "Emergency squawks"
+slot = "summaries.card"
+render = "table"
+
+[query]
+profiles = ["adsb"]
+fields = ["squawk", "callsign", "altitude_max"]
+sort = "last"
+limit = 20
+filter = [{ field = "squawk", op = "any_of", values = ["7500", "7600", "7700"] }]

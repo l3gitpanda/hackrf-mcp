@@ -30,6 +30,9 @@ const S = {
   hidden: new Set(),
   showEvents: true,
   dropped: 0,
+  // How long a live waterfall row is (its "seconds"): history rows of a
+  // second are drawn as tall as that many live rows.
+  liveRowS: 0.1,
   draft: null,
 };
 
@@ -181,14 +184,25 @@ function onMessage(m) {
       break;
     case 'dropped':
       S.dropped += m.n;
+      paintDropped();
       break;
     default:
       break;
   }
 }
 
+// Rows this browser missed because it fell behind the feed: the waterfall
+// joins the rows either side, so say so rather than show a seamless picture.
+function paintDropped() {
+  const el = $('wf-drop');
+  el.hidden = !S.dropped;
+  el.textContent = `${S.dropped} feed message${S.dropped === 1 ? '' : 's'} missed`;
+  el.title = 'This browser fell behind the live feed and missed these (waterfall rows and decoded rows); a slow connection or a busy tab does it.';
+}
+
 function onFft(m) {
   S.lastFftAt = NOW();
+  if (m.seconds > 0) S.liveRowS = m.seconds;
   const det = live().tuning_detail;
   const same = det && det.center_hz === m.center_hz && det.sample_rate_hz === m.sample_rate_hz;
   const band = {
@@ -800,7 +814,7 @@ async function prefillWaterfall() {
   const peak = Uint8Array.from(atob(data.peak), (c) => c.charCodeAt(0));
   const toDb = (u8) => Float32Array.from(u8, (b) => seg.db_min + b * seg.db_step);
   for (let i = 0; i < data.ts.length; i++) {
-    S.wf.pushRow(toDb(mean.subarray(i * bins, (i + 1) * bins)), toDb(peak.subarray(i * bins, (i + 1) * bins)), data.ts[i], 4);
+    S.wf.pushRow(toDb(mean.subarray(i * bins, (i + 1) * bins)), toDb(peak.subarray(i * bins, (i + 1) * bins)), data.ts[i], Math.max(1, Math.round(1 / S.liveRowS)));
   }
 }
 

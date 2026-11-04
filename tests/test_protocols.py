@@ -13,7 +13,7 @@ def test_builtin_order_is_stable():
     assert decoders.names() == (
         "adsb", "uat", "ais", "acars", "vdl2", "pocsag", "flex", "aprs", "eas", "dtmf", "rds", "meshtastic", "lora"
     )
-    assert live_profiles.names() == ("adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas")
+    assert live_profiles.names() == ("adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas", "meshtastic")
 
 
 def test_every_profile_can_be_summarised_and_described():

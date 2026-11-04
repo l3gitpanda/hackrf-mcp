@@ -250,8 +250,12 @@ against `homelab`, deployed only with the owner's approval:
   24-1700 MHz hourly, about a second of the radio each) building a heat map
   of what is on the air when, shown with the band plan.
 - **Meshtastic / LoRa:** a decoder for mesh nodes (LoRa chirp demodulation
-  of the US LongFast and other presets; Meshtastic captures are in the
-  capture directory), with their positions on the Map.
+  of the US LongFast and other presets), with their positions on the Map.
+  The capture decoders `meshtastic` and `lora` are in (#35); the live
+  profile `meshtastic` follows. Still to do: hearing a real node. The
+  capture directory's Meshtastic captures hold no LoRa at all, so the
+  Meshtastic layer (header, AES-CTR, protobuf) is proven on synthetic
+  packets only; the owner will key a node during a capture.
 - **ISM sensors as a live profile:** rtl_433 continuously on 433.92 or
   915 MHz. It hears the neighbours' weather stations, tyre sensors and
   meters, so what it logs and shows by default is the owner's decision

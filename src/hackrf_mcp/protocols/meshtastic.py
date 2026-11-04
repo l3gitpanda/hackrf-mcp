@@ -1,6 +1,6 @@
-"""Meshtastic mesh radios, and LoRa in general: offline decoding with the
-LoRa receiver built into this package (hackrf_mcp.lora_phy), so no program
-is needed.
+"""Meshtastic mesh radios, and LoRa in general: capture decoders and a live
+profile, with the LoRa receiver built into this package
+(hackrf_mcp.lora_phy), so no program is needed.
 
 What a Meshtastic packet is on the air, as the firmware sends it (the
 numbers checked against its source and protobuf definitions; nothing here is
@@ -31,14 +31,18 @@ the node sent them.
 
 from __future__ import annotations
 
+import collections
 import json
 import struct
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
 
-from hackrf_mcp import decoders, iq, lora_phy
+from hackrf_mcp import decoders, iq, live_profiles, lora_phy
 from hackrf_mcp.decoders import DecodeError, Decoder, Job, Result
+from hackrf_mcp.live_log import Row
+from hackrf_mcp.live_profiles import Pipeline, PositionThrottle, Profile, View
 
 # --- Presets and slots -----------------------------------------------------
 
@@ -623,6 +627,188 @@ def run_lora(job: Job) -> Result:
     return Result(f"lora: {len(good)} frame(s), {ok} with a good CRC.", [], lines, "\n".join(raw), notes)
 
 
+
+# --- The live profile ------------------------------------------------------
+
+LIVE_RATE = 2_000_000
+# Row kinds by app; anything else (and anything still encrypted) is "packet".
+KINDS = {
+    1: "text", 3: "position", 4: "nodeinfo", 5: "routing", 8: "waypoint", 66: "rangetest", 67: "telemetry",
+    70: "traceroute", 71: "neighborinfo",
+}
+
+
+def live_channels(freqs: tuple[int, ...]) -> list[lora_phy.Channel]:
+    """A preset's default slot is searched with that preset; any other
+    frequency with every preset."""
+    out = []
+    for f in freqs:
+        owners = [p for p in PRESETS if slot_hz(p) == f]
+        if owners:
+            out += [lora_phy.Channel(float(f), float(p.bw_hz), (p.sf,)) for p in owners]
+            continue
+        radios: dict[int, set[int]] = {}
+        for p in PRESETS:
+            radios.setdefault(p.bw_hz, set()).add(p.sf)
+        out += [lora_phy.Channel(float(f), float(bw), tuple(sorted(sfs))) for bw, sfs in sorted(radios.items())]
+    return out
+
+
+def packet_fields(f: lora_phy.Found, rec: Received) -> tuple[str, dict, str]:
+    """(row kind, fields, one-line summary) of a packet."""
+    p, fr = rec.packet, f.frame
+    preset = rec.preset or f"SF{fr.sf}/{f.channel.bw_hz / 1e3:g}k"
+    fields: dict = {
+        "from": node_id(p.sender),
+        "to": "all" if p.to == BROADCAST else node_id(p.to),
+        "id": f"{p.id:08x}",
+        "hops": p.hop_start - p.hop_limit if p.hop_start else None,
+        "hop_start": p.hop_start or None,
+        "channel": f"{p.channel:#04x}",
+        "preset": preset,
+        "snr_db": round(fr.snr_db, 1),
+        "port": PORTS.get(rec.port, f"PORT_{rec.port}") if rec.readable else None,
+        "encrypted": not rec.readable,
+    }
+    if rec.message:
+        for key, value in rec.message.info.items():
+            fields[key] = " > ".join(value) if isinstance(value, list) else value
+        what = rec.message.summary
+    else:
+        what = f"encrypted (channel {p.channel:#04x}, {len(p.body)} bytes)"
+    kind = KINDS.get(rec.port, "packet") if rec.readable else "packet"
+    return kind, fields, f"{node_id(p.sender)} -> {fields['to']} {preset}: {what}"
+
+
+class MeshtasticPipeline(Pipeline):
+    """The built-in LoRa receiver on the live stream. The source's thread
+    only queues the blocks (dropping, and counting, what the decoder can't
+    keep up with, so the HackRF is never held up); a worker thread runs the
+    scanner, which reports each frame a few seconds after it ends."""
+
+    QUEUE_SECONDS = 10.0
+
+    def start(self) -> None:
+        t = self.tuning
+        self.rate = t.sample_rate_hz
+        self.scanner = lora_phy.Scanner(self.rate, t.center_hz, live_channels(t.freqs_hz), self._found)
+        self.throttle = PositionThrottle(t.profile.name, self.ctx.emit_position)
+        self.names: dict[int, str] = {}
+        self.cv = threading.Condition()
+        self.queue: collections.deque[tuple[bytes, float]] = collections.deque()
+        self.queued = 0  # bytes
+        self.max_bytes = int(self.QUEUE_SECONDS * 2 * self.rate)
+        # (samples fed once this block is in, when it arrived), to date frames.
+        self.arrivals: collections.deque[tuple[int, float]] = collections.deque(maxlen=8192)
+        self.stats = {"packets": 0, "crc_failed": 0, "other_lora": 0, "dropped_blocks": 0}
+        self.error: str | None = None
+        self.source = self.ctx.make_source(t)
+        # A file (a replay) can wait for the decoder; the HackRF can't.
+        self.blocking = isinstance(self.source, live_profiles.FileSource)
+        self.started = time.time()
+        self._thread(self._work, "meshtastic-decode")
+        self.source.start(self._feed)
+
+    def _feed(self, buf: bytes) -> None:
+        with self.cv:
+            while self.blocking and self.queued + len(buf) > self.max_bytes and not self._stop.is_set():
+                self.cv.wait(0.2)
+            if self.queued + len(buf) > self.max_bytes:
+                self.stats["dropped_blocks"] += 1
+                return
+            self.queue.append((buf, time.time()))
+            self.queued += len(buf)
+            self.cv.notify_all()
+
+    def _work(self) -> None:
+        try:
+            while True:
+                with self.cv:
+                    while not self.queue and not self._stop.is_set():
+                        self.cv.wait(0.2)
+                    if not self.queue:
+                        return  # stopped, and nothing left
+                    buf, at = self.queue.popleft()
+                    self.queued -= len(buf)
+                    self.cv.notify_all()
+                x = iq.cs8_to_complex(buf)
+                self.arrivals.append((self.scanner.samples + x.size, at))
+                self.scanner.feed(x)
+        except Exception as exc:  # reported by failure(); the service restarts the profile
+            self.error = f"meshtastic decoder: {exc!r}"
+
+    def _ts(self, seconds: float) -> float:
+        """When a frame was on the air: live, from when its samples arrived;
+        in a replay (read as fast as it decodes), from where it is in the
+        file."""
+        if self.blocking:
+            return self.started + seconds
+        s = seconds * self.rate
+        for end, at in self.arrivals:
+            if end >= s:
+                return at - (end - s) / self.rate
+        return time.time()
+
+    def _found(self, f: lora_phy.Found) -> None:
+        fr = f.frame
+        if fr.header is None:
+            return
+        if fr.sync_word != SYNC_WORD:
+            self.stats["other_lora"] += 1
+            return
+        rec = decode_packet(fr.payload, BY_RADIO.get((int(f.channel.bw_hz), fr.sf))) if fr.crc_ok is not False else None
+        if rec is None:
+            self.stats["crc_failed"] += 1
+            return
+        ts = self._ts(f.seconds)
+        kind, fields, line = packet_fields(f, rec)
+        sender = rec.packet.sender
+        if kind == "nodeinfo" and (fields.get("long_name") or fields.get("short_name")):
+            self.names[sender] = fields.get("long_name") or fields.get("short_name")
+        if sender in self.names:
+            fields["name"] = self.names[sender]
+        subject = node_id(sender)
+        self.ctx.emit(
+            Row(ts, self.tuning.profile.name, kind, fields, raw=line, freq_hz=int(f.channel.freq_hz),
+                subject=subject, label=self.names.get(sender))
+        )
+        self.ctx.count(1)
+        self.stats["packets"] += 1
+        if kind == "position" and "lat" in fields:
+            self.throttle.offer(subject, ts, fields["lat"], fields["lon"])
+
+    def finish(self) -> None:
+        # The frames still in the scanner's buffers, once the worker is done.
+        if self.error is None and not any(t.is_alive() for t in self._threads):
+            try:
+                self.scanner.finish()
+            except Exception as exc:
+                self.error = f"meshtastic decoder: {exc!r}"
+
+    def finished(self) -> bool:
+        with self.cv:
+            idle = not self.queue
+        return super().finished() and idle
+
+    def failure(self) -> str | None:
+        return self.error or super().failure()
+
+    def health(self) -> dict:
+        h = super().health()
+        if hasattr(self, "scanner"):
+            h.update(self.stats)
+            h["queue_s"] = round(self.queued / (2 * self.rate), 1)
+            levels = {}
+            for bw, tracks in self.scanner.groups.items():
+                for i, t in enumerate(tracks):
+                    p = self.scanner.splitters[bw].power_db[i]
+                    key = f"{t.channel.freq_hz / 1e6:.4f}"
+                    if p != float("-inf") and key not in levels:
+                        levels[key] = round(p, 1)
+            h["channel_levels_dbfs"] = levels
+        return h
+
+
 SLOTS_HZ = tuple(sorted({slot_hz(p) for p in PRESETS}))
 
 decoders.register(
@@ -646,5 +832,44 @@ decoders.register(
         "LoRa frames of any kind (SF 7-12 at 125, 250 or 500 kHz) on given frequencies, as hex",
         "Capture at a multiple of 2 MS/s with the channel inside the capture; pass it in frequencies_hz.",
         run_lora,
+    )
+)
+
+live_profiles.register(
+    Profile(
+        "meshtastic",
+        "Meshtastic mesh radios (the built-in LoRa receiver), LongFast's US slot by default; "
+        "one row per packet: node names, positions, telemetry, text sent to everyone",
+        (),
+        MeshtasticPipeline,
+        LIVE_RATE,
+        None,
+        (slot_hz(PRESETS[0]),),
+        channel_bw_hz=500_000,
+        # The palette's next colour (#7fd1ff) is a lighter adsb blue. This
+        # one is the farthest from the other eight profiles' under simulated
+        # protan, deutan and tritan vision that stays light enough for the
+        # dark UI and apart from the Map's white labels: CIEDE2000 11.0 to
+        # the nearest (15.3 with normal vision).
+        color="#ffd2b4",
+        help="""  meshtastic - Meshtastic mesh radios at 2 MS/s: LongFast's US slot,
+           906.875 MHz, unless frequencies_hz names others (a preset's
+           slot decodes that preset; any other frequency, every preset);
+           one row per packet, positions on the map.""",
+        summary_kinds=tuple(dict.fromkeys(KINDS.values())) + ("packet",),
+        summary_fields=(
+            "name", "short_name", "hw_model", "role", "text", "lat", "lon", "alt_m", "battery_pct", "voltage",
+            "temperature_c", "snr_db", "hops", "preset",
+        ),
+        views=(
+            View(
+                "map",
+                ("position",),
+                ("name", "alt_m", "sats", "precision_bits", "hops", "snr_db"),
+                (("lat", "lat"), ("lon", "lon"), ("label", "name")),
+            ),
+            View("table", (), ("name", "port", "to", "text", "hw_model", "battery_pct", "hops", "snr_db", "preset")),
+            View("timeline"),
+        ),
     )
 )

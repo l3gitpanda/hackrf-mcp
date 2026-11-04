@@ -40,6 +40,7 @@ decoding), so sensitivity is about a dB or two short of a LoRa radio's.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -665,7 +666,8 @@ class _Track:
         self.fill = 0
         self.start = 0  # samples before buf[0]
         self.seen: list[tuple[int, int]] = []  # (sf, chip) of frames found
-        self.found: list[Found] = []
+        self.found: list[Found] = []  # since the scanner last took them
+        self.kept: list[Found] = []  # what the scanner keeps, with no callback
         self.delay_s = 0.0  # the channel filter's delay, taken off the times
 
     def feed(self, y: np.ndarray, deadline: float | None) -> None:
@@ -705,6 +707,78 @@ class _Track:
         self.start += self.segment
 
 
+class Scanner:
+    """Frames on the channels given, from complex samples pushed in as they
+    come (a capture read in chunks, or the live stream). Each bandwidth is
+    taken out by one FFT channeliser for all its channels. Frames are
+    reported to `on_found` when a channel's segment is processed, a few
+    seconds after they end; finish() reports the rest."""
+
+    def __init__(
+        self,
+        sample_rate_hz: int,
+        center_hz: float,
+        channels: list[Channel],
+        on_found: Callable[[Found], None] | None = None,
+    ):
+        from hackrf_mcp import iq
+
+        self.on_found = on_found
+        self.samples = 0  # fed so far
+        self.groups: dict[float, list[_Track]] = {}
+        for ch in channels:
+            self.groups.setdefault(ch.bw_hz, []).append(_Track(ch, ch.freq_hz))
+        self.splitters = {
+            bw: iq.FFTChannelizer(
+                sample_rate_hz,
+                [t.channel.freq_hz - center_hz for t in tracks],
+                sample_rate_hz // int(OS * bw),
+                1.05 * bw,
+            )
+            for bw, tracks in self.groups.items()
+        }
+        for bw, tracks in self.groups.items():
+            for t in tracks:
+                # A linear-phase FIR as long as the overlap delays by half of it.
+                t.delay_s = self.splitters[bw].overlap / 2 / sample_rate_hz
+
+    def _report(self) -> None:
+        for tracks in self.groups.values():
+            for t in tracks:
+                if t.found:
+                    found, t.found = t.found, []
+                    if self.on_found is not None:
+                        for f in found:
+                            self.on_found(f)
+                    else:
+                        t.kept += found
+
+    def feed(self, chunk: np.ndarray, deadline: float | None = None) -> None:
+        self.samples += chunk.size
+        for bw, tracks in self.groups.items():
+            for t, y in zip(tracks, self.splitters[bw](chunk)):
+                t.feed(y, deadline)
+        self._report()
+
+    def finish(self, deadline: float | None = None) -> None:
+        """The end of the samples: push out what the channelisers hold back
+        (up to a block, and their filters' delay) and process every
+        channel's last segment, so a frame ending there is seen."""
+        for bw, tracks in self.groups.items():
+            sp = self.splitters[bw]
+            for t, y in zip(tracks, sp(np.zeros(sp.step + sp.overlap, np.complex64))):
+                t.feed(y, deadline)
+        for tracks in self.groups.values():
+            for t in tracks:
+                t.finish(deadline)
+        self._report()
+
+    def results(self) -> list[Found]:
+        """Without on_found: everything found, in time order."""
+        out = [f for tracks in self.groups.values() for t in tracks for f in t.kept]
+        return sorted(out, key=lambda f: f.seconds)
+
+
 def scan(
     chunks,
     sample_rate_hz: int,
@@ -713,45 +787,13 @@ def scan(
     deadline: float | None = None,
 ) -> list[Found]:
     """Every frame in a stream of complex sample chunks (a capture, read
-    once), on the channels given, in time order. Each bandwidth is taken
-    out by one FFT channeliser for all its channels."""
+    once), on the channels given, in time order."""
     import time
 
-    groups: dict[float, list[_Track]] = {}
-    for ch in channels:
-        groups.setdefault(ch.bw_hz, []).append(_Track(ch, ch.freq_hz))
-    from hackrf_mcp import iq
-
-    splitters = {
-        bw: iq.FFTChannelizer(
-            sample_rate_hz,
-            [t.channel.freq_hz - center_hz for t in tracks],
-            sample_rate_hz // int(OS * bw),
-            1.05 * bw,
-        )
-        for bw, tracks in groups.items()
-    }
-    for bw, tracks in groups.items():
-        for t in tracks:
-            # A linear-phase FIR as long as the overlap delays by half of it.
-            t.delay_s = splitters[bw].overlap / 2 / sample_rate_hz
+    scanner = Scanner(sample_rate_hz, center_hz, channels)
     for chunk in chunks:
         if deadline is not None and time.monotonic() > deadline:
-            break
-        for bw, tracks in groups.items():
-            for t, y in zip(tracks, splitters[bw](chunk)):
-                t.feed(y, deadline)
-    else:
-        # The channeliser holds back up to a block, and its filter's delay,
-        # at the end: push them out, so a frame ending there is seen.
-        for bw, tracks in groups.items():
-            sp = splitters[bw]
-            for t, y in zip(tracks, sp(np.zeros(sp.step + sp.overlap, np.complex64))):
-                t.feed(y, deadline)
-    found = []
-    for tracks in groups.values():
-        for t in tracks:
-            t.finish(deadline)
-            found += t.found
-    found.sort(key=lambda f: f.seconds)
-    return found
+            return scanner.results()
+        scanner.feed(chunk, deadline)
+    scanner.finish(deadline)
+    return scanner.results()

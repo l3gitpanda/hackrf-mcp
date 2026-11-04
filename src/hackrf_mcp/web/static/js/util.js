@@ -2,9 +2,13 @@
 // tests (node --test); nothing here touches the DOM when imported.
 
 // Profile colours: the mockup's, in registry order, then more. A profile's
-// own `color` (Profile.color) wins.
+// own `color` (Profile.color) wins. The sixth was the mockup's #d8d65a,
+// which colour-blind readers couldn't tell from the fifth (#8fd46a): OKLab
+// ΔE 3.5 under protanopia. #fff27a keeps it yellow at ΔE 11.2 from every
+// other slot under any simulated colour vision deficiency (17.0 with
+// normal vision), with 15.8:1 contrast on the dark panel.
 export const PALETTE = [
-  '#5cb8ff', '#3fd0c0', '#a98bff', '#e483d6', '#8fd46a', '#d8d65a', '#ff9d5c', '#ff6474',
+  '#5cb8ff', '#3fd0c0', '#a98bff', '#e483d6', '#8fd46a', '#fff27a', '#ff9d5c', '#ff6474',
   '#7fd1ff', '#c9a3ff', '#ffc46b', '#9be3a1', '#f39cc4', '#b4c8ff',
 ];
 

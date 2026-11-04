@@ -413,6 +413,20 @@ goes back to the rotation by itself, page open or not, and a restart does
 the same. Device tools pause a watch as they pause decoding. What was
 watched is recorded in the spectrum history as profile `watch`.
 
+**Summaries.** The **Summaries** screen (`/summaries`) totals a period
+(the last hour, 6 or 24 hours, today, 7 days, or from-to in UTC) from the
+log as it is, with no storage of its own: when each profile was on the air
+and the gaps between; per profile, how many different subjects it heard
+(aircraft, ships, capcodes ...; AIS by kind), its decoded messages and the
+20 busiest subjects with their fields, each linking to its rows in the Log;
+messages per time bucket with the time on the air beneath; and a heat map
+of where the profiles with positions were, one profile at a time, counting
+different targets (or fixes) per cell on the same base map as the Map, the
+cells finer as you zoom in. ADS-B and AIS rows are per-minute summaries, so
+a row counts as its `messages` field; any other row is one message. Only
+the fields the screen shows are read out of the log, so pager text never
+reaches it.
+
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,
@@ -424,7 +438,9 @@ switches and stops profiles over the control socket, as the MCP tools do.
 | `GET /api/status` | the live service's status, and the memory and CPU of `hackrf-live` and `hackrf-web` |
 | `GET /api/log`, `/api/summary`, `/api/events` | the log, as `hackrf_live_search` and `hackrf_live_summary` read it; `/api/log` takes several `profiles` and pages with `before_id` |
 | `GET /api/log/histogram`, `/api/coverage` | matching rows per time bucket and profile; what the receiver was doing (running which profile, paused, error, stopped, down), rebuilt from the events |
+| `GET /api/summaries` | for a range, per profile: decoded messages per bucket, subjects heard (per kind) and the busiest of them, with the coverage, from one reading of the log |
 | `GET /api/positions` | map-track points; when a range holds more than `limit`, one fix per target per `step` seconds (the response gives `step`) |
+| `GET /api/positions/grid` | positions counted per `cell`-degree cell (fixes and different targets), optionally inside a `bbox`, coarsened when there are more than `max_cells` |
 | `GET /api/basemap.pmtiles` | the operator's base map, in byte ranges, or 404 when there is none |
 | `GET /api/spectrum/segments`, `/api/spectrum?segment=` | spectrum history, downsampled to the buckets asked for |
 | `POST /api/live/start`, `/api/live/stop` | the same requests as `hackrf_live_start` / `hackrf_live_stop` |

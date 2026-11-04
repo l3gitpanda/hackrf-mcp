@@ -459,3 +459,48 @@ def test_web_settings_and_tokens(tmp_path):
         settings.WebSettings(port=0)
     with pytest.raises(ValueError):
         web_app.create_app(settings.LiveSettings(live_dir=tmp_path), settings.WebSettings(), [], b"k" * 32, feed=False)
+
+
+def test_summaries_for_a_range_and_the_summaries_page(env):
+    live, gate, _ = env
+    c = TestClient(gate)
+    r = c.get("/api/summaries", params={"since": "900", "until": "1100", "buckets": 4}, headers=BEARER)
+    assert r.status_code == 200
+    out = r.json()
+    assert out["bucket_s"] == 50.0 and set(out["profiles"]) == set(live_profiles.PROFILES)
+    adsb = out["profiles"]["adsb"]
+    assert adsb["rows"] == 1 and adsb["messages"] == 1 and adsb["subjects"] == 1 and adsb["rate"] == [0, 0, 1, 0]
+    (a,) = adsb["top"]
+    assert a["subject"] == "A1B2C3" and a["labels"] == ["UAL1"] and a["fields"] == {"callsign": "UAL1"}
+    assert out["coverage"][-1] == {"state": "running", "profile": "adsb", "from": 999.0, "to": 1100.0}
+    flex = out["profiles"]["flex"]
+    assert flex["subjects"] == 1 and flex["top"][0]["subject"] == "1234567"
+    assert "message" not in flex["top"][0]["fields"] and SECRET_TEXT not in r.text
+    # Only the fields the screen shows are read out, so even with pager
+    # content allowed the text stays in the log.
+    allowed = web_app.create_app(
+        settings.LiveSettings(live_dir=live.live_dir, pager_content=True), settings.WebSettings(), [DIGEST], b"k" * 32, feed=False
+    )
+    r = TestClient(allowed).get("/api/summaries", params={"since": "900"}, headers=BEARER)
+    assert r.status_code == 200 and SECRET_TEXT not in r.text
+    assert c.get("/api/summaries", params={"until": "1100"}, headers=BEARER).status_code == 400
+    assert c.get("/api/summaries", params={"since": "1100", "until": "900"}, headers=BEARER).status_code == 400
+    assert c.get("/api/summaries", params={"since": "900"}).status_code == 401
+    assert TestClient(gate, follow_redirects=False).get("/summaries").status_code == 303  # needs sign-in
+    page = c.get("/summaries", headers=BEARER)
+    assert page.status_code == 200 and "summaries.js" in page.text and page.headers["cache-control"] == "no-cache"
+
+
+def test_positions_counted_on_a_grid_for_the_heat_map(env):
+    _, gate, _ = env
+    c = TestClient(gate)
+    g = c.get("/api/positions/grid", params={"since": "900", "until": "1100", "cell": "0.1"}, headers=BEARER).json()
+    assert g["cell_deg"] == 0.1 and g["fixes"] == 1 and g["targets"] == 1
+    assert g["cells"] == {"adsb": [[int((-118.4 + 180) / 0.1), int((33.9 + 90) / 0.1), 1, 1]]}
+    boxed = c.get(
+        "/api/positions/grid", params={"since": "900", "cell": "0.1", "bbox": "-117,30,-116,31"}, headers=BEARER
+    ).json()
+    assert boxed["fixes"] == 0 and boxed["cells"] == {}
+    for bad in ({"cell": "x"}, {"cell": "0"}, {"cell": "11"}, {"bbox": "1,2,3"}, {"bbox": "0,50,1,40"}, {"bbox": "a,b,c,d"}):
+        assert c.get("/api/positions/grid", params={"since": "900", **bad}, headers=BEARER).status_code == 400, bad
+    assert c.get("/api/positions/grid", headers=BEARER).status_code == 400

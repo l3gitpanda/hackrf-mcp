@@ -127,6 +127,73 @@ class DemoPipeline(Pipeline):
             self.ctx.count(1)
 
 
+def backfill(db_path: Path, hours: float, now: float) -> None:
+    """Fills the log with a made-up past, for the screens that read ranges
+    (Log, Map history, Summaries): a rotation of the first three profiles
+    with positions (or not) in 10, 10 and 5 minute slots, busier by day,
+    with the service down for 40 minutes and a pause on the way. Rows are
+    per-minute summaries with a message count, as ADS-B and AIS log them;
+    pages carry no text."""
+    w = LiveLogWriter(db_path, (hours + 2) * 3600, 1 << 30, 0)
+    rnd = random.Random(7)
+    names = list(live_profiles.PROFILES)[:3]
+    lengths = (600, 600, 300)
+    t = now - hours * 3600
+    down = (now - hours * 3600 * 0.4, now - hours * 3600 * 0.4 + 2400)
+    # Straight tracks across the area, each subject at its own speed.
+    tracks = {
+        f"DEMO{i:02d}": (HOME[0] + rnd.uniform(-0.6, 0.6), HOME[1] + rnd.uniform(-0.8, 0.8), rnd.uniform(-1, 1), rnd.uniform(-1, 1))
+        for i in range(40)
+    }
+    w.event("service-start", ts=t)
+    i = 0
+    while t < now - 60:
+        name, length = names[i % 3], lengths[i % 3]
+        i += 1
+        if down[0] <= t < down[1]:
+            w.event("service-stop", ts=t)
+            t = down[1]
+            w.event("service-start", ts=t)
+            continue
+        p = live_profiles.PROFILES[name]
+        kind = p.summary_kinds[0] if p.summary_kinds else name
+        has_map = any(v.name == "map" for v in p.ui_views())
+        end = min(t + length, now - 60)
+        w.event("start", name, f"{name}: demo backfill", ts=t)
+        rows, fixes = [], []
+        hour = time.gmtime(t).tm_hour
+        busy = 4 + int(14 * max(0.0, np.sin((hour - 6) / 24 * 2 * np.pi)))
+        heard = [s for s in tracks if rnd.random() < busy / len(tracks) * 2][:busy]
+        for m in np.arange(t, end - 30, 60.0):
+            for s in heard:
+                if rnd.random() < 0.25:
+                    continue
+                lat0, lon0, dlat, dlon = tracks[s]
+                k = ((m / 3600) % 6) / 6
+                lat, lon = lat0 + dlat * 0.4 * k, lon0 + dlon * 0.4 * k
+                fields = {"messages": rnd.randint(5, 400) if has_map else 1, "type": "DEMO"}
+                if has_map:
+                    fields.update(lat=round(lat, 5), lon=round(lon, 5), speed=rnd.choice([12, 250, 430]))
+                    for j in range(0, 60, 20):
+                        fixes.append(Position(float(m + j), name, s, lat + dlat * 0.0007 * j, lon + dlon * 0.0007 * j, 30000.0, 250.0, 90.0))
+                rows.append(
+                    Row(
+                        ts=float(m), ts_end=float(m + 50), profile=name, kind=kind, freq_hz=p.default_freqs_hz[0] if p.default_freqs_hz else None,
+                        level_db=round(rnd.uniform(-40, -10), 1), subject=s, label=f"DEMO {s[-2:]}", fields=fields,
+                        raw=f"demo {name} {s} (simulated, not decoded)",
+                    )
+                )  # fmt: skip
+        w.write(rows, now=now)
+        w.write_positions(fixes, now=now)
+        if i == 7:
+            w.event("pause", name, "for hackrf_info, lease 45 s", ts=t + 200)
+            w.event("stop", name, "paused for hackrf_info", ts=t + 200)
+            w.event("start", name, f"{name}: demo backfill", ts=t + 230)
+        w.event("stop", name, "switching", ts=end)
+        t = end
+    w.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--port", type=int, default=18766)
@@ -134,6 +201,7 @@ def main() -> None:
     parser.add_argument("--token-file", help="write the sign-in token here instead of printing it")
     parser.add_argument("--dir", default="/tmp/hackrf-webui-demo", help="scratch directory, emptied at start")
     parser.add_argument("--basemap", help="a base map extract to show (python -m hackrf_mcp.web.basemap)")
+    parser.add_argument("--history", type=float, default=0, metavar="HOURS", help="fill the log with a made-up past this long")
     parser.add_argument(
         "--agent", action="store_true",
         help="take samples from a hackrf-agent (run here, over loopback TCP) as a split station would",
@@ -180,8 +248,12 @@ def main() -> None:
             synth(path, tuning, 4.0 if tuning.sample_rate_hz <= 2_400_000 else 1.0)
         return LoopSource(path, tuning.sample_rate_hz, realtime=True)
 
+    keep_s = max(86400, (args.history + 2) * 3600)
+    if args.history > 0:
+        live_profiles.load()
+        backfill(live.db_path, args.history, time.time())
     sw = SpectrumWriter(live.spectrum_db_path, 86400, 86400, 1 << 30, 0)
-    pump = LogPump(LiveLogWriter(live.db_path, 86400, 1 << 30, 0), spectrum_writer=sw)
+    pump = LogPump(LiveLogWriter(live.db_path, keep_s, 1 << 30, 0), spectrum_writer=sw)
     pump.start()
     rec = SpectrumRecorder(pump.spectrum)
     def make_pipeline(tuning, ctx):

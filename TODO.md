@@ -106,8 +106,13 @@ after the owner approves.
    refresh it, download a newer PDF and run the two tools), 11.
    **Watch a range** (done, below), 12. **Bands** (done: `/bands`,
    `bands.js`, `bandsearch.js`: search the plan and the official table by
-   word, part, frequency or range, and open a band in Watch a range), then
-   Summaries, Alerts and Plugins.
+   word, part, frequency or range, and open a band in Watch a range),
+   14. **Summaries** (done: `/summaries`, `summaries.js`, `summutil.js`,
+   `/api/summaries` and `/api/positions/grid`, scope agreed with the owner
+   on 2026-11-03: for a chosen period, per profile, the subjects heard and
+   the busiest, the message rate over time, the time on the air from
+   coverage, and a heat map of positions; from data already logged, no new
+   storage), then Alerts and Plugins.
 
 ### Watching a custom range (milestone 11)
 

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Alerts · hackrf-live</title>
+<link rel="stylesheet" href="/static/hl.css">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/js/alerts.js"></script>
+</head>
+<body>
+<div class="hl page">
+  <div class="abwrap">
+    <header class="appbar">
+      <a class="brand" href="/">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <span>hackrf-live</span>
+        <small>home station</small>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/">Live</a>
+        <a href="/map">Map</a>
+        <a href="/log">Log</a>
+        <a href="/history">History</a>
+        <a href="/bands">Bands</a>
+        <a href="/summaries">Summaries</a>
+        <a href="/alerts" aria-current="page">Alerts</a>
+      </nav>
+      <div class="ab-r">
+        <span class="chip st st-idle" id="ab-state" role="status"><span class="dot"></span><span id="ab-state-text">Connecting…</span></span>
+        <span class="chip" id="ab-prof" hidden><span class="sw"></span><span class="mono" id="ab-prof-text"></span></span>
+        <span class="chip mono" id="ab-clock" aria-label="Station clock, UTC">--:--:-- UTC</span>
+        <form method="post" action="/auth/logout"><button type="submit" class="btn sm ghost">Sign out</button></form>
+      </div>
+    </header>
+  </div>
+  <main class="main" id="amain">
+    <p class="ctl-err" id="aerr" role="alert" hidden></p>
+    <div class="agrid">
+      <section class="panel" aria-label="Rules">
+        <div class="ph"><h2>Rules</h2><span class="muted" id="r-count"></span><span class="sp"></span><button type="button" class="btn sm primary" id="r-new">+ New rule</button></div>
+        <div id="rules" role="list"></div>
+        <p class="mapnote2" id="r-webhook"></p>
+      </section>
+      <section class="panel" aria-label="Rule editor">
+        <div class="ph"><h2 id="ed-title">New rule</h2><span class="sp"></span><button type="button" class="btn sm ghost" id="ed-delete" hidden>Delete</button></div>
+        <form class="pb ed" id="ed" autocomplete="off">
+          <div class="fld">
+            <label for="ed-name">Name</label>
+            <input id="ed-name" class="inp" maxlength="80" placeholder="Emergency squawks">
+          </div>
+          <div class="fld">
+            <span class="lb">Applies to profiles <span class="muted">(none chosen: all)</span></span>
+            <div class="row wr" id="ed-profiles" role="group" aria-label="Profiles"></div>
+          </div>
+          <div class="fld">
+            <span class="lb">When every condition holds</span>
+            <div class="col" id="ed-conds"></div>
+            <div class="row"><button type="button" class="btn sm" id="ed-add">+ and</button><span class="muted sm" id="ed-fieldnote"></span></div>
+          </div>
+          <div class="fld">
+            <span class="lb">Then</span>
+            <label class="row chk"><input type="checkbox" checked disabled> Show it here: the banner on every screen, the count in the app bar, and the hit history</label>
+            <label class="row chk"><input type="checkbox" id="ed-webhook"> Post it to the webhook</label>
+            <span class="muted sm" id="ed-webhooknote"></span>
+            <div class="row wr">
+              <label class="muted sm" for="ed-repeat">For the same subject, at most</label>
+              <select id="ed-repeat" class="inp"></select>
+              <label class="row chk"><input type="checkbox" class="switch" id="ed-enabled" checked> On</label>
+            </div>
+          </div>
+          <p class="muted sm">Rows are checked as they are logged. Aircraft and ships are logged as one row a minute, so their alerts come up to a minute after the signal.</p>
+          <div class="row wr">
+            <button type="submit" class="btn primary" id="ed-save">Save rule</button>
+            <button type="button" class="btn" id="ed-revert">Revert</button>
+            <button type="button" class="btn ghost" id="ed-test" hidden>Send a test to the webhook</button>
+            <span class="ctl-err" id="ed-err" role="alert" hidden></span>
+            <span class="muted sm" id="ed-msg"></span>
+          </div>
+        </form>
+        <div class="pv">
+          <div class="ph"><h2>Preview · last 7 days</h2><span class="sp"></span><span class="muted" id="pv-count"></span></div>
+          <div class="tscroll pvscroll"><table class="tbl"><thead><tr><th>Time</th><th>Profile</th><th>Subject</th><th>Label</th><th>Matched</th></tr></thead><tbody id="pv"></tbody></table></div>
+        </div>
+      </section>
+    </div>
+    <section class="panel" aria-label="Hit history">
+      <div class="ph"><h2>Hit history</h2><span class="tag new" id="h-new" hidden></span><span class="sp"></span><button type="button" class="btn sm" id="h-ackall" hidden>Acknowledge all</button></div>
+      <div class="tscroll hscroll"><table class="tbl"><thead><tr><th>Time</th><th>Rule</th><th>Profile</th><th>Subject</th><th>Label</th><th>Detail</th><th>Webhook</th><th>State</th></tr></thead><tbody id="hits"></tbody></table></div>
+      <div class="more" id="h-more" hidden><button type="button" class="btn sm" id="h-more-btn">Older hits</button></div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

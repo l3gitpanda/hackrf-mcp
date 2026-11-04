@@ -5,7 +5,7 @@
 
 import { api, post, LiveSocket } from './api.js';
 import { leftText, parseMhz, scrolled, watchTuning } from './watchutil.js';
-import { paintAppBar, paintClock } from './appbar.js';
+import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
 import { Waterfall } from './waterfall.js';
 import { ago, assignColors, clear, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
 
@@ -236,6 +236,7 @@ function renderStatus(st) {
 
 function renderAppBar() {
   paintAppBar(live(), profileColor, S.socket);
+  paintAlerts(S.status && S.status.alerts, profileColor, (p) => ((S.profiles[p] || {}).views || []).some((v) => v.name === 'map'));
 }
 
 function renderControl() {

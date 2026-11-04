@@ -427,6 +427,32 @@ a row counts as its `messages` field; any other row is one message. Only
 the fields the screen shows are read out of the log, so pager text never
 reaches it.
 
+**Alerts.** The **Alerts** screen (`/alerts`) keeps rules over the live log:
+conditions on a row's subject, label, kind, frequency, level or the
+profile's summary and table fields ("is any of", "equals", "matches" a
+wildcard pattern, "is greater than", "is less than"), all of which must
+hold, for chosen profiles or all. The editor previews what a rule would
+have matched in the last 7 days. hackrf-web checks every row the live
+service logs, page open or not (rows logged while it was down are checked
+when it starts again), and records a hit at most once per rule and subject
+every 10 minutes by default. A hit shows as a banner on every screen and a
+count in the app bar until acknowledged, and in the hit history after.
+Rows are checked as they are logged, so for ADS-B and AIS, one row per
+aircraft or ship a minute, a hit comes up to a minute after the signal.
+Rules and hits are kept in `alerts.db` in hackrf-web's state directory;
+the live log is only read. Pager text is never a field to match on unless
+`HACKRF_MCP_PAGER_CONTENT` is on, and never goes into a hit or a webhook;
+neither does a row's raw text.
+
+A rule can also post its hits to a webhook: put the URL in a file only
+hackrf-web can read and point `HACKRF_WEB_ALERT_WEBHOOK_FILE` at it, with
+`HACKRF_WEB_ALERT_WEBHOOK_FORMAT` `json` (the default), `discord` (mentions
+off, whatever a label says) or `ntfy`, and optionally `HACKRF_WEB_URL` for a
+link back to the Log in each message. Hits are posted from a thread of their
+own with a 10 s timeout and two retries; one for a row logged more than 30
+minutes before it was checked (a catch-up after an outage) is recorded but
+not posted. The URL is never logged or shown.
+
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,
@@ -440,6 +466,8 @@ switches and stops profiles over the control socket, as the MCP tools do.
 | `GET /api/log/histogram`, `/api/coverage` | matching rows per time bucket and profile; what the receiver was doing (running which profile, paused, error, stopped, down), rebuilt from the events |
 | `GET /api/summaries` | for a range, per profile: decoded messages per bucket, subjects heard (per kind) and the busiest of them, with the coverage, from one reading of the log |
 | `GET /api/positions` | map-track points; when a range holds more than `limit`, one fix per target per `step` seconds (the response gives `step`) |
+| `GET /api/alerts`, `POST /api/alerts/rules`, `PUT`/`DELETE /api/alerts/rules/<id>` | alert rules (with hits in the last 24 h) and the fields each profile's rules may test |
+| `POST /api/alerts/preview`, `GET /api/alerts/hits`, `POST /api/alerts/ack`, `POST /api/alerts/test` | what a rule would have matched; hits, paged; acknowledging; a test message to the webhook |
 | `GET /api/positions/grid` | positions counted per `cell`-degree cell (fixes and different targets), optionally inside a `bbox`, coarsened when there are more than `max_cells` |
 | `GET /api/basemap.pmtiles` | the operator's base map, in byte ranges, or 404 when there is none |
 | `GET /api/spectrum/segments`, `/api/spectrum?segment=` | spectrum history, downsampled to the buckets asked for |

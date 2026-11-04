@@ -360,3 +360,31 @@ test('a grid in degrees lands on a Mercator image Leaflet can stretch', () => {
   assert.equal(gridImage([], cell), null);
   assert.ok(mercY(60) - mercY(59) > mercY(1) - mercY(0)); // rows grow toward the poles
 });
+
+import { draftOf, fieldsFor, hitWhen, parseValues, repeatText, ruleBody, sameRule } from '../../src/hackrf_mcp/web/static/js/alertutil.js';
+import { hitLinks } from '../../src/hackrf_mcp/web/static/js/appbar.js';
+
+test('alert rules: values typed as text, fields for the chosen profiles, drafts round-trip', () => {
+  assert.deepEqual(parseValues('7500, 7600\n7700,, '), ['7500', '7600', '7700']);
+  const by = { p1: ['subject', 'label', 'squawk', 'callsign'], p2: ['subject', 'kind', 'name'] };
+  assert.deepEqual(fieldsFor(by, ['p1']), ['subject', 'label', 'callsign', 'squawk']);
+  assert.deepEqual(fieldsFor(by, []), ['subject', 'label', 'kind', 'callsign', 'name', 'squawk']);
+  const rule = { id: 3, name: ' Emergency ', enabled: true, profiles: ['p1'], conditions: [{ field: 'squawk', op: 'any_of', values: ['7500', '7700'] }], webhook: true, repeat_s: 600 };
+  const d = draftOf(rule);
+  assert.equal(d.conditions[0].values, '7500, 7700');
+  assert.deepEqual(ruleBody(d), { name: 'Emergency', enabled: true, profiles: ['p1'], conditions: [{ field: 'squawk', op: 'any_of', values: ['7500', '7700'] }], webhook: true, repeat_s: 600 });
+  assert.ok(sameRule(d, draftOf(rule)));
+  assert.ok(!sameRule(d, { ...d, repeat_s: 0 }));
+  assert.equal(repeatText(0), 'every hit');
+  assert.equal(repeatText(3600), '1 hour');
+  assert.equal(repeatText(1200), '20 min');
+});
+
+test('a hit links to its rows in the log and its moment on the map', () => {
+  const l = hitLinks({ ts: 1000, profile: 'p1', subject: 'A1' });
+  assert.equal(l.log, '/log?since=400&until=1600&subject=A1&profiles=p1');
+  assert.equal(l.map, '/map?at=1000&profile=p1&subject=A1');
+  const day = Date.UTC(2026, 10, 4, 12) / 1000;
+  assert.equal(hitWhen(day - 60, day), '11:59:00');
+  assert.equal(hitWhen(day - 86400, day), '11-03 12:00');
+});

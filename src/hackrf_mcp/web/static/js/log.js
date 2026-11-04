@@ -4,7 +4,7 @@
 // come from /api/registry; nothing here names a protocol.
 
 import { api } from './api.js';
-import { paintAppBar, paintClock } from './appbar.js';
+import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
 import { AutoLevel, makeLut, resample } from './waterfall.js';
 import { BandStrip } from './bandstrip.js';
 import { assignColors, clear, fmtUtc, h, mhz, parseFreqs, parseUtc, utc } from './util.js';
@@ -64,6 +64,7 @@ async function pollStatus() {
     S.status = st;
     S.statusAt = NOW();
     paintAppBar(st.live, color, 'open');
+    paintAlerts(st.alerts, color, (p) => ((S.profiles[p] || {}).views || []).some((v) => v.name === 'map'));
     const log = st.live && st.live.log;
     if (log) $('logstats').textContent = `${(log.file_bytes / 1048576).toFixed(1)} MiB of ${log.max_db_mb} MiB · kept ${log.max_age_days} days`;
   } catch (e) {

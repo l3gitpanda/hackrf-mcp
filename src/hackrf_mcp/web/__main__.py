@@ -36,6 +36,10 @@ def main(argv: list[str] | None = None) -> None:
         live = settings.LiveSettings.from_env()
         web = settings.WebSettings.from_env()
         digests = accepted_digests(web)
+        if url := web.alert_webhook_url():
+            from hackrf_mcp.web.alerts import check_webhook
+
+            check_webhook(url, web.alert_webhook_format)
     except (ValueError, OSError) as exc:
         parser.error(f"invalid configuration: {exc}")
     if not digests:

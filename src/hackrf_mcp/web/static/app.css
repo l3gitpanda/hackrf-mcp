@@ -273,3 +273,17 @@ body{margin:0;background:#0a0e13}
 .fiw.alerted{box-shadow:inset 3px 0 0 var(--bad)}
 .tbl tbody tr.alerted td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
 .altag{margin-left:6px;vertical-align:middle}
+/* The Plugins screen, and panel cards on Summaries. */
+.pst{display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap}
+.pst .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.pst.miss{color:var(--warn)}
+.pst.miss .dot{background:var(--warn)}
+.vchips{gap:4px}
+.vchip{font-family:var(--mono);font-size:10.5px;padding:1px 6px;border-radius:3px;border:1px solid var(--line2);color:var(--text2)}
+.vchip.off{opacity:.35;text-decoration:line-through}
+.pswatch{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--pc);vertical-align:middle}
+#pmain .sm{font-size:12px}
+.perr{padding:0}
+.plist{margin:0;padding:0 0 0 2px;list-style:none;display:flex;flex-direction:column;gap:4px;font-size:12.5px}
+.plist a{color:inherit;font-family:var(--mono);font-weight:600;text-decoration:none}
+.plist a:hover{text-decoration:underline}

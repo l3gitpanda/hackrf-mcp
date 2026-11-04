@@ -396,3 +396,16 @@ test('subjects with an unacknowledged hit, keyed as the Map keys targets', () =>
   assert.ok(sameKeys(k, new Set(['p2|42', 'p1|A1'])));
   assert.ok(!sameKeys(k, new Set(['p1|A1'])));
 });
+
+import { keyHeading, panelColumns, panelQueryText, windowText } from '../../src/hackrf_mcp/web/static/js/panelutil.js';
+
+test('panel files described and laid out', () => {
+  const p = { kinds: ['aircraft'], fields: ['squawk', 'callsign'], filter: 'squawk is any of 7700', group_by: 'squawk', sort: 'rows', limit: 5, window_s: 3600 };
+  assert.equal(panelQueryText(p), 'aircraft · squawk, callsign · where squawk is any of 7700 · by squawk, most rows first, 5 · last 1 h');
+  assert.equal(panelQueryText({ ...p, filter: null, window_s: null, sort: 'last' }), "aircraft · squawk, callsign · by squawk, newest first, 5 · the screen's period");
+  assert.deepEqual(panelColumns(p), ['callsign']);
+  assert.equal(keyHeading(p), 'squawk');
+  assert.equal(keyHeading({ group_by: 'subject' }), 'Subject');
+  assert.equal(windowText(86400 * 7), '7 d');
+  assert.equal(windowText(1800), '30 min');
+});

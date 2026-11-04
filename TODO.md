@@ -118,7 +118,13 @@ after the owner approves.
    the app bar's count and the banner on every screen, the webhook from a
    URL file, and subjects with an unacknowledged hit highlighted: a red
    ring on the Map, a red edge and an "alert" tag in the Live feed and the
-   Log), then Plugins.
+   Log), 17. **Plugins** (agreed with the owner on 2026-11-04:
+   the catalogue plus panel cards; decoders stay Python modules in the
+   reviewed image; done: `/plugins`, `plugins.js`, `panelutil.js`,
+   `web/panels.py` reading data-only TOML panel files from the web state
+   directory's `panels` folder, `/api/plugins`, `/api/panels`, panel cards
+   on Summaries). More slots (the Map's side, the Log's drawer, Live's
+   health) when a panel wants one.
 
 ### Watching a custom range (milestone 11)
 

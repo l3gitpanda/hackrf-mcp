@@ -133,7 +133,7 @@ def test_the_official_table_tiles_the_spectrum_and_reads_right():
 
 
 def test_every_screen_links_every_other_screen():
-    screens = ("/", "/map", "/log", "/history", "/bands", "/summaries", "/alerts")
+    screens = ("/", "/map", "/log", "/history", "/bands", "/summaries", "/alerts", "/plugins")
     for page in PAGES:
         if page.name == "login.html":
             continue

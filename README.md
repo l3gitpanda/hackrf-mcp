@@ -455,6 +455,20 @@ own with a 10 s timeout and two retries; one for a row logged more than 30
 minutes before it was checked (a catch-up after an outage) is recorded but
 not posted. The URL is never logged or shown.
 
+**Plugins.** The **Plugins** screen (`/plugins`) is the catalogue: every
+live profile with its program (installed or missing), tuning, kinds, views
+and colour; every capture decoder; and the operator's panels, with any file
+that didn't load and why. A decoder is a Python module in
+`src/hackrf_mcp/protocols/` (see "Adding a decoder"), built into the image
+with its program. A **panel** is a data file, no code: a TOML file in the
+`panels` folder of hackrf-web's state directory naming a slot (for now
+`summaries.card`, a card on Summaries), the profiles it reads, an optional
+filter (an alert rule's conditions), the fields to show, how to group,
+sort and cut the rows, an optional fixed window and a renderer (`table`,
+`list` or `stat`). `deploy/panels/emergency-squawks.toml` is an example.
+Files are read at every page load; the UI can't create or change them. A
+panel never shows a row's raw text or pager text, and reads at most 7 days.
+
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and
 about four FFT rows a second) to browsers over a websocket, and starts,
@@ -470,6 +484,7 @@ switches and stops profiles over the control socket, as the MCP tools do.
 | `GET /api/positions` | map-track points; when a range holds more than `limit`, one fix per target per `step` seconds (the response gives `step`) |
 | `GET /api/alerts`, `POST /api/alerts/rules`, `PUT`/`DELETE /api/alerts/rules/<id>` | alert rules (with hits in the last 24 h) and the fields each profile's rules may test |
 | `POST /api/alerts/preview`, `GET /api/alerts/hits`, `POST /api/alerts/ack`, `POST /api/alerts/test` | what a rule would have matched; hits, paged; acknowledging; a test message to the webhook |
+| `GET /api/plugins`, `GET /api/panels?slot=` | the catalogue (profiles, decoders, panels and panel errors); a slot's panels run over a range |
 | `GET /api/positions/grid` | positions counted per `cell`-degree cell (fixes and different targets), optionally inside a `bbox`, coarsened when there are more than `max_cells` |
 | `GET /api/basemap.pmtiles` | the operator's base map, in byte ranges, or 404 when there is none |
 | `GET /api/spectrum/segments`, `/api/spectrum?segment=` | spectrum history, downsampled to the buckets asked for |

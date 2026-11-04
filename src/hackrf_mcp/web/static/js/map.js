@@ -6,7 +6,7 @@
 // if the operator has put one on the server (/api/basemap.pmtiles).
 
 import { api, LiveSocket } from './api.js';
-import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
+import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { ago, assignColors, clear, fmtUtc, h, parseUtc, utc } from './util.js';
 import { heading, positionAt, prune, targetKey, trackWindow } from './maputil.js';
 import { addBasemap } from './basemap.js';
@@ -20,6 +20,7 @@ const STALE_S = 330;
 const HIDE_S = 1800;
 
 const S = {
+  alerted: new Set(),
   registry: null,
   profiles: {},
   colors: {},
@@ -105,6 +106,12 @@ async function pollStatus() {
     S.statusAt = NOW();
     paintAppBar(st.live, color, 'open');
     paintAlerts(st.alerts, color, (p) => !!(S.profiles[p] && view(p)));
+    const keys = alertKeys(st.alerts);
+    if (!sameKeys(keys, S.alerted)) {
+      S.alerted = keys;
+      render();
+      renderList();
+    }
   } catch (e) {
     paintAppBar(null, color, 'closed');
   }
@@ -348,7 +355,7 @@ function icon(t, pos, stale) {
   const alt = pos.alt ?? t.fields[role(t.profile, 'alt')];
   const sub = [alt != null && alt !== '' ? `${Math.round(alt)} ft` : null, pos.speed != null ? `${Math.round(pos.speed)} kn` : null].filter(Boolean).join(' · ');
   const label = h('span', { class: 'tl2' }, t.label || t.subject, sub ? h('small', {}, sub) : null);
-  const cls = `mk${stale ? ' stale' : ''}${S.sel === t.key ? ' sel' : ''}${$('o-labels').checked ? '' : ' nolabel'}`;
+  const cls = `mk${stale ? ' stale' : ''}${S.sel === t.key ? ' sel' : ''}${$('o-labels').checked ? '' : ' nolabel'}${S.alerted.has(t.key) ? ' alerted' : ''}`;
   const el = h('div', { class: cls, '--pc': color(t.profile) }, h('span', { class: 'ico' }, svg), label);
   return L.divIcon({ html: el, className: '', iconSize: [0, 0] });
 }
@@ -474,7 +481,7 @@ function renderList() {
     const stale = S.cursor - pos.ts > STALE_S;
     const b = h(
       'button',
-      { type: 'button', class: `tli${stale ? ' stale' : ''}${S.sel === t.key ? ' on' : ''}`, '--pc': color(t.profile) },
+      { type: 'button', class: `tli${stale ? ' stale' : ''}${S.sel === t.key ? ' on' : ''}${S.alerted.has(t.key) ? ' alerted' : ''}`, '--pc': color(t.profile) },
       h('span', { class: 'sw' }),
       h('span', { class: 'nm' }, t.label || t.subject),
       h('span', { class: 'ag' }, ago(pos.ts, S.cursor)),

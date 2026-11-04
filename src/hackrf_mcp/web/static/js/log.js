@@ -4,7 +4,7 @@
 // come from /api/registry; nothing here names a protocol.
 
 import { api } from './api.js';
-import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
+import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { AutoLevel, makeLut, resample } from './waterfall.js';
 import { BandStrip } from './bandstrip.js';
 import { assignColors, clear, fmtUtc, h, mhz, parseFreqs, parseUtc, utc } from './util.js';
@@ -19,6 +19,7 @@ const GAP_LABEL = { paused: 'paused', error: 'error', idle: 'stopped', down: 'se
 const GAP_CLASS = { paused: 'paused', error: 'error', idle: 'stopped', down: 'stopped' };
 
 const S = {
+  alerted: new Set(),
   registry: null,
   profiles: {},
   colors: {},
@@ -65,6 +66,11 @@ async function pollStatus() {
     S.statusAt = NOW();
     paintAppBar(st.live, color, 'open');
     paintAlerts(st.alerts, color, (p) => ((S.profiles[p] || {}).views || []).some((v) => v.name === 'map'));
+    const keys = alertKeys(st.alerts);
+    if (!sameKeys(keys, S.alerted)) {
+      S.alerted = keys;
+      if (S.q) renderRows(); // before the first search there is nothing to mark
+    }
     const log = st.live && st.live.log;
     if (log) $('logstats').textContent = `${(log.file_bytes / 1048576).toFixed(1)} MiB of ${log.max_db_mb} MiB · kept ${log.max_age_days} days`;
   } catch (e) {
@@ -359,16 +365,17 @@ function renderRows() {
         runForm();
       });
     }
+    const alerted = r.subject && S.alerted.has(`${r.profile}|${r.subject}`);
     const tr = h(
       'tr',
-      { class: `click${S.sel && S.sel.id === r.id ? ' sel' : ''}`, '--pc': color(r.profile) },
+      { class: `click${S.sel && S.sel.id === r.id ? ' sel' : ''}${alerted ? ' alerted' : ''}`, '--pc': color(r.profile) },
       h('td', { class: 'mono' }, when(r.ts, long)),
       h('td', { class: 'mono muted' }, r.ts_end && r.ts_end !== r.ts ? utc(r.ts_end) : ''),
       h('td', {}, h('span', { class: 'pbadge' }, r.profile)),
       h('td', { class: 'kind' }, r.kind),
       h('td', { class: 'mono r' }, r.freq_hz ? mhz(r.freq_hz) : '—'),
       h('td', { class: 'mono r' }, r.level_db == null ? '—' : Number(r.level_db).toFixed(1)),
-      h('td', { class: 'mono' }, subj),
+      h('td', { class: 'mono' }, subj, alerted ? h('span', { class: 'tag bad altag', title: 'An unacknowledged alert' }, 'alert') : null),
       h('td', {}, h('b', {}, r.label || '')),
       h('td', { class: 'wc' }, h('span', { class: 'row wr' }, summary(r))),
     );

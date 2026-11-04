@@ -362,7 +362,7 @@ test('a grid in degrees lands on a Mercator image Leaflet can stretch', () => {
 });
 
 import { draftOf, fieldsFor, hitWhen, parseValues, repeatText, ruleBody, sameRule } from '../../src/hackrf_mcp/web/static/js/alertutil.js';
-import { hitLinks } from '../../src/hackrf_mcp/web/static/js/appbar.js';
+import { alertKeys, hitLinks, sameKeys } from '../../src/hackrf_mcp/web/static/js/appbar.js';
 
 test('alert rules: values typed as text, fields for the chosen profiles, drafts round-trip', () => {
   assert.deepEqual(parseValues('7500, 7600\n7700,, '), ['7500', '7600', '7700']);
@@ -387,4 +387,12 @@ test('a hit links to its rows in the log and its moment on the map', () => {
   const day = Date.UTC(2026, 10, 4, 12) / 1000;
   assert.equal(hitWhen(day - 60, day), '11:59:00');
   assert.equal(hitWhen(day - 86400, day), '11-03 12:00');
+});
+
+test('subjects with an unacknowledged hit, keyed as the Map keys targets', () => {
+  const k = alertKeys({ active: [{ profile: 'p1', subject: 'A1' }, { profile: 'p2', subject: '42' }] });
+  assert.ok(k.has('p1|A1') && k.has('p2|42') && k.size === 2);
+  assert.equal(alertKeys(null).size, 0);
+  assert.ok(sameKeys(k, new Set(['p2|42', 'p1|A1'])));
+  assert.ok(!sameKeys(k, new Set(['p1|A1'])));
 });

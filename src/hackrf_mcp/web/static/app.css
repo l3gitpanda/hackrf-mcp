@@ -265,3 +265,11 @@ body{margin:0;background:#0a0e13}
 #hits tr.unacked td{background:color-mix(in oklab,var(--bad) 8%,var(--panel))}
 #hits .maplink{margin-left:8px;min-height:22px;padding:0 6px}
 @container (max-width:700px){.condrow{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 32px}.condrow input{grid-column:1 / span 2}}
+/* Subjects with an unacknowledged alert: a red ring on the Map, a red edge
+   and an "alert" tag in the Live feed and the Log. */
+.mk.alerted .ico::after{content:"";position:absolute;inset:-5px;border:2px solid var(--bad);border-radius:50%;box-shadow:0 0 6px color-mix(in oklab,var(--bad) 60%,transparent)}
+.mk.alerted .tl2{color:#ffd6d6}
+.tli.alerted{box-shadow:inset 3px 0 0 var(--bad)}
+.fiw.alerted{box-shadow:inset 3px 0 0 var(--bad)}
+.tbl tbody tr.alerted td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
+.altag{margin-left:6px;vertical-align:middle}

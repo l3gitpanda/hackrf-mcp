@@ -75,6 +75,18 @@ export function hitLinks(hit) {
   return { log: `/log?${q}`, map: `/map?${m}` };
 }
 
+// The subjects with an unacknowledged hit, as "profile|subject" keys (the
+// Map's target keys), for the screens to highlight.
+export function alertKeys(a) {
+  return new Set(((a && a.active) || []).map((x) => `${x.profile}|${x.subject}`));
+}
+
+export function sameKeys(a, b) {
+  if (a.size !== b.size) return false;
+  for (const k of a) if (!b.has(k)) return false;
+  return true;
+}
+
 // paintAlerts(status.alerts, colorOf, hasMap): hasMap(profile) says
 // whether a Map link makes sense for a hit.
 export function paintAlerts(a, colorOf = () => '#8a96a6', hasMap = () => false) {

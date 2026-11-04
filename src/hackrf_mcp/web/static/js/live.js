@@ -5,7 +5,7 @@
 
 import { api, post, LiveSocket } from './api.js';
 import { leftText, parseMhz, scrolled, watchTuning } from './watchutil.js';
-import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
+import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { Waterfall } from './waterfall.js';
 import { ago, assignColors, clear, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
 
@@ -14,6 +14,7 @@ const FEED_MAX = 300;
 const NOW = () => Date.now() / 1000;
 
 const S = {
+  alerted: new Set(),
   registry: null,
   profiles: {},
   colors: {},
@@ -211,6 +212,11 @@ function renderStatus(st) {
   if (st) {
     S.status = st;
     S.statusAt = NOW();
+    const keys = alertKeys(st.alerts);
+    if (!sameKeys(keys, S.alerted)) {
+      S.alerted = keys;
+      renderFeed();
+    }
   }
   const l = live();
   const reachable = S.socket !== 'closed' && l.state && l.state !== 'unreachable';
@@ -723,7 +729,8 @@ function itemEl(it, fresh) {
     summary.push(h('span', {}, h('span', { class: 'muted' }, `${k} `), fmtValue(fields[k])));
     if (summary.length >= 4) break;
   }
-  const wrap = h('div', { class: `fiw${fresh ? ' new' : ''}`, '--pc': profileColor(it.profile) });
+  const alerted = it.subject && S.alerted.has(`${it.profile}|${it.subject}`);
+  const wrap = h('div', { class: `fiw${fresh ? ' new' : ''}${alerted ? ' alerted' : ''}`, '--pc': profileColor(it.profile) });
   const btn = h(
     'button',
     { type: 'button', class: 'fi', 'aria-expanded': 'false' },
@@ -733,6 +740,7 @@ function itemEl(it, fresh) {
       { class: 'l1' },
       h('span', { class: 'pbadge' }, it.profile),
       it.subject ? h('span', { class: 'subj' }, it.subject) : null,
+      alerted ? h('span', { class: 'tag bad altag' }, 'alert') : null,
       it.label ? h('span', { class: 'lbl' }, it.label) : null,
       h('span', { class: 'kind muted' }, it.kind),
     ),

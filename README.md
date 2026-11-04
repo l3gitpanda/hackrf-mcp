@@ -436,7 +436,9 @@ have matched in the last 7 days. hackrf-web checks every row the live
 service logs, page open or not (rows logged while it was down are checked
 when it starts again), and records a hit at most once per rule and subject
 every 10 minutes by default. A hit shows as a banner on every screen and a
-count in the app bar until acknowledged, and in the hit history after.
+count in the app bar until acknowledged, and in the hit history after;
+meanwhile the subject is ringed on the Map and marked in the Live feed
+and the Log.
 Rows are checked as they are logged, so for ADS-B and AIS, one row per
 aircraft or ship a minute, a hit comes up to a minute after the signal.
 Rules and hits are kept in `alerts.db` in hackrf-web's state directory;

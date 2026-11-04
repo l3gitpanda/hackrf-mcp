@@ -116,8 +116,9 @@ after the owner approves.
    plus a webhook; done: `web/alerts.py` with rules, hits and a watermark
    in hackrf-web's own `alerts.db`, `/alerts`, `alerts.js`, `alertutil.js`,
    the app bar's count and the banner on every screen, the webhook from a
-   URL file; next: subjects with an unacknowledged hit highlighted on the
-   Map, the Live feed and the Log), then Plugins.
+   URL file, and subjects with an unacknowledged hit highlighted: a red
+   ring on the Map, a red edge and an "alert" tag in the Live feed and the
+   Log), then Plugins.
 
 ### Watching a custom range (milestone 11)
 

@@ -104,6 +104,14 @@
           <button type="button" class="btn sm" id="watch-more">+15 min</button>
           <button type="button" class="btn sm danger" id="watch-stop">Stop watching</button>
         </div>
+        <div class="bandlist" id="bl-box" hidden>
+          <div class="row wr">
+            <span class="cap">Bands</span>
+            <label class="sr" for="bl-q">Filter the bands</label><input id="bl-q" class="inp" placeholder="filter: name, service or MHz" autocomplete="off">
+            <span class="t2 sm" id="bl-hint">Click a band to watch it (for the time chosen above). Highlighted: in view now.</span>
+          </div>
+          <div class="bl" id="bl" role="list"></div>
+        </div>
       </div>
       <div class="ctl-rot">
         <div class="row wr">

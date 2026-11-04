@@ -4,7 +4,8 @@
 // nothing here names a protocol.
 
 import { api, post, LiveSocket } from './api.js';
-import { leftText, parseMhz, scrolled, watchTuning } from './watchutil.js';
+import { bandList, bandsInView, leftText, parseMhz, scrolled, watchTuning } from './watchutil.js';
+import { loadPlan } from './bandstrip.js';
 import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { Waterfall } from './waterfall.js';
 import { ago, assignColors, clear, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
@@ -64,6 +65,7 @@ async function init() {
   });
   buildControls();
   buildWatch();
+  buildBandList().catch(() => {});
   buildChips();
   wire();
   try {
@@ -296,6 +298,7 @@ function fillBandChannels() {
 }
 
 function renderBandHeader(band) {
+  if (S.plan && S.blKey !== `${band.center_hz}|${band.sample_rate_hz}`) renderBandList(!$('bl-q').value);
   $('wf-name').style.setProperty('--pc', band.color);
   $('wf-name').textContent = band.profile;
   const lo = band.center_hz - band.sample_rate_hz / 2;
@@ -909,6 +912,55 @@ function watchRange() {
   if ($('g-vga').value !== '') body.vga_gain_db = Number($('g-vga').value);
   if ($('g-amp').checked) body.amp_enable = true;
   sendWatch(body, t.clipped ? `At most ${w.rates_hz[w.rates_hz.length - 1] / 1e6} MHz fits at once: showing the start of the range; scroll for the rest.` : null);
+}
+
+// --- The band list --------------------------------------------------------------------
+// Every band of the plan the HackRF can tune, to scroll through; clicking one
+// watches it, through the same request as "Watch a range".
+
+async function buildBandList() {
+  const w = S.registry.watch;
+  const plan = await loadPlan();
+  if (!w || !plan) return;
+  S.plan = plan;
+  $('bl-box').hidden = false;
+  $('bl-q').addEventListener('input', () => renderBandList(true));
+  renderBandList(true);
+}
+
+function renderBandList(scrollToView = false) {
+  const w = S.registry.watch;
+  const list = bandList(S.plan, $('bl-q').value, w.min_hz, w.max_hz);
+  const box = clear($('bl'));
+  const band = S.wf && S.wf.band;
+  const inView = band ? new Set(bandsInView(list, band.center_hz - band.sample_rate_hz / 2, band.center_hz + band.sample_rate_hz / 2)) : new Set();
+  S.blKey = band ? `${band.center_hz}|${band.sample_rate_hz}` : '';
+  let first = null;
+  list.forEach((b, i) => {
+    const wide = b.hi - b.lo > w.rates_hz[w.rates_hz.length - 1];
+    const item = h(
+      'button',
+      {
+        type: 'button',
+        class: `bli${inView.has(i) ? ' cur' : ''}`,
+        role: 'listitem',
+        '--bc': b.color,
+        title: `${b.label}${b.note ? ` · ${b.note}` : ''}${wide ? ' · wider than one watch: it opens at the start; scroll for the rest' : ''}`,
+      },
+      h('span', { class: 'sw' }),
+      h('span', { class: 'bln' }, b.name),
+      h('span', { class: 'mono t2 blr' }, `${mhz(b.lo, 3)}–${mhz(b.hi, 3)}`),
+    );
+    item.addEventListener('click', () => {
+      $('w-from').value = mhz(b.lo, 3);
+      $('w-to').value = mhz(b.hi, 3);
+      watchRange();
+    });
+    if (inView.has(i) && !first) first = item;
+    box.append(item);
+  });
+  if (!list.length) box.append(h('span', { class: 't2 sm' }, 'No band matches.'));
+  if (scrollToView && first) box.scrollTop = first.offsetTop - box.offsetTop - 4;
 }
 
 function scrollWatch(dir) {

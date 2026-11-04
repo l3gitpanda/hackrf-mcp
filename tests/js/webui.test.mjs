@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
 import { AutoLevel, binAt, freqAt, freqText, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
 import { bandsAt, layoutBands, officialAt, rangeText, serviceText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
-import { clampCenter, leftText, parseMhz, scrolled, watchTuning } from '../../src/hackrf_mcp/web/static/js/watchutil.js';
+import { bandList, bandsInView, clampCenter, leftText, parseMhz, scrolled, watchTuning } from '../../src/hackrf_mcp/web/static/js/watchutil.js';
 import { parseQuery, search } from '../../src/hackrf_mcp/web/static/js/bandsearch.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
 
@@ -239,6 +239,28 @@ test('watching a range: the narrowest width that covers it, scrolling by half wi
   assert.equal(leftText(660), '11 min left');
   assert.equal(leftText(40), '40 s left');
   assert.equal(leftText(-1), 'ending');
+});
+
+test('the band list: what the HackRF can tune, lowest first, filtered by words or a frequency', () => {
+  const plan = {
+    categories: { ism: { label: 'ISM', color: '#aaa' }, amateur: { label: 'Amateur', color: '#bbb' }, broadcast: { label: 'Broadcast', color: '#ccc' } },
+    bands: [
+      { lo: 902e6, hi: 928e6, name: '33 cm amateur', cat: 'amateur', part: '97' },
+      { lo: 902e6, hi: 928e6, name: 'ISM 915 MHz', cat: 'ism', part: '18', note: 'LoRa, Meshtastic' },
+      { lo: 535e3, hi: 1705e3, name: 'AM broadcast', cat: 'broadcast' },
+      { lo: 88e6, hi: 108e6, name: 'FM broadcast', cat: 'broadcast' },
+      { lo: 5.85e9, hi: 7.1e9, name: 'Beyond', cat: 'ism' },
+    ],
+  };
+  const all = bandList(plan, '', 1e6, 6e9);
+  // AM broadcast reaches into the tunable range; everything is lowest first.
+  assert.deepEqual(all.map((b) => b.name), ['AM broadcast', 'FM broadcast', '33 cm amateur', 'ISM 915 MHz', 'Beyond']);
+  assert.equal(all[3].label, 'ISM');
+  assert.deepEqual(bandList(plan, 'meshtastic', 1e6, 6e9).map((b) => b.name), ['ISM 915 MHz']);
+  assert.deepEqual(bandList(plan, 'part 97', 1e6, 6e9).map((b) => b.name), ['33 cm amateur']);
+  assert.deepEqual(bandList(plan, '915', 1e6, 6e9).map((b) => b.name), ['33 cm amateur', 'ISM 915 MHz']);
+  assert.deepEqual(bandList(plan, 'zzz', 1e6, 6e9), []);
+  assert.deepEqual(bandsInView(all, 906.15e6, 908.15e6), [2, 3]);
 });
 
 test('band search: frequencies, ranges and words', () => {

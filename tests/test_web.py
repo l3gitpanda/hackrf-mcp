@@ -561,3 +561,30 @@ def test_web_settings_for_the_alert_webhook(tmp_path):
     gate = web_app.create_app(live, web, [DIGEST], b"k" * 32, feed=False)
     a = TestClient(gate).get("/api/alerts", headers=BEARER).json()
     assert a["webhook"] is True and a["webhook_format"] == "ntfy" and "ntfy.example" not in json.dumps(a)
+
+
+def test_the_plugins_catalogue_and_a_panel_on_summaries(env):
+    live, gate, _ = env
+    c = TestClient(gate)
+    cat = c.get("/api/plugins", headers=BEARER).json()
+    assert {p["name"] for p in cat["profiles"]} == set(live_profiles.PROFILES) and cat["decoders"]
+    assert cat["panels"] == [] and cat["panel_errors"] == [] and "summaries.card" in cat["slots"]
+    folder = settings.WebSettings().state_path(live) / "panels"
+    folder.mkdir(parents=True)
+    (folder / "aircraft.toml").write_text(
+        '[panel]\ntitle = "Aircraft heard"\nslot = "summaries.card"\n[query]\nprofiles = ["adsb"]\nfields = ["callsign"]\n'
+    )
+    (folder / "pages.toml").write_text(
+        '[panel]\ntitle = "Pages"\nslot = "summaries.card"\n[query]\nprofiles = ["flex"]\nfields = ["message"]\n'
+    )
+    cat = c.get("/api/plugins", headers=BEARER).json()
+    assert [p["id"] for p in cat["panels"]] == ["aircraft"]
+    assert cat["panel_errors"] == [{"file": "pages.toml", "error": "a panel never shows pager text"}]
+    r = c.get("/api/panels", params={"slot": "summaries.card", "since": "900", "until": "1100"}, headers=BEARER).json()
+    (p,) = r["panels"]
+    assert p["title"] == "Aircraft heard" and p["rows"][0]["key"] == "A1B2C3" and p["rows"][0]["fields"] == {"callsign": "UAL1"}
+    assert SECRET_TEXT not in json.dumps(r)
+    assert c.get("/api/panels", params={"slot": "map.side", "since": "900"}, headers=BEARER).status_code == 400
+    assert c.get("/api/panels", params={"slot": "summaries.card"}, headers=BEARER).status_code == 400
+    page = c.get("/plugins", headers=BEARER)
+    assert page.status_code == 200 and "plugins.js" in page.text

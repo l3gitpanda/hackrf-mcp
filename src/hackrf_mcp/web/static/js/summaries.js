@@ -9,7 +9,8 @@ import { api } from './api.js';
 import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
 import { addBasemap } from './basemap.js';
 import { timeTicks } from './historyutil.js';
-import { assignColors, clear, fmtUtc, h, mhzShort, utc } from './util.js';
+import { ago, assignColors, clear, fmtUtc, h, mhzShort, utc } from './util.js';
+import { keyHeading, panelColumns, panelQueryText, windowText } from './panelutil.js';
 import {
   areaPath, binAlpha, binLabels, binOf, bucketsFor, cellFor, columnsOf, dropEchoes, durText, fieldText,
   gridImage, heatBins, kindsText, numericCols, onAir, rangeOf, runsOf, tickTimes,
@@ -141,7 +142,12 @@ async function load() {
   history.replaceState(null, '', `/summaries?${u}`);
   $('smain').classList.add('busy');
   try {
-    S.data = await api(`/api/summaries?since=${since}&until=${until}&buckets=${bucketsFor(until - since)}&top=${TOP}`);
+    // The operator's panels for this screen come with the built-in cards;
+    // one that fails takes nothing else down.
+    [S.data, S.panels] = await Promise.all([
+      api(`/api/summaries?since=${since}&until=${until}&buckets=${bucketsFor(until - since)}&top=${TOP}`),
+      api(`/api/panels?slot=summaries.card&since=${since}&until=${until}`).catch(() => null),
+    ]);
   } catch (e) {
     showError(`Could not read the log: ${e.message}`);
     return;
@@ -237,9 +243,83 @@ function renderCards() {
   $('notheard').textContent = quiet.length
     ? `Nothing logged in this period by ${quiet.map((n) => (S.air.profiles[n] ? `${n} (on the air ${durText(S.air.profiles[n])})` : n)).join(', ')}.`
     : '';
+  const panels = (S.panels && S.panels.panels) || [];
+  for (const p of panels) box.append(panelCard(p));
+  const bad = (S.panels && S.panels.errors) || [];
+  if (bad.length) {
+    $('notheard').hidden = false;
+    $('notheard').append(
+      `${$('notheard').textContent ? ' ' : ''}${bad.length} panel ${bad.length === 1 ? 'file' : 'files'} didn't load: `,
+      h('a', { href: '/plugins' }, 'see Plugins'),
+      '.',
+    );
+  }
   if (!box.children.length) {
     box.append(h('section', { class: 'panel' }, h('div', { class: 'pb' }, h('div', { class: 'empty' }, h('b', {}, 'Nothing logged in this period'), h('span', {}, 'Pick a longer period, or see when the receiver was on the air above.')))));
   }
+}
+
+// A card from one of the operator's panel files (web/panels.py).
+function panelCard(p) {
+  const subjects = p.group_by === 'subject';
+  const cols = panelColumns(p);
+  const long = S.until - S.since > 86400;
+  const when = (ts) => (long ? fmtUtc(ts).slice(5) : utc(ts));
+  const keyCell = (r) =>
+    subjects && r.subject
+      ? h('a', { href: logHref({ subject: r.subject, profiles: r.profile }) }, r.key)
+      : h('span', { class: 'mono' }, r.key);
+  let body;
+  if (p.error) {
+    body = h('p', { class: 'ctl-err' }, p.error);
+  } else if (!p.rows.length) {
+    body = h('p', { class: 'muted sm' }, 'Nothing in this period.');
+  } else if (p.render === 'stat') {
+    const what = p.group_by === 'subject' ? (p.total === 1 ? 'subject' : 'subjects') : `different ${p.group_by.replace(/_/g, ' ')} ${p.total === 1 ? 'value' : 'values'}`;
+    body = h('div', { class: 'cardh' }, h('span', { class: 'big' }, nf(p.total)), h('span', { class: 't2' }, `${what} · ${nf(p.matched)} rows`));
+  } else if (p.render === 'list') {
+    body = h('ul', { class: 'plist' }, p.rows.map((r) => h('li', {}, keyCell(r), r.label && r.label !== r.key ? h('span', { class: 't2' }, ` ${r.label}`) : null, h('span', { class: 'muted mono' }, ` · ${ago(r.last, NOW())}`))));
+  } else {
+    body = h(
+      'div',
+      { class: 'tscroll' },
+      h(
+        'table',
+        { class: 'tbl' },
+        h('thead', {}, h('tr', {}, h('th', {}, keyHeading(p)), cols.map((f) => h('th', {}, f.replace(/_/g, ' '))), h('th', { class: 'r' }, 'Rows'), h('th', {}, 'Last'))),
+        h(
+          'tbody',
+          {},
+          p.rows.map((r) =>
+            h(
+              'tr',
+              {},
+              h('td', {}, keyCell(r), subjects && r.label && r.label !== r.key ? h('span', { class: 'lbl' }, r.label) : null),
+              cols.map((f) => h('td', { class: typeof r.fields[f] === 'number' ? 'mono r' : 'mono' }, fieldText(r.fields[f]))),
+              h('td', { class: 'mono r' }, nf(r.rows)),
+              h('td', { class: 'mono' }, when(r.last)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  const more = !p.error && p.total > p.rows.length ? h('div', { class: 'more' }, `${p.rows.length} of ${nf(p.total)}.`) : null;
+  return h(
+    'section',
+    { class: 'panel scard', '--pc': color(p.profiles[0]), 'aria-label': p.title, title: panelQueryText(p) },
+    h(
+      'div',
+      { class: 'ph' },
+      p.profiles.map((n) => h('span', { class: 'pbadge', '--pc': color(n) }, n)),
+      h('h2', {}, p.title),
+      h('span', { class: 'tag' }, 'panel'),
+      p.window_s ? h('span', { class: 'muted sm' }, `last ${windowText(p.window_s)}`) : null,
+      h('span', { class: 'sp' }),
+      h('a', { class: 'btn sm', href: logHref({ profiles: p.profiles.join(',') }) }, 'Log'),
+    ),
+    h('div', { class: 'pb col' }, body, more),
+  );
 }
 
 function logHref(extra) {

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Plugins · hackrf-live</title>
+<link rel="stylesheet" href="/static/hl.css">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/js/plugins.js"></script>
+</head>
+<body>
+<div class="hl page">
+  <div class="abwrap">
+    <header class="appbar">
+      <a class="brand" href="/">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <span>hackrf-live</span>
+        <small>home station</small>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/">Live</a>
+        <a href="/map">Map</a>
+        <a href="/log">Log</a>
+        <a href="/history">History</a>
+        <a href="/bands">Bands</a>
+        <a href="/summaries">Summaries</a>
+        <a href="/alerts">Alerts</a>
+        <a href="/plugins" aria-current="page">Plugins</a>
+      </nav>
+      <div class="ab-r">
+        <span class="chip st st-idle" id="ab-state" role="status"><span class="dot"></span><span id="ab-state-text">Connecting…</span></span>
+        <span class="chip" id="ab-prof" hidden><span class="sw"></span><span class="mono" id="ab-prof-text"></span></span>
+        <span class="chip mono" id="ab-clock" aria-label="Station clock, UTC">--:--:-- UTC</span>
+        <form method="post" action="/auth/logout"><button type="submit" class="btn sm ghost">Sign out</button></form>
+      </div>
+    </header>
+  </div>
+  <main class="main" id="pmain">
+    <p class="ctl-err" id="perr" role="alert" hidden></p>
+    <section class="panel" aria-label="Profiles">
+      <div class="ph"><h2>Live profiles</h2><span class="muted" id="prof-count"></span></div>
+      <div class="tscroll"><table class="tbl"><thead><tr><th>Profile</th><th>What it decodes</th><th>Program</th><th>Status</th><th>Tuning</th><th>Kinds</th><th>Views</th><th>Colour</th></tr></thead><tbody id="profiles"></tbody></table></div>
+    </section>
+    <section class="panel" aria-label="Capture decoders">
+      <div class="ph"><h2>Capture decoders</h2><span class="muted sm">what hackrf_decode can read from a capture file</span><span class="sp"></span><span class="muted" id="dec-count"></span></div>
+      <div class="tscroll"><table class="tbl"><thead><tr><th>Decoder</th><th>What it decodes</th><th>Program</th><th>Status</th></tr></thead><tbody id="decoders"></tbody></table></div>
+    </section>
+    <section class="panel" aria-label="Panels">
+      <div class="ph"><h2>Panels</h2><span class="muted" id="pan-count"></span></div>
+      <div class="tscroll"><table class="tbl"><thead><tr><th>Panel</th><th>Slot</th><th>Data it asks for</th><th>Shows</th><th>File</th></tr></thead><tbody id="panels"></tbody></table></div>
+      <div class="pb col" id="pan-errors" hidden></div>
+    </section>
+    <div class="g-cards">
+      <section class="panel" aria-label="Adding a panel">
+        <div class="ph"><h2>Adding a panel</h2></div>
+        <div class="pb col">
+          <p class="t2 sm">A panel is a small file, data and no code, in <span class="mono" id="pan-dir">the panels folder</span> on the station. It is read on every page load: no restart. This screen can't create or change one. Fields are those an alert rule may test; a panel never shows a row's raw text or pager text.</p>
+          <pre class="raw" id="pan-example">[panel]
+title = "Emergency squawks"
+slot = "summaries.card"   # a card on the Summaries screen
+render = "table"          # table, list or stat
+
+[query]
+profiles = ["adsb"]
+fields = ["squawk", "callsign"]
+group_by = "subject"      # or one of the fields
+sort = "last"             # last, rows or messages
+limit = 20
+window = "24h"            # optional: else the screen's period
+filter = [{ field = "squawk", op = "any_of", values = ["7500", "7600", "7700"] }]</pre>
+          <p class="muted sm">The filter takes the same conditions as an alert rule: any_of, equals, matches (a * and ? pattern), gt and lt, all of which must hold.</p>
+        </div>
+      </section>
+      <section class="panel" aria-label="Adding a decoder">
+        <div class="ph"><h2>Adding a decoder</h2></div>
+        <div class="pb col">
+          <p class="t2 sm">A decoder is a Python module in the fork's <span class="mono">src/hackrf_mcp/protocols/</span>: it registers its capture decoder and live profile, names the kinds of rows it logs, which field is the subject and which the label, and the views it supports. Every screen, the MCP tools and the alert fields come from those registries, so nothing else changes.</p>
+          <p class="t2 sm">Its program has to be in the worker image, so a new decoder is a pull request, a new image and a re-pinned stack, like any other change. The README's "Adding a decoder" walks through one.</p>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

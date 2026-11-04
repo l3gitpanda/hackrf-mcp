@@ -361,6 +361,19 @@ test('a grid in degrees lands on a Mercator image Leaflet can stretch', () => {
   assert.ok(mercY(60) - mercY(59) > mercY(1) - mercY(0)); // rows grow toward the poles
 });
 
+import { keyHeading, panelColumns, panelQueryText, windowText } from '../../src/hackrf_mcp/web/static/js/panelutil.js';
+
+test('panel files described and laid out', () => {
+  const p = { kinds: ['aircraft'], fields: ['squawk', 'callsign'], filter: 'squawk is any of 7700', group_by: 'squawk', sort: 'rows', limit: 5, window_s: 3600 };
+  assert.equal(panelQueryText(p), 'aircraft · squawk, callsign · where squawk is any of 7700 · by squawk, most rows first, 5 · last 1 h');
+  assert.equal(panelQueryText({ ...p, filter: null, window_s: null, sort: 'last' }), "aircraft · squawk, callsign · by squawk, newest first, 5 · the screen's period");
+  assert.deepEqual(panelColumns(p), ['callsign']);
+  assert.equal(keyHeading(p), 'squawk');
+  assert.equal(keyHeading({ group_by: 'subject' }), 'Subject');
+  assert.equal(windowText(86400 * 7), '7 d');
+  assert.equal(windowText(1800), '30 min');
+});
+
 import { draftOf, fieldsFor, hitWhen, parseValues, repeatText, ruleBody, sameRule } from '../../src/hackrf_mcp/web/static/js/alertutil.js';
 import { alertKeys, hitLinks, sameKeys } from '../../src/hackrf_mcp/web/static/js/appbar.js';
 

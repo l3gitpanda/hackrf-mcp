@@ -34,6 +34,10 @@ and the static UI.
   GET  /api/alerts/hits          hits, newest first, paged with before_id
   POST /api/alerts/ack           acknowledge hits ({"ids": [...]} or {"all": true})
   POST /api/alerts/test          post a test message to the webhook
+  GET  /api/plugins              the catalogue: decoders, profiles (program
+                                 installed or not, tuning, kinds, views,
+                                 colour) and the operator's panel files
+  GET  /api/panels               a slot's panels run over a range
   WS   /ws/live                  rows, events, positions and FFT rows as
                                  they happen, and status every few seconds
 
@@ -51,6 +55,7 @@ import base64
 import hashlib
 import hmac
 import json
+import sqlite3
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager, closing
@@ -71,7 +76,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum
 from hackrf_mcp.live_service import WATCH_DEFAULT_MIN, WATCH_MAX_MIN
 from hackrf_mcp.settings import LiveSettings, WebSettings
-from hackrf_mcp.web import alerts, basemap
+from hackrf_mcp.web import alerts, basemap, panels
 from hackrf_mcp.web.hub import FeedHub
 from hackrf_mcp.web.sessions import COOKIE, Sessions
 
@@ -102,6 +107,7 @@ PAGES = {
     "/bands": "bands.html",
     "/summaries": "summaries.html",
     "/alerts": "alerts.html",
+    "/plugins": "plugins.html",
 }
 
 
@@ -816,6 +822,48 @@ def create_app(
         status = await run_in_threadpool(webhook.send, hit, 1)
         return JSONResponse({"status": status})
 
+    # --- plugins
+
+    panels_dir = web.state_path(live) / "panels"
+
+    def api_plugins(request: Request) -> Response:
+        reg = registry_json(live)
+        loaded = panels.load(panels_dir, live.pager_content)
+        return JSONResponse(
+            {
+                "profiles": reg["profiles"],
+                "decoders": reg["decoders"],
+                "panels": [p.to_json() for p in loaded.panels],
+                "panel_errors": loaded.errors,
+                "panels_dir": str(panels_dir),
+                "slots": panels.SLOTS,
+                "renders": list(panels.RENDERS),
+                "pager_content": live.pager_content,
+            }
+        )
+
+    @guarded
+    def api_panels(request: Request) -> Response:
+        now = time.time()
+        slot = request.query_params.get("slot") or ""
+        if slot not in panels.SLOTS:
+            raise ValueError(f"slot must be one of: {', '.join(panels.SLOTS)}")
+        since = _when(request, "since", now)
+        until = _when(request, "until", now) or now
+        if since is None or since >= until:
+            raise ValueError("since (before until) is required")
+        loaded = panels.load(panels_dir, live.pager_content)
+        out = []
+        with closing(reader()) as conn:
+            for p in loaded.panels:
+                if p.slot != slot:
+                    continue
+                try:
+                    out.append({**p.to_json(), **panels.run(conn, p, since, until)})
+                except sqlite3.Error as exc:
+                    out.append({**p.to_json(), "error": f"reading the log: {exc}"})
+        return JSONResponse({"slot": slot, "panels": out, "errors": loaded.errors})
+
     async def _control(req: dict) -> Response:
         try:
             st = await run_in_threadpool(control, req, timeout=30)
@@ -911,6 +959,8 @@ def create_app(
         Route("/api/alerts/hits", api_hits),
         Route("/api/alerts/ack", api_ack, methods=["POST"]),
         Route("/api/alerts/test", api_alert_test, methods=["POST"]),
+        Route("/api/plugins", api_plugins),
+        Route("/api/panels", api_panels),
         WebSocketRoute("/ws/live", ws_live),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]

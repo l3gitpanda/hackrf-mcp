@@ -73,7 +73,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum
+from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum, procstats
 from hackrf_mcp.live_service import WATCH_DEFAULT_MIN, WATCH_MAX_MIN
 from hackrf_mcp.settings import LiveSettings, WebSettings
 from hackrf_mcp.web import alerts, basemap, panels
@@ -215,18 +215,9 @@ def summary_fields(profile: live_profiles.Profile) -> tuple[str, ...]:
 
 
 def cgroup_stats(unit: str, root: Path = CGROUP) -> dict | None:
-    """Memory and CPU of a systemd unit from its cgroup (None if not found)."""
-    base = root / unit
-    try:
-        mem = int((base / "memory.current").read_text())
-        max_raw = (base / "memory.max").read_text().strip()
-        cpu = 0
-        for line in (base / "cpu.stat").read_text().splitlines():
-            if line.startswith("usage_usec "):
-                cpu = int(line.split()[1])
-    except (OSError, ValueError):
-        return None
-    return {"memory_bytes": mem, "memory_max": None if max_raw == "max" else int(max_raw), "cpu_usec": cpu}
+    """Memory and CPU of a systemd unit from its cgroup (None if not found,
+    as in a container, where a service reports its own instead)."""
+    return procstats.read(root / unit)
 
 
 # --- Auth, origin and headers ----------------------------------------------------
@@ -328,6 +319,7 @@ def create_app(
     *,
     control: Callable[..., dict] = live_client.request,
     cgroup_root: Path = CGROUP,
+    own_stats: Callable[[], dict | None] = procstats.own,
     feed: bool = True,
 ) -> ASGIApp:
     if not digests:
@@ -422,8 +414,11 @@ def create_app(
             st = {"state": "unreachable", "error": str(exc)}
         return {
             "live": st,
-            "service": cgroup_stats("hackrf-live.service", cgroup_root),
-            "web": cgroup_stats("hackrf-web.service", cgroup_root),
+            # Under systemd, read off each unit's cgroup; in containers
+            # (the split station) neither sees the other's, so the live
+            # service reports its own in its status, and this its own.
+            "service": cgroup_stats("hackrf-live.service", cgroup_root) or st.get("process"),
+            "web": cgroup_stats("hackrf-web.service", cgroup_root) or own_stats(),
             "feed": hub.status(),
             "alerts": engine.summary(),
             "now": time.time(),

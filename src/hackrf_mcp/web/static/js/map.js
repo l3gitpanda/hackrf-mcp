@@ -8,7 +8,7 @@
 import { api, LiveSocket } from './api.js';
 import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { ago, assignColors, clear, fmtUtc, h, parseUtc, utc } from './util.js';
-import { heading, positionAt, prune, targetKey, trackWindow } from './maputil.js';
+import { declutter, heading, labelBox, labelRank, positionAt, prune, targetKey, trackWindow } from './maputil.js';
 import { addBasemap } from './basemap.js';
 
 const $ = (id) => document.getElementById(id);
@@ -21,6 +21,7 @@ const HIDE_S = 1800;
 
 const S = {
   alerted: new Set(),
+  decl: new Set(), // targets whose label is left out so labels don't overlap
   registry: null,
   profiles: {},
   colors: {},
@@ -65,6 +66,7 @@ async function init() {
   S.map.on('moveend', () => {
     drawGrid();
     renderList();
+    relabel();
   });
   wire();
   buildLayerChips();
@@ -352,12 +354,55 @@ function icon(t, pos, stale) {
   shape.setAttribute('stroke', '#05080f');
   shape.setAttribute('stroke-width', '1');
   svg.append(shape);
-  const alt = pos.alt ?? t.fields[role(t.profile, 'alt')];
-  const sub = [alt != null && alt !== '' ? `${Math.round(alt)} ft` : null, pos.speed != null ? `${Math.round(pos.speed)} kn` : null].filter(Boolean).join(' · ');
-  const label = h('span', { class: 'tl2' }, t.label || t.subject, sub ? h('small', {}, sub) : null);
-  const cls = `mk${stale ? ' stale' : ''}${S.sel === t.key ? ' sel' : ''}${$('o-labels').checked ? '' : ' nolabel'}${S.alerted.has(t.key) ? ' alerted' : ''}`;
+  const [text, sub] = labelParts(t, pos);
+  const label = h('span', { class: 'tl2' }, text, sub ? h('small', {}, sub) : null);
+  const cls = `mk${stale ? ' stale' : ''}${S.sel === t.key ? ' sel' : ''}${$('o-labels').checked ? '' : ' nolabel'}${S.alerted.has(t.key) ? ' alerted' : ''}${S.decl.has(t.key) ? ' decl' : ''}`;
   const el = h('div', { class: cls, '--pc': color(t.profile) }, h('span', { class: 'ico' }, svg), label);
   return L.divIcon({ html: el, className: '', iconSize: [0, 0] });
+}
+
+// A marker's label: its name, and altitude and speed under it.
+function labelParts(t, pos) {
+  const alt = pos.alt ?? t.fields[role(t.profile, 'alt')];
+  const sub = [alt != null && alt !== '' ? `${Math.round(alt)} ft` : null, pos.speed != null ? `${Math.round(pos.speed)} kn` : null].filter(Boolean).join(' · ');
+  return [t.label || t.subject, sub];
+}
+
+// Leaves out the labels that would overlap a more important one at this
+// zoom (maputil.declutter); their markers stay, and pointing at one shows
+// its label. Runs after every render and every pan or zoom.
+function relabel() {
+  const boxes = [];
+  if ($('o-labels').checked) {
+    const size = S.map.getSize();
+    for (const t of S.targets.values()) {
+      if (!t.marker || !S.on.has(t.profile)) continue;
+      const pos = positionAt(t.track, S.cursor, HIDE_S);
+      if (!pos) continue;
+      const pt = S.map.latLngToContainerPoint([pos.lat, pos.lon]);
+      if (pt.x < -300 || pt.y < -60 || pt.x > size.x + 60 || pt.y > size.y + 60) continue;
+      const [text, sub] = labelParts(t, pos);
+      const fresh = S.cursor - pos.ts <= STALE_S;
+      const rank = labelRank({
+        selected: S.sel === t.key,
+        alerted: S.alerted.has(t.key),
+        moving: fresh && (pos.speed ?? 0) >= 5,
+        fresh,
+        ts: pos.ts,
+      });
+      boxes.push({ key: t.key, ...labelBox(text, sub, pt.x, pt.y), rank });
+    }
+  }
+  S.decl = declutter(boxes);
+  for (const t of S.targets.values()) {
+    const mk = t.marker && t.marker.getElement() && t.marker.getElement().querySelector('.mk');
+    if (mk) mk.classList.toggle('decl', S.decl.has(t.key));
+  }
+  const n = S.decl.size;
+  $('declnote').hidden = !n;
+  $('declnote').textContent = n
+    ? `${n} ${n === 1 ? 'label is' : 'labels are'} left out where ${n === 1 ? 'it' : 'they'} would overlap: zoom in, or point at a marker to see its label.`
+    : '';
 }
 
 function render() {
@@ -400,6 +445,7 @@ function render() {
   drawRings();
   renderList();
   renderSel();
+  relabel();
   S.dirty = false;
   const n = [...S.targets.values()].length;
   $('mapnote').textContent = n

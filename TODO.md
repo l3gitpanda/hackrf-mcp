@@ -151,10 +151,11 @@ Agreed with the owner on 2026-11-03: tune and watch any range up to about
 - **Same rules:** receive only (`hackrf_transfer -r`), the same Gate and
   Origin checks as start and stop. The Map's History mode could add a per-minute roll-up of
    positions: thinning a week of fixes reads all of them (about a second
-   on a desktop, several on the QNAP). On real data the Map's labels pile
-   up over a busy approach at the zoom that fits the whole area; hiding
-   labels that would overlap (keeping the selected and the moving ones)
-   would fix it.
+   on a desktop, several on the QNAP). On real data the Map's labels piled
+   up over a busy approach at the zoom that fits the whole area; done
+   (milestone 16): labels that would overlap a more important one are left
+   out (the selected target first, then those with an alert, the moving,
+   the newest), shown again when the pointer is on the marker.
 
 ### Split station (milestone 13, agreed 2026-11-03)
 

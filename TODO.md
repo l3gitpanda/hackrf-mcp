@@ -227,6 +227,44 @@ owner's Docker stack doing everything else.
   the copy and the first contact would reach neither side; a worker started
   before the copy would import rows the copy also has.
 
+### Next features (chosen by the owner on 2026-11-04)
+
+Every milestone above is built. These are next, each its own pull request
+against `homelab`, deployed only with the owner's approval:
+
+- **Receiver range map:** how far the antenna hears in each direction,
+  from the positions table and `HACKRF_LIVE_RECEIVER` (the farthest fix per
+  bearing, level against distance), to judge the antenna and any move.
+- **Aircraft details from an offline database:** registration, type,
+  operator and a military or government flag per ICAO address, from a
+  downloadable aircraft database kept on the worker, for Alerts' fields and
+  Summaries' names. Which database, its licence and how it is refreshed
+  are to be agreed first.
+- **ADS-C and CPDLC positions from datalink:** libacars already unpacks
+  them in the ACARS and VDL2 decoders; put those positions on the Map, so
+  aircraft beyond ADS-B range show too.
+- **Capture from the waterfall:** drag across a signal on Live or History
+  to record it into the capture directory (through the agent, pausing live
+  decoding as a device tool does), then run a decoder on it.
+- **Spectrum occupancy over time:** short scheduled sweeps (for example
+  24-1700 MHz hourly, about a second of the radio each) building a heat map
+  of what is on the air when, shown with the band plan.
+- **Meshtastic / LoRa:** a decoder for mesh nodes (LoRa chirp demodulation
+  of the US LongFast and other presets; Meshtastic captures are in the
+  capture directory), with their positions on the Map.
+- **ISM sensors as a live profile:** rtl_433 continuously on 433.92 or
+  915 MHz. It hears the neighbours' weather stations, tyre sensors and
+  meters, so what it logs and shows by default is the owner's decision
+  before anything is built.
+- **Listening in the browser:** live audio demodulated on the worker
+  (airband AM 118-137 MHz, NOAA Weather Radio, FM) streamed to the page,
+  and voice clips recorded with squelch into the Log. Audio only: the
+  browser still never gets I/Q samples.
+
+Decided against for now: HTTPS for the LAN UI, feeding community networks
+(no ADS-B or AIS aggregators: the station's data and position stay home),
+and a second receiver (an RTL-SDR for ADS-B around the clock).
+
 ### Constraints
 
 - **The QNAP:** 2 Celeron cores, one of them taken by Kodi, and 3.7 GiB of

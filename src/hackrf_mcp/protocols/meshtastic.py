@@ -805,7 +805,28 @@ class MeshtasticPipeline(Pipeline):
                     if p != float("-inf") and key not in levels:
                         levels[key] = round(p, 1)
             h["channel_levels_dbfs"] = levels
+            h["decoder_summary"] = self.summary()
         return h
+
+    def summary(self) -> list[str]:
+        """Where frames got to, for hackrf_live_status: with LoRa on the air
+        and nothing logged, the counts say which stage turned it away."""
+        phy, rejects = self.scanner.stats()
+        s = self.stats
+        lines = [
+            f"preamble runs {phy.get('runs', 0)} (both sample phases): no downchirps after {phy.get('no_downchirp', 0)}, "
+            f"no frame start {phy.get('no_sfd', 0)}, not a sync word {phy.get('sync_rejected', 0)}, "
+            f"header checksum failed {phy.get('header_failed', 0)}; frames {phy.get('frames', 0)}, of which "
+            f"CRC failed {s['crc_failed']}, another sync word {s['other_lora']}, packets logged {s['packets']}",
+            f"queue {self.queued / (2 * self.rate):.1f} s, blocks dropped {s['dropped_blocks']}",
+        ]
+        for r in rejects[-3:]:
+            sync = f"sync symbols {r['sync'][0]},{r['sync'][1]}" if r.get("sync") else "no sync symbols"
+            lines.append(
+                f"turned away ({r['why'].replace('_', ' ')}): SF{r['sf']} {r['bw_hz'] / 1e3:g} kHz at "
+                f"{r['freq_hz'] / 1e6:.4f} MHz, {sync}, SNR {r['snr_db']} dB, CFO {r['cfo_hz'] / 1e3:+.1f} kHz"
+            )
+        return lines
 
 
 SLOTS_HZ = tuple(sorted({slot_hz(p) for p in PRESETS}))

@@ -25,6 +25,8 @@ def test_tuning_keeps_the_channel_off_the_dc_spike():
     assert [c.sfs for c in M.live_channels(t.freqs_hz)] == [(11,)]
     # Any other frequency is searched with every preset.
     assert {c.bw_hz for c in M.live_channels((907_000_000,))} == {125e3, 250e3, 500e3}
+    # Its own colour, not the palette's next one (a lighter adsb blue).
+    assert t.profile.color == "#ffd2b4"
 
 
 def _replay(tmp_path, frames, seconds, center):

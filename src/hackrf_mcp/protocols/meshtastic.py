@@ -846,6 +846,12 @@ live_profiles.register(
         None,
         (slot_hz(PRESETS[0]),),
         channel_bw_hz=500_000,
+        # The palette's next colour (#7fd1ff) is a lighter adsb blue. This
+        # one is the farthest from the other eight profiles' under simulated
+        # protan, deutan and tritan vision that stays light enough for the
+        # dark UI and apart from the Map's white labels: CIEDE2000 11.0 to
+        # the nearest (15.3 with normal vision).
+        color="#ffd2b4",
         help="""  meshtastic - Meshtastic mesh radios at 2 MS/s: LongFast's US slot,
            906.875 MHz, unless frequencies_hz names others (a preset's
            slot decodes that preset; any other frequency, every preset);

@@ -93,7 +93,8 @@ def env(tmp_path):
     control = Control()
     web = settings.WebSettings()
     gate = web_app.create_app(
-        live, web, [DIGEST], b"k" * 32, control=control, cgroup_root=tmp_path / "cgroup", feed=False
+        live, web, [DIGEST], b"k" * 32, control=control, cgroup_root=tmp_path / "cgroup", feed=False,
+        own_stats=lambda: None,
     )
     return live, gate, control
 
@@ -352,7 +353,7 @@ def test_status_has_the_service_and_its_cgroup(env, monkeypatch):
     _, gate, control = env
     st = TestClient(gate).get("/api/status", headers=BEARER).json()
     assert st["live"]["state"] == "running" and control.requests == [{"cmd": "status"}]
-    assert st["service"] == {"memory_bytes": 83107840, "memory_max": 536870912, "cpu_usec": 19403696576}
+    assert st["service"] == {"memory_bytes": 83107840, "memory_max": 536870912, "cpu_usec": 19403696576, "cpu_limit_pct": None}
     assert st["web"] is None and st["feed"]["connected"] is False
     TestClient(gate).get("/api/status", headers=BEARER)
     assert len(control.requests) == 1  # a second ask within 2 s shares the answer

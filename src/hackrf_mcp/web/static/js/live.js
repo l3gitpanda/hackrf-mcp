@@ -473,15 +473,17 @@ function renderHealth() {
   box.append(card('', 'Messages / min', `${l.decoded_1m ?? '—'}`, '', null, null, `${l.rows_10m ?? 0} log rows in 10 min`, svg));
   const live_cpu = cpuShare('live', st.service);
   const web_cpu = cpuShare('web', st.web);
+  // Its CPU limit, as 100 per core (the container's or the unit's); the meter fills at it.
+  const limit = st.service && st.service.cpu_limit_pct ? st.service.cpu_limit_pct : null;
   box.append(
     card(
-      live_cpu != null && live_cpu > 120 ? 'warn' : '',
+      live_cpu != null && live_cpu > 0.8 * (limit || 150) ? 'warn' : '',
       'CPU · memory',
       live_cpu == null ? '—' : `${Math.round(live_cpu)}`,
       `% · ${st.service ? mib(st.service.memory_bytes) : '—'} MiB`,
-      live_cpu == null ? null : Math.min(100, live_cpu / 1.5),
+      live_cpu == null ? null : Math.min(100, (live_cpu / (limit || 100)) * 100),
       'var(--text2)',
-      `hackrf-live, of one core (limit 150%). hackrf-web ${web_cpu == null ? '—' : web_cpu.toFixed(1)}% · ${st.web ? mib(st.web.memory_bytes) : '—'} MiB.`,
+      `hackrf-live, of one core${limit ? ` (limit ${Math.round(limit)}%)` : ''}. hackrf-web ${web_cpu == null ? '—' : web_cpu.toFixed(1)}% · ${st.web ? mib(st.web.memory_bytes) : '—'} MiB.`,
     ),
   );
   const log = l.log || {};

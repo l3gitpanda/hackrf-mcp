@@ -41,7 +41,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hackrf_mcp import cli, live_feed, live_log, live_profiles, live_spectrum, settings
+from hackrf_mcp import cli, live_feed, live_log, live_profiles, live_spectrum, procstats, settings
 from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
@@ -727,6 +727,9 @@ class LiveService:
                 "stderr_tail": (self.pipeline.stderr_tail() if self.pipeline else self.last_stderr)[-6:],
                 "service_started": self.started_at,
                 "pid": os.getpid(),
+                # This process's cgroup (its container, or its systemd unit):
+                # hackrf-web shows it when it can't read the unit itself.
+                "process": procstats.own(),
                 "now": now,
             }
         finally:

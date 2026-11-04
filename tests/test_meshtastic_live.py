@@ -80,10 +80,10 @@ def test_a_replay_logs_one_row_per_packet(tmp_path):
     # The name heard in node info labels the node's later rows.
     assert pos.label == text.label == "Test Node" and pos.fields["name"] == "Test Node"
     assert abs(pos.fields["lat"] - 37.1234567) < 1e-6 and pos.fields["to"] == "all"
-    # Text sent to everyone is logged; a direct message's is not.
+    # Every text it can read is logged, a direct message's too.
     assert text.fields["text"] == "hello mesh" and "hello mesh" in text.raw
-    assert dm.subject == "!0badf00d" and dm.fields["to"] == "!a1b2c3d4" and "text" not in dm.fields
-    assert "hello mesh" not in dm.raw
+    assert dm.subject == "!0badf00d" and dm.fields["to"] == "!a1b2c3d4" and dm.fields["text"] == "hello mesh"
+    assert "hello mesh" in dm.raw
     assert [(p.subject, round(p.lat, 6), round(p.lon, 6)) for p in positions] == [("!a1b2c3d4", 37.123457, -122.123457)]
     assert sum(counted) == 4
     h = pipe.health()

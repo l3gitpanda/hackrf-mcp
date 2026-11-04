@@ -101,20 +101,19 @@ def test_default_channel_packets_decrypt():
 
 
 def test_what_each_port_shows():
-    pos = M.describe(3, M.fields(POSITION)[2][0], True)
+    pos = M.describe(3, M.fields(POSITION)[2][0])
     assert pos.info["lat"] == pytest.approx(37.1234567) and pos.info["lon"] == pytest.approx(-122.1234567)
     assert pos.info["alt_m"] == 42 and pos.info["precision_bits"] == 32
     tele = M.fields(TELEMETRY)
-    t = M.describe(67, tele[2][0], True)
+    t = M.describe(67, tele[2][0])
     assert t.info["battery_pct"] == 87 and t.info["voltage"] == pytest.approx(4.05)
-    assert M.describe(1, b"hi all", True).summary == "TEXT 'hi all'"
-    # A direct message's text isn't shown, even on the default channel.
-    dm = M.describe(1, b"just for you", False)
-    assert "just for you" not in dm.summary and dm.info == {}
-    route = M.describe(70, fb(1, struct.pack("<II", 0x11111111, 0x22222222)), True)
+    assert M.describe(1, b"hi all").summary == "TEXT 'hi all'"
+    waypoint = M.describe(8, f32(2, 371234567) + f32(3, -1221234567) + fb(6, b"Camp") + fb(7, b"by the lake"))
+    assert (waypoint.info["name"], waypoint.info["description"]) == ("Camp", "by the lake")
+    route = M.describe(70, fb(1, struct.pack("<II", 0x11111111, 0x22222222)))
     assert route.info["route"] == ["!11111111", "!22222222"]
-    assert M.describe(5, fv(3, 0), True).summary == "ROUTING ack"
-    assert "unreadable" in M.describe(3, b"\x0a\xff", True).summary
+    assert M.describe(5, fv(3, 0)).summary == "ROUTING ack"
+    assert "unreadable" in M.describe(3, b"\x0a\xff").summary
 
 
 def test_protobuf_reader():
@@ -167,7 +166,8 @@ def test_a_capture_decodes_through_hackrf_decode(tmp_path):
     assert "!a1b2c3d4 'TST' 'Test Node' HELTEC_V3 CLIENT 4 packet(s)" in out
     assert "position 37.12346,-122.12346" in out and "battery 87%, 4.05 V" in out
     assert "!a1b2c3d4 -> all id 00000103 hops 0/3" in out and "TEXT 'hello mesh'" in out
-    assert "!0badf00d -> !a1b2c3d4" in out and "direct message" in out and out.count("hello mesh") == 1
+    # Every text it can read is shown, a direct message's too.
+    assert "!0badf00d -> !a1b2c3d4" in out and out.count("TEXT 'hello mesh'") == 2
     rows = [json.loads(line) for line in (tmp_path / "m.json").read_text().splitlines()]
     assert [r.get("port") for r in rows] == ["NODEINFO", "POSITION", "TEXT", "TEXT", "TELEMETRY", None]
     assert rows[1]["info"]["lat"] == pytest.approx(37.1234567)

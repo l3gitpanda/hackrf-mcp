@@ -23,10 +23,10 @@ generated or copied from them):
 - The plaintext is a protobuf "Data" message: the port (what the app is:
   text, position, node info, telemetry, ...) and that app's own message.
 
-What is shown follows the operator's choice for this station: text sent to
-everyone on the default channel is shown, like an AIS ship's name; a direct
-message's text is not, even when it could be read. Positions are shown as
-the node sent them.
+What is shown follows the operator's choice for this station: every text
+that can be read is shown and logged, sent to everyone or to one node, and
+positions as the node sent them. What can't be read stays encrypted: other
+channels, and direct messages encrypted to one node's own key.
 """
 
 from __future__ import annotations
@@ -308,14 +308,12 @@ def _fmt(info: dict) -> str:
     return " ".join(parts)
 
 
-def describe(port: int, payload: bytes, broadcast: bool) -> Message:
+def describe(port: int, payload: bytes) -> Message:
     """What one app message says, in a line and as fields."""
     name = PORTS.get(port, f"PORT_{port}")
     try:
         if port in (1, 66):  # text, range test
             text = payload.decode("utf-8", "replace")
-            if not broadcast:
-                return Message(port, f"{name} direct message, {len(payload)} bytes (not shown)", {})
             return Message(port, f"{name} {text!r}", {"text": text})
         if port == 3:
             info = _position(fields(payload))
@@ -357,8 +355,9 @@ def describe(port: int, payload: bytes, broadcast: bool) -> Message:
             lat, lon = _one(f, 2), _one(f, 3)
             if lat is not None and lon is not None:
                 info["lat"], info["lon"] = _sfixed32(lat) * 1e-7, _sfixed32(lon) * 1e-7
-            if broadcast:
-                info["name"] = _text(_one(f, 6))
+            for num, key in ((6, "name"), (7, "description")):
+                if _one(f, num):
+                    info[key] = _text(_one(f, num))
             return Message(port, f"{name} {_fmt(info)}", info)
     except ProtoError as exc:
         return Message(port, f"{name} ({len(payload)} bytes, unreadable: {exc})", {})
@@ -393,7 +392,7 @@ def decode_packet(raw: bytes, preset: Preset | None) -> Received | None:
         return out
     out.readable = True
     out.port = port
-    out.message = describe(port, payload, pkt.to == BROADCAST)
+    out.message = describe(port, payload)
     return out
 
 

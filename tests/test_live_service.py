@@ -164,6 +164,30 @@ def test_a_watch_lends_the_receiver_and_the_service_takes_it_back(svc):
     assert st["watch"] is None and st["profile"] == "adsb" and svc.pipes[2].stopped
 
 
+def test_a_split_station_worker_watches_with_no_hackrf_tools(tmp_path, monkeypatch):
+    """The worker of a split station has no hackrf_transfer (its agent runs
+    it), so a watch must not ask for one. The real program lookup here, not
+    the fixture's stub, which is how this went unnoticed."""
+    from hackrf_mcp.live_profiles import RemoteSource
+
+    monkeypatch.setenv("PATH", str(tmp_path))  # nothing installed
+    tok = tmp_path / "agent-token"
+    tok.write_text("t" * 40)
+    live = settings.LiveSettings.from_env({
+        "HACKRF_LIVE_DIR": str(tmp_path / "live"),
+        "HACKRF_LIVE_AGENT": "192.168.3.99:8767",
+        "HACKRF_LIVE_AGENT_TOKEN_FILE": str(tok),
+    })
+    pipes = []
+    s = LiveService(live, None, make_pipeline=lambda t, c: pipes.append(FakePipeline(t, c)) or pipes[-1], clock=Clock())
+    r = s.handle({"cmd": "watch", "center_hz": 915_000_000, "sample_rate_hz": 10_000_000, "minutes": 5})
+    assert r["ok"], r
+    assert r["profile"] == "watch" and pipes[-1].tuning.center_hz == 915_000_000
+    # Its samples come from the agent, as every profile's do there.
+    src = pipes[-1].ctx.make_source(pipes[-1].tuning)
+    assert isinstance(src, RemoteSource) and src.request["center_hz"] == 915_000_000
+
+
 def test_stop_start_and_watch_stop_end_a_watch(svc):
     svc.handle({"cmd": "start", "profile": "adsb"})
     svc.handle({"cmd": "watch", "center_hz": 162_000_000, "sample_rate_hz": 2_000_000})

@@ -976,10 +976,13 @@ class WatchPipeline(Pipeline):
 
 # Not registered with the decoder profiles: it is started by the live
 # service's watch command, for a limited time, never by start or a rotation.
+# It runs no program of its own: its samples come from the live service's
+# source like every profile's, hackrf_transfer on this machine or a
+# hackrf-agent on another (a split station's worker has no hackrf_transfer).
 WATCH = Profile(
     name="watch",
     summary="Watching a range: the waterfall only, nothing decoded",
-    programs=("hackrf_transfer",),
+    programs=(),
     pipeline=WatchPipeline,
     sample_rate_hz=WATCH_RATES_HZ[-1],
     spectrum_only=True,

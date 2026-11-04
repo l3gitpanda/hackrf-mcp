@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
-import { AutoLevel, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
+import { AutoLevel, binAt, freqAt, freqText, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
 import { bandsAt, layoutBands, officialAt, rangeText, serviceText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
 import { clampCenter, leftText, parseMhz, scrolled, watchTuning } from '../../src/hackrf_mcp/web/static/js/watchutil.js';
 import { parseQuery, search } from '../../src/hackrf_mcp/web/static/js/bandsearch.js';
@@ -86,6 +86,17 @@ test('frequency ticks are round and inside the band', () => {
   assert.ok(t.some((x) => x.label === '1090.0'));
   const ais = ticks(162000000, 2000000);
   assert.ok(ais.some((x) => x.label === '161.25'), JSON.stringify(ais.map((x) => x.label)));
+});
+
+test('the pointer reads out the exact frequency and its bin', () => {
+  const band = { center_hz: 907150000, sample_rate_hz: 2000000 };
+  assert.equal(freqAt(band, 0), 906150000);
+  assert.equal(freqAt(band, 1), 908150000);
+  assert.equal(freqText(freqAt(band, 0.3625)), '906.8750 MHz'); // LongFast's slot
+  assert.equal(freqAt(band, -0.2), 906150000); // held to the band
+  assert.equal(binAt(512, 0), 0);
+  assert.equal(binAt(512, 0.5), 256);
+  assert.equal(binAt(512, 1), 511);
 });
 
 import { heading, positionAt, prune, targetKey, trackWindow } from '../../src/hackrf_mcp/web/static/js/maputil.js';

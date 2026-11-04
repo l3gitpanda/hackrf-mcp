@@ -92,6 +92,22 @@ export function ticks(centerHz, rateHz) {
   return out.map((t) => ({ ...t, label: t.mhz.toFixed(digits) }));
 }
 
+// What the pointer is over, `fx` (0-1) across a band: the frequency in Hz,
+// and the bin of a row of `bins` values it falls in.
+export function freqAt(band, fx) {
+  const x = Math.min(1, Math.max(0, fx));
+  return band.center_hz - band.sample_rate_hz / 2 + x * band.sample_rate_hz;
+}
+
+export function binAt(bins, fx) {
+  return Math.min(bins - 1, Math.max(0, Math.floor(fx * bins)));
+}
+
+// "906.8750 MHz": to 100 Hz, finer than a bin at any rate the station uses.
+export function freqText(hz) {
+  return `${(hz / 1e6).toFixed(4)} MHz`;
+}
+
 function quantileMax(values) {
   let m = -Infinity;
   for (const v of values) if (v > m) m = v;
@@ -120,8 +136,14 @@ export class Waterfall {
     this.ovTitle = h('b');
     this.ovSub = h('span');
     this.overlay = h('div', { class: 'ovl', hidden: true }, this.ovTitle, this.ovSub);
-    this.specPlot = h('div', { class: 'plot' }, this.specCanvas, this.chanGuides);
-    this.wfPlot = h('div', { class: 'plot' }, this.wfCanvas, this.overlay);
+    // The pointer's frequency (and the level there, or the row's time): a
+    // line through both plots and a label beside it.
+    this.curSpec = h('span', { class: 'wfcur', hidden: true });
+    this.curWf = h('span', { class: 'wfcur', hidden: true });
+    this.curLabel = h('span', { class: 'wfcl mono', hidden: true });
+    this.lastRow = null;
+    this.specPlot = h('div', { class: 'plot' }, this.specCanvas, this.chanGuides, this.curSpec);
+    this.wfPlot = h('div', { class: 'plot' }, this.wfCanvas, this.overlay, this.curWf);
     root.append(
       h(
         'div',
@@ -132,6 +154,13 @@ export class Waterfall {
         h('div', { class: 'wf' }, this.timeGut, this.wfPlot),
       ),
     );
+    for (const [plot, kind] of [[this.specPlot, 'spec'], [this.wfPlot, 'wf']]) {
+      plot.addEventListener('pointermove', (e) => this.hover(e, plot, kind));
+      plot.addEventListener('pointerdown', (e) => this.hover(e, plot, kind));
+      plot.addEventListener('pointerleave', (e) => {
+        if (e.pointerType === 'mouse') this.unhover();
+      });
+    }
     this.resize();
     if (typeof ResizeObserver !== 'undefined') {
       new ResizeObserver(() => {
@@ -173,6 +202,41 @@ export class Waterfall {
     } else {
       this.drawAxis();
     }
+  }
+
+  hover(e, plot, kind) {
+    const b = this.band;
+    if (!b || !b.sample_rate_hz) return this.unhover();
+    const r = plot.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width;
+    const fy = (e.clientY - r.top) / r.height;
+    if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return this.unhover();
+    let text = freqText(freqAt(b, fx));
+    if (kind === 'spec' && this.lastRow) {
+      const i = binAt(this.lastRow.mean.length, fx);
+      text += ` · mean ${this.lastRow.mean[i].toFixed(1)} · peak ${this.lastRow.peak[i].toFixed(1)} dBFS`;
+    } else if (kind === 'wf') {
+      const ts = this.rowTs[Math.min(this.H - 1, Math.max(0, Math.round(fy * (this.H - 1))))];
+      if (isFinite(ts)) text += ` · ${utc(ts)}.${Math.floor((ts % 1) * 10)}`;
+    }
+    for (const line of [this.curSpec, this.curWf]) {
+      line.hidden = false;
+      line.style.left = `${fx * 100}%`;
+    }
+    const label = this.curLabel;
+    if (label.parentNode !== plot) plot.append(label);
+    label.hidden = false;
+    label.textContent = text;
+    // Beside the pointer, flipped to its left past the middle so it stays in view.
+    label.style.left = fx < 0.6 ? `calc(${fx * 100}% + 8px)` : '';
+    label.style.right = fx < 0.6 ? '' : `calc(${(1 - fx) * 100}% + 8px)`;
+    label.style.top = `${Math.min(fy * 100, 85)}%`;
+  }
+
+  unhover() {
+    this.curSpec.hidden = true;
+    this.curWf.hidden = true;
+    this.curLabel.hidden = true;
   }
 
   setOverlay(title, sub = '') {
@@ -264,6 +328,7 @@ export class Waterfall {
   }
 
   drawSpectrum(meanDb, peakDb) {
+    this.lastRow = { mean: meanDb, peak: peakDb };
     const c = this.specCanvas;
     const g = c.getContext('2d');
     const W = c.width;

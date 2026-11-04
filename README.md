@@ -206,8 +206,9 @@ every modem preset on the presets' default US slots inside the capture (or
 on `frequencies_hz`), reads each packet's header, decrypts packets on a
 preset's default channel with the key the firmware publishes, and shows
 node names and hardware, positions as the node sent them, telemetry,
-routes, and text sent to everyone. A direct message's text is not shown,
-and packets on other channels stay encrypted. `lora` lists any LoRa frame
+routes, and every text it can read, sent to everyone or to one node.
+Packets on other channels, and direct messages encrypted to one node's own
+key, stay encrypted. `lora` lists any LoRa frame
 (SF 7–12 at 125, 250 or 500 kHz) on the `frequencies_hz` given, with its
 sync word and its payload in hex.
 
@@ -281,8 +282,8 @@ preset's default slot is searched with that preset; another frequency in
 `frequencies_hz` with every preset. The tuning keeps each whole channel
 clear of the centre's DC spike. A row's subject is the node (`!a1b2c3d4`),
 labelled with its name once its node info has been heard; positions go to
-the `positions` table, as the node sent them. Text sent to everyone is
-logged; a direct message's text is not.
+the `positions` table, as the node sent them. Every text it can read is
+logged, direct messages on the default channel included.
 
 **Pager privacy.** By default only the time, channel, capcode and message
 type of a FLEX or POCSAG page are stored: the message text, and any

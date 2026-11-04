@@ -579,7 +579,9 @@ def test_the_plugins_catalogue_and_a_panel_on_summaries(env):
     )
     cat = c.get("/api/plugins", headers=BEARER).json()
     assert [p["id"] for p in cat["panels"]] == ["aircraft"]
-    assert cat["panel_errors"] == [{"file": "pages.toml", "error": "a panel never shows pager text"}]
+    assert cat["panel_errors"] == [
+        {"file": "pages.toml", "error": "pager text is shown only when the operator allows pager content"}
+    ]
     r = c.get("/api/panels", params={"slot": "summaries.card", "since": "900", "until": "1100"}, headers=BEARER).json()
     (p,) = r["panels"]
     assert p["title"] == "Aircraft heard" and p["rows"][0]["key"] == "A1B2C3" and p["rows"][0]["fields"] == {"callsign": "UAL1"}

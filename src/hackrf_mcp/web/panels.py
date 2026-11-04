@@ -22,10 +22,12 @@ catalogue and left out; they never stop hackrf-web.
     window = "1h"               # optional: else the screen's own period
     filter = [{ field = "squawk", op = "any_of", values = ["7500", "7600", "7700"] }]
 
-Fields are those an alert rule may test (web/alerts.allowed_fields), and
-never a row's raw text or pager text: a filter may match pager text when the
-operator allows pager content, but a panel never shows it. A panel reads at
-most 7 days.
+Fields are those an alert rule may test (web/alerts.allowed_fields), never
+a row's raw text (its fields hold the same). Pager text (`message`) may be
+filtered on, shown and grouped by only when the operator allows pager
+content; with it off, a panel that asks for it is refused. Panels are read
+again at every page load, so turning the setting off takes effect at once.
+A panel reads at most 7 days.
 """
 
 from __future__ import annotations
@@ -145,12 +147,12 @@ def parse(doc: dict, name: str, pager_content: bool) -> Panel:
     if len(fields) > 8:
         raise ValueError("at most 8 fields")
     for f in fields:
-        if f == "message":
-            raise ValueError("a panel never shows pager text")
+        if f == "message" and not pager_content:
+            raise ValueError("pager text is shown only when the operator allows pager content")
         if f not in allowed:
             raise ValueError(f"{f!r} is not a field these profiles log (or may be shown)")
     group_by = str(q.get("group_by") or "subject")
-    if group_by == "message" or (group_by != "subject" and group_by not in allowed):
+    if group_by != "subject" and group_by not in allowed:
         raise ValueError(f"group_by is subject or a field these profiles log, not {group_by!r}")
     sort = str(q.get("sort") or "last")
     if sort not in SORTS:
@@ -275,6 +277,4 @@ def run(conn: sqlite3.Connection, panel: Panel, since: float, until: float) -> d
 def _value(row: dict, fields: dict, f: str):
     if f in alerts.BASE_FIELDS:
         return row.get(f)
-    if f == "message":
-        return None  # pager text stays out of panels, whatever the setting
     return fields.get(f)

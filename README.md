@@ -474,9 +474,9 @@ and the Log.
 Rows are checked as they are logged, so for ADS-B and AIS, one row per
 aircraft or ship a minute, a hit comes up to a minute after the signal.
 Rules and hits are kept in `alerts.db` in hackrf-web's state directory;
-the live log is only read. Pager text is never a field to match on unless
-`HACKRF_MCP_PAGER_CONTENT` is on, and never goes into a hit or a webhook;
-neither does a row's raw text.
+the live log is only read. Pager text is a field to match on, and goes
+into a hit and the webhook, only when `HACKRF_MCP_PAGER_CONTENT` is on; a
+row's raw text is never a field (its fields hold the same).
 
 A rule can also post its hits to a webhook: put the URL in a file only
 hackrf-web can read and point `HACKRF_WEB_ALERT_WEBHOOK_FILE` at it, with
@@ -499,7 +499,8 @@ filter (an alert rule's conditions), the fields to show, how to group,
 sort and cut the rows, an optional fixed window and a renderer (`table`,
 `list` or `stat`). `deploy/panels/emergency-squawks.toml` is an example.
 Files are read at every page load; the UI can't create or change them. A
-panel never shows a row's raw text or pager text, and reads at most 7 days.
+panel never shows a row's raw text, shows pager text only when
+`HACKRF_MCP_PAGER_CONTENT` is on, and reads at most 7 days.
 
 It never opens the HackRF. It reads the live log and the spectrum history, relays the live
 service's feed socket (`feed.sock`: decoded rows, events, positions and

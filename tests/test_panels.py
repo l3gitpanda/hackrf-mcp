@@ -1,5 +1,5 @@
 """Panels (web/panels.py): data-only files checked against the registry,
-run over a real live log; pager text never shown."""
+run over a real live log; pager text shown only when the operator allows it."""
 
 import json
 
@@ -65,7 +65,7 @@ def test_panel_files_are_checked_and_bad_ones_reported(tmp_path):
     _write(d, "nope.toml", SQUAWK_BOARD.replace('["adsb"]', '["nope"]'))
     _write(d, "big.toml", SQUAWK_BOARD + "#" * 70_000)
     _write(d, "notes.txt", "not a panel")
-    loaded = panels.load(d, pager_content=True)  # even with pager content on
+    loaded = panels.load(d, pager_content=False)  # pager text not allowed
     assert [p.id for p in loaded.panels] == ["squawk-board"]
     errors = {e["file"]: e["error"] for e in loaded.errors}
     assert set(errors) == {"broken.toml", "bad-slot.toml", "raw.toml", "pager.toml", "nope.toml", "big.toml"}
@@ -103,7 +103,7 @@ def test_a_panel_groups_sorts_filters_and_keeps_to_its_window(log):
     assert out["scanned"] == 1  # the prefilter read only the row holding "7700"
 
 
-def test_a_pager_panel_never_shows_the_text(log):
+def test_a_pager_panel_shows_the_text_only_when_allowed(log):
     p = panels.parse(
         {"panel": {"title": "Pages", "slot": "summaries.card"}, "query": {"profiles": ["flex"], "fields": ["type"]}},
         "pages",
@@ -112,15 +112,15 @@ def test_a_pager_panel_never_shows_the_text(log):
     out = panels.run(log, p, NOW - 3600, NOW)
     assert out["rows"][0]["key"] == "1234567" and out["rows"][0]["fields"] == {"type": "ALN"}
     assert SECRET_TEXT not in json.dumps(out)
-    # A filter on the text (allowed with pager content on) still shows only metadata.
+    # A filter on the text, and the text itself, with pager content on.
     p2 = panels.parse(
         {"panel": {"title": "Dock", "slot": "summaries.card"},
-         "query": {"profiles": ["flex"], "fields": ["type"], "filter": [{"field": "message", "op": "matches", "values": ["*dock*"]}]}},
+         "query": {"profiles": ["flex"], "fields": ["type", "message"], "filter": [{"field": "message", "op": "matches", "values": ["*dock*"]}]}},
         "dock",
         True,
     )
     out = panels.run(log, p2, NOW - 3600, NOW)
-    assert out["total"] == 1 and SECRET_TEXT not in json.dumps(out)
+    assert out["total"] == 1 and out["rows"][0]["fields"]["message"] == SECRET_TEXT
     doc = {"panel": {"title": "Dock", "slot": "summaries.card"},
            "query": {"profiles": ["flex"], "filter": [{"field": "message", "op": "matches", "values": ["*"]}]}}
     with pytest.raises(ValueError):

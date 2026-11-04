@@ -13,9 +13,10 @@ A rule is a set of conditions, all of which must hold, over a row's
 subject, label, kind, frequency, level and the profile's summary and table
 fields (from its protocol module): "is any of" (case-insensitive), "equals",
 "matches" (a wildcard pattern: * and ?), "is greater than", "is less than".
-Pager text is never a field to match on unless the operator allows pager
-content (HACKRF_MCP_PAGER_CONTENT), and it never goes into a hit or the
-webhook either way; neither does a row's raw text.
+Pager text is a field to match on, and goes into a hit and the webhook
+like any other matched field, only when the operator allows pager content
+(HACKRF_MCP_PAGER_CONTENT); with it off, a hit records the rule instead. A
+row's raw text is never a field (its fields hold the same).
 
 A hit is shown in the UI until acknowledged and, if the rule asks and the
 operator has set one up (HACKRF_WEB_ALERT_WEBHOOK_FILE), posted to a
@@ -244,9 +245,10 @@ def _holds(c: Condition, values: list) -> bool:
     return any(t in wanted for t in texts)
 
 
-def match(rule: Rule, row: dict, fields: dict) -> list[str] | None:
-    """The matched values, as "field=value" (or the condition itself, for
-    pager text), if every condition holds for the row; else None."""
+def match(rule: Rule, row: dict, fields: dict, pager_content: bool = False) -> list[str] | None:
+    """The matched values, as "field=value", if every condition holds for
+    the row; else None. Pager text is given as the condition itself unless
+    the operator allows pager content."""
     if rule.profiles and row.get("profile") not in rule.profiles:
         return None
     out = []
@@ -254,8 +256,8 @@ def match(rule: Rule, row: dict, fields: dict) -> list[str] | None:
         values = _values_of(row, fields, c.field)
         if not _holds(c, values):
             return None
-        if c.field == "message":
-            out.append(c.text())  # the rule, never the text it matched
+        if c.field == "message" and not pager_content:
+            out.append(c.text())  # the rule, not the text it matched
         else:
             out.append(f"{c.field}={', '.join(str(v) for v in values)}")
     return out
@@ -676,7 +678,7 @@ class AlertEngine:
             fields = {}
         out = []
         for rule in self.rules:
-            detail = match(rule, row, fields)
+            detail = match(rule, row, fields, self.pager_content)
             if detail is None:
                 continue
             key = (rule.id, row["profile"], row.get("subject"))
@@ -732,7 +734,7 @@ class AlertEngine:
                     fields = json.loads(row.get("fields") or "{}")
                 except ValueError:
                     fields = {}
-                detail = match(rule, row, fields)
+                detail = match(rule, row, fields, self.pager_content)
                 if detail is None:
                     continue
                 n += 1

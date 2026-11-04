@@ -85,7 +85,7 @@ def _segments(data: list[int], sf: int, preamble: int, sync_word: int):
     """(kind, value, length in chips) for the whole frame."""
     n = 1 << sf
     segs = [("up", 0, n)] * preamble
-    segs += [("up", s, n) for s in sync_symbols(sync_word)]
+    segs += [("up", s, n) for s in sync_symbols(sync_word, n)]
     segs += [("down", 0, n), ("down", 0, n), ("down", 0, n // 4)]
     segs += [("up", s, n) for s in data]
     return segs

@@ -299,24 +299,35 @@ def _rank(f: Frame) -> tuple:
     return (f.crc_ok is True, f.header is not None, -f.errors, f.snr_db)
 
 
-def sync_symbols(sync_word: int) -> tuple[int, int]:
-    """The two symbol values that carry a sync word (0x2B -> 16, 88)."""
-    return ((sync_word >> 4) * 8, (sync_word & 0x0F) * 8)
+def sync_symbols(sync_word: int, n: int) -> tuple[int, int]:
+    """The two symbol values that carry a sync word on the air: each nibble
+    as a signed number (8-15 being -8 to -1) times 8, modulo n. Meshtastic's
+    0x2B is (16, 88) at SF7 (n = 128, where -40 and 88 are the same symbol)
+    but (16, 2008) at SF11, as the station heard from SX126x radios; the
+    published description says (16, 88), which only holds while 8 * 15 < n
+    makes no difference, so sync_word() takes both."""
+
+    def one(nib: int) -> int:
+        return ((nib - 16 if nib >= 8 else nib) * 8) % n
+
+    return (one(sync_word >> 4), one(sync_word & 0x0F))
 
 
 def sync_word(sync: tuple[int, int], n: int) -> int | None:
     """The sync word two received sync symbols carry (each nibble times 8,
-    give or take one), or None if they can't be one: sync words run from
-    0x10, so the first symbol is at least 8. Something that merely repeats
-    (an artefact that looks like a preamble) reads as about 0 there."""
+    give or take one; a nibble of 8-15 read as signed, -8 to -1, or as is),
+    or None if they can't be one: sync words run from 0x10, so the first
+    nibble isn't 0. Something that merely repeats (an artefact that looks
+    like a preamble) reads as about 0 there."""
     s0, s1 = sync
     nibbles = []
     for s in (s0, s1):
-        k = int(round(_circ(s, n) / 8))
-        if abs(_circ(s - 8 * k, n)) > 1:
+        v = _circ(s, n)
+        k = int(round(v / 8))
+        if abs(_circ(s - 8 * k, n)) > 1 or not -8 <= k <= 15:
             return None
-        nibbles.append(k % (n // 8))
-    if not 1 <= nibbles[0] <= 15 or nibbles[1] > 15:
+        nibbles.append(k % 16)
+    if nibbles[0] == 0:
         return None
     return (nibbles[0] << 4) | nibbles[1]
 

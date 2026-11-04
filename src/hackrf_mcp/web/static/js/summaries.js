@@ -12,7 +12,7 @@ import { timeTicks } from './historyutil.js';
 import { assignColors, clear, fmtUtc, h, mhzShort, utc } from './util.js';
 import {
   areaPath, binAlpha, binLabels, binOf, bucketsFor, cellFor, columnsOf, dropEchoes, durText, fieldText,
-  gridImage, heatBins, kindsText, onAir, rangeOf, runsOf, tickTimes,
+  gridImage, heatBins, kindsText, numericCols, onAir, rangeOf, runsOf, tickTimes,
 } from './summutil.js';
 
 const $ = (id) => document.getElementById(id);
@@ -249,6 +249,7 @@ function card(p, st) {
   // A field that only repeats the label (a callsign, a ship's name) is
   // left out: the label is shown with the subject.
   const cols = dropEchoes(columnsOf(p), st.top);
+  const numeric = numericCols(cols, st.top);
   const kinds = Object.keys(st.by_kind);
   const air = S.air.profiles[p.name] || 0;
   const head = h(
@@ -262,7 +263,7 @@ function card(p, st) {
     h('a', { class: 'btn sm', href: logHref({ profiles: p.name }) }, 'Log'),
   );
   const sub = [
-    kinds.length > 1 ? kindsText(st.by_kind) : (kinds[0] || '').replace(/-/g, ' '),
+    kinds.length > 1 ? kindsText(st.by_kind, p.name) : (kinds[0] || '').replace(/-/g, ' '),
     `${nf(st.messages)} messages`,
     `on the air ${durText(air)} of ${durText(S.until - S.since)}`,
   ].filter(Boolean).join(' · ');
@@ -273,7 +274,7 @@ function card(p, st) {
     h('th', {}, 'Subject'),
     h('th', { class: 'r' }, 'Msgs'),
     h('th', {}, 'Last'),
-    cols.map((f) => h('th', {}, f.replace(/_/g, ' '))),
+    cols.map((f) => h('th', { class: numeric.has(f) ? 'r' : null }, f.replace(/_/g, ' '))),
     h('th', {}, 'Channel'),
   );
   const long = S.until - S.since > 86400;
@@ -289,7 +290,7 @@ function card(p, st) {
       ),
       h('td', { class: 'mono r' }, nf(e.messages)),
       h('td', { class: 'mono' }, long ? fmtUtc(e.last).slice(5) : utc(e.last)),
-      cols.map((f) => h('td', { class: typeof e.fields[f] === 'number' ? 'mono r' : 'mono' }, fieldText(e.fields[f]))),
+      cols.map((f) => h('td', { class: numeric.has(f) ? 'mono r' : 'mono' }, fieldText(e.fields[f]))),
       h('td', { class: 'mono' }, e.freqs.length ? e.freqs.map((f) => mhzShort(f)).join(', ') : '—'),
     ),
   );

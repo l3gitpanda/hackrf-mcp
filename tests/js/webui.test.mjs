@@ -256,7 +256,7 @@ test('band search: frequencies, ranges and words', () => {
 
 import {
   areaPath, binAlpha, binLabels, binOf, bucketsFor, cellFor, columnsOf, dropEchoes, durText, fieldText, gridImage, heatBins,
-  kindsText, mercY, onAir, rangeOf, runsOf, tickTimes,
+  kindsText, mercY, numericCols, onAir, rangeOf, runsOf, tickTimes,
 } from '../../src/hackrf_mcp/web/static/js/summutil.js';
 
 test('summary periods: back from now, today since UTC midnight, or typed', () => {
@@ -316,6 +316,10 @@ test('summary columns come from the table view, without position and counts', ()
   const top = [{ labels: ['UAL1'], fields: { callsign: 'UAL1', squawk: '1200' } }, { labels: [], fields: { callsign: '' } }];
   assert.deepEqual(dropEchoes(['callsign', 'squawk', 'speed'], top), ['squawk', 'speed']);
   assert.equal(kindsText({ vessel: 2, 'aid-to-navigation': 3, 'base-station': 1 }), 'aid to navigation 3 · vessel 2 · base station 1');
+  // Rows the decoder couldn't type further carry the profile's name: "other", last.
+  assert.equal(kindsText({ p1: 9, vessel: 2 }, 'p1'), 'vessel 2 · other 9');
+  const tops = [{ fields: { speed: 12, name: 'X' } }, { fields: { speed: null, name: 'Y' } }];
+  assert.deepEqual([...numericCols(['name', 'speed', 'none'], tops)], ['speed']);
   assert.equal(fieldText(12500), '12,500');
   assert.equal(fieldText(3.14159), '3.1');
   assert.equal(fieldText(['a', 'b']), 'a, b');

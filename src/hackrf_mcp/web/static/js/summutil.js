@@ -107,12 +107,20 @@ export function columnsOf(profile) {
   return fields.filter((f) => !OWN.has(f));
 }
 
-// "vessel 2 · aid to navigation 2 · base station 1", most first.
-export function kindsText(byKind) {
+// "vessel 2 · aid to navigation 2 · base station 1", most first. Rows
+// whose kind is the profile's own name are the ones its decoder couldn't
+// type further: they read "other", last.
+export function kindsText(byKind, profile = '') {
+  const other = (k) => (k === profile ? 1 : 0);
   return Object.entries(byKind || {})
-    .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
-    .map(([k, n]) => `${k.replace(/-/g, ' ')} ${n.toLocaleString('en-US')}`)
+    .sort((x, y) => other(x[0]) - other(y[0]) || y[1] - x[1] || x[0].localeCompare(y[0]))
+    .map(([k, n]) => `${k === profile ? 'other' : k.replace(/-/g, ' ')} ${n.toLocaleString('en-US')}`)
     .join(' · ');
+}
+
+// The columns whose values are numbers, for right-aligned headers.
+export function numericCols(cols, top) {
+  return new Set(cols.filter((f) => top.some((e) => typeof e.fields[f] === 'number')));
 }
 
 // A field's value for a table cell.

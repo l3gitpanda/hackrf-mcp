@@ -51,6 +51,15 @@ services:
     environment:
       HACKRF_WEB_HOST: 0.0.0.0
       HACKRF_WEB_PORT: "8766"
+      # Alerts can post their hits to a webhook. Its URL is a secret: keep
+      # it in a file only this service mounts (owned by, or readable to,
+      # uid 1000), and add that file to this service's volumes below.
+      # HACKRF_WEB_ALERT_WEBHOOK_FILE: /run/secrets/alert-webhook
+      # HACKRF_WEB_ALERT_WEBHOOK_FORMAT: discord   # json (default), discord or ntfy
+      # HACKRF_WEB_URL: http://192.0.2.10:8766      # for links in the messages
+    # volumes:
+    #   - hackrf-data:/data
+    #   - ./alert-webhook:/run/secrets/alert-webhook:ro
     ports:
       - "8766:8766"
     cpus: 1

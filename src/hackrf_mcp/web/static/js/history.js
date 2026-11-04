@@ -7,7 +7,7 @@
 // over time. Everything about profiles comes from /api/registry.
 
 import { api } from './api.js';
-import { paintAppBar, paintClock } from './appbar.js';
+import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
 import { assignColors, clear, h, mhz, utc } from './util.js';
 import { AutoLevel, makeLut, resample, ticks } from './waterfall.js';
 import { BandStrip } from './bandstrip.js';
@@ -102,6 +102,7 @@ async function pollStatus() {
   try {
     const st = await api('/api/status');
     paintAppBar(st.live, color, 'open');
+    paintAlerts(st.alerts, color, hasMap);
   } catch (e) {
     paintAppBar(null, color, 'closed');
   }

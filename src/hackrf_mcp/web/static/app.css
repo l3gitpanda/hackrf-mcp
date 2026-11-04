@@ -235,3 +235,33 @@ body{margin:0;background:#0a0e13}
 .hleg{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text2)}
 .hleg .hs{display:inline-block;width:14px;height:10px;border-radius:2px;background:color-mix(in oklab,var(--pc) var(--a),#05080f)}
 @container (max-width:800px){.rr{grid-template-columns:72px minmax(0,1fr)}.rr .tot{grid-column:2;text-align:left}.hx{margin:0 12px 8px 96px}}
+/* Alerts: the shared chip and banner (appbar.js), and the Alerts screen. */
+.alchip{text-decoration:none;color:var(--text);gap:6px}
+.alchip:hover{background:var(--hover)}
+.alban{margin:0}
+.alban .alico{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--bad);color:#16090a;font-weight:700;flex:none}
+.alban .altext{flex:1 1 360px;min-width:0;line-height:1.5}
+.alban .almore{color:var(--text2);margin-left:6px}
+.agrid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:12px;align-items:start}
+@container (max-width:1000px){.agrid{grid-template-columns:minmax(0,1fr)}}
+.rule{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 12px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line)}
+.rule.on{background:color-mix(in oklab,var(--text) 6%,var(--panel))}
+.rule.off .nm,.rule.off .cond{color:var(--muted)}
+.rule .nm{appearance:none;background:none;border:0;padding:0;font:inherit;font-weight:600;color:var(--text);text-align:left;cursor:pointer;font-size:13.5px}
+.rule .nm:hover,.rule .nm:focus-visible{text-decoration:underline}
+.rule .cond{grid-column:2 / span 2;font-family:var(--mono);font-size:12px;color:var(--text2);overflow-wrap:anywhere}
+.rule .meta{grid-column:2 / span 2;display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;font-size:12px;color:var(--muted)}
+.rule .hits{text-align:right;font-family:var(--mono);font-size:12px;color:var(--text2);white-space:nowrap}
+.ed{display:flex;flex-direction:column;gap:14px}
+.ed .sm,#amain .sm{font-size:12px}
+.condrow{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) minmax(0,1.6fr) 32px;gap:8px;align-items:center}
+.condrow .btn[hidden]{display:inline-flex !important;visibility:hidden}
+.chk{gap:8px;font-size:12.5px;color:var(--text2);cursor:pointer}
+.chk input[type=checkbox]:not(.switch){accent-color:var(--text);margin:0}
+#ed-repeat{width:auto}
+.pv{border-top:1px solid var(--line)}
+.pvscroll{max-height:320px}
+.hscroll{max-height:min(560px,65vh)}
+#hits tr.unacked td{background:color-mix(in oklab,var(--bad) 8%,var(--panel))}
+#hits .maplink{margin-left:8px;min-height:22px;padding:0 6px}
+@container (max-width:700px){.condrow{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 32px}.condrow input{grid-column:1 / span 2}}

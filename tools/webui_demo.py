@@ -194,6 +194,25 @@ def backfill(db_path: Path, hours: float, now: float) -> None:
     w.close()
 
 
+def start_catcher() -> int:
+    """A local stand-in for an alert webhook: prints each POST it gets."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Catcher(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            print(f"webhook got: {body.decode(errors='replace')}", file=sys.stderr, flush=True)
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Catcher)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv.server_address[1]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--port", type=int, default=18766)
@@ -202,6 +221,10 @@ def main() -> None:
     parser.add_argument("--dir", default="/tmp/hackrf-webui-demo", help="scratch directory, emptied at start")
     parser.add_argument("--basemap", help="a base map extract to show (python -m hackrf_mcp.web.basemap)")
     parser.add_argument("--history", type=float, default=0, metavar="HOURS", help="fill the log with a made-up past this long")
+    parser.add_argument(
+        "--webhook-catcher", action="store_true",
+        help="set up the alert webhook to a local receiver that prints what it gets (to stderr)",
+    )
     parser.add_argument(
         "--agent", action="store_true",
         help="take samples from a hackrf-agent (run here, over loopback TCP) as a split station would",
@@ -284,7 +307,12 @@ def main() -> None:
 
     from hackrf_mcp.web.app import create_app
 
-    app = create_app(live, settings.WebSettings(), [hashlib.sha256(token.encode()).digest()], secrets.token_bytes(32))
+    web = settings.WebSettings()
+    if args.webhook_catcher:
+        hook = tmp / "webhook-url"
+        hook.write_text(f"http://127.0.0.1:{start_catcher()}/demo-hook")
+        web = settings.WebSettings(alert_webhook_file=hook, public_url=f"http://{args.host}:{args.port}")
+    app = create_app(live, web, [hashlib.sha256(token.encode()).digest()], secrets.token_bytes(32))
     print(f"demo UI on http://{args.host}:{args.port}/ (data in {tmp})", file=sys.stderr, flush=True)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     svc.shutdown.set()

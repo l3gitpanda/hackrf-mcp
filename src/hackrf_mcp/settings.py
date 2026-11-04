@@ -270,12 +270,30 @@ class WebSettings:
     # Origins (scheme://host:port) besides the server's own that may send
     # state-changing requests and open websockets; normally none.
     extra_origins: tuple[str, ...] = ()
+    # Alerts (web/alerts.py) can post their hits to a webhook. The URL is a
+    # secret, so it is read from a file (HACKRF_WEB_ALERT_WEBHOOK_FILE) that
+    # only this service needs to see; the body is JSON, a Discord message or
+    # ntfy text (HACKRF_WEB_ALERT_WEBHOOK_FORMAT).
+    alert_webhook_file: Path | None = None
+    alert_webhook_format: str = "json"
+    # The UI's address as browsers reach it (HACKRF_WEB_URL), for the links
+    # in webhook messages; none without it.
+    public_url: str | None = None
 
     def __post_init__(self) -> None:
         if not 0 < self.port < 65536:
             raise ValueError(f"HACKRF_WEB_PORT must be a port number, not {self.port}")
         if self.session_days <= 0:
             raise ValueError("HACKRF_WEB_SESSION_DAYS must be above 0")
+        if self.alert_webhook_format not in ("json", "discord", "ntfy"):
+            raise ValueError("HACKRF_WEB_ALERT_WEBHOOK_FORMAT must be json, discord or ntfy")
+
+    def alert_webhook_url(self) -> str | None:
+        """The webhook's URL from its file, or None when none is set up."""
+        if self.alert_webhook_file is None:
+            return None
+        url = self.alert_webhook_file.read_text().strip()
+        return url or None
 
     def state_path(self, live: LiveSettings) -> Path:
         return self.state_dir or live.live_dir.parent / "web"
@@ -298,4 +316,10 @@ class WebSettings:
             kwargs["state_dir"] = Path(v).expanduser()
         if v := env.get("HACKRF_WEB_EXTRA_ORIGINS"):
             kwargs["extra_origins"] = tuple(x.strip().rstrip("/") for x in v.split(",") if x.strip())
+        if v := env.get("HACKRF_WEB_ALERT_WEBHOOK_FILE"):
+            kwargs["alert_webhook_file"] = Path(v).expanduser()
+        if v := env.get("HACKRF_WEB_ALERT_WEBHOOK_FORMAT"):
+            kwargs["alert_webhook_format"] = v.strip().lower()
+        if v := env.get("HACKRF_WEB_URL"):
+            kwargs["public_url"] = v.strip().rstrip("/")
         return cls(**kwargs)

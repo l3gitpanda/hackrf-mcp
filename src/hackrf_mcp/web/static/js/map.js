@@ -6,7 +6,7 @@
 // if the operator has put one on the server (/api/basemap.pmtiles).
 
 import { api, LiveSocket } from './api.js';
-import { paintAppBar, paintClock } from './appbar.js';
+import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
 import { ago, assignColors, clear, fmtUtc, h, parseUtc, utc } from './util.js';
 import { heading, positionAt, prune, targetKey, trackWindow } from './maputil.js';
 import { addBasemap } from './basemap.js';
@@ -104,6 +104,7 @@ async function pollStatus() {
     S.status = st;
     S.statusAt = NOW();
     paintAppBar(st.live, color, 'open');
+    paintAlerts(st.alerts, color, (p) => !!(S.profiles[p] && view(p)));
   } catch (e) {
     paintAppBar(null, color, 'closed');
   }

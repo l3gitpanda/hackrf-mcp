@@ -3,7 +3,7 @@
 // "Watch a range". The search is kept in the address (?q=).
 
 import { api } from './api.js';
-import { paintAppBar, paintClock } from './appbar.js';
+import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
 import { loadOfficial, loadPlan, rangeText, serviceText } from './bandstrip.js';
 import { search } from './bandsearch.js';
 import { assignColors, clear, h, mhz } from './util.js';
@@ -36,6 +36,7 @@ async function init() {
     try {
       const st = await api('/api/status');
       paintAppBar(st.live, (n) => S.colors[n] || '#8a96a6', 'open');
+      paintAlerts(st.alerts, (n) => S.colors[n] || '#8a96a6');
     } catch (e) {
       paintAppBar(null, () => '#8a96a6', 'closed');
     }

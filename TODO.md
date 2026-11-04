@@ -112,7 +112,12 @@ after the owner approves.
    on 2026-11-03: for a chosen period, per profile, the subjects heard and
    the busiest, the message rate over time, the time on the air from
    coverage, and a heat map of positions; from data already logged, no new
-   storage), then Alerts and Plugins.
+   storage), 15. **Alerts** (agreed with the owner on 2026-11-04: in the UI
+   plus a webhook; done: `web/alerts.py` with rules, hits and a watermark
+   in hackrf-web's own `alerts.db`, `/alerts`, `alerts.js`, `alertutil.js`,
+   the app bar's count and the banner on every screen, the webhook from a
+   URL file; next: subjects with an unacknowledged hit highlighted on the
+   Map, the Live feed and the Log), then Plugins.
 
 ### Watching a custom range (milestone 11)
 

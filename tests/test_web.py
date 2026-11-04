@@ -504,3 +504,60 @@ def test_positions_counted_on_a_grid_for_the_heat_map(env):
     for bad in ({"cell": "x"}, {"cell": "0"}, {"cell": "11"}, {"bbox": "1,2,3"}, {"bbox": "0,50,1,40"}, {"bbox": "a,b,c,d"}):
         assert c.get("/api/positions/grid", params={"since": "900", **bad}, headers=BEARER).status_code == 400, bad
     assert c.get("/api/positions/grid", headers=BEARER).status_code == 400
+
+
+def test_alert_rules_preview_hits_and_acknowledging(env):
+    live, gate, _ = env
+    c = TestClient(gate)
+    a = c.get("/api/alerts", headers=BEARER).json()
+    assert a["rules"] == [] and a["webhook"] is False and "is any of" in a["ops"].values()
+    assert "squawk" in a["fields"]["adsb"] and "message" not in a["fields"]["flex"]  # no pager text to match
+    rule = {"name": "UAL1", "profiles": ["adsb"], "conditions": [{"field": "label", "op": "equals", "values": ["ual1"]}]}
+    # Changes need the page's own origin (or a bearer token).
+    signed = _signed_in(gate)
+    assert signed.post("/api/alerts/rules", json=rule, headers={"Origin": "http://evil.example"}).status_code == 403
+    r = c.post("/api/alerts/rules", json=rule, headers=BEARER)
+    assert r.status_code == 201 and r.json()["text"] == "label equals ual1"
+    rid = r.json()["id"]
+    assert c.post("/api/alerts/rules", json={**rule, "conditions": [{"field": "raw", "op": "matches", "values": ["*"]}]}, headers=BEARER).status_code == 400
+    assert c.put(f"/api/alerts/rules/{rid}", json={**rule, "name": "renamed", "repeat_s": 0}, headers=BEARER).json()["name"] == "renamed"
+    assert c.put("/api/alerts/rules/999", json=rule, headers=BEARER).status_code == 404
+    pv = c.post("/api/alerts/preview", json={**rule, "since": "0", "until": "2000"}, headers=BEARER).json()
+    assert pv["matches"] == 1 and pv["samples"][0]["subject"] == "A1B2C3"
+    # The engine (polled by hand here) checks only what is logged from now on.
+    eng = gate.alerts
+    assert eng.poll_once() == []
+    w = LiveLogWriter(live.db_path, 86400 * 365 * 100, 1 << 30, 0)
+    w.write([Row(ts=3000.0, profile="adsb", kind="aircraft", subject="A1B2C3", label="UAL1", fields={"callsign": "UAL1"})])
+    assert [h["detail"] for h in eng.poll_once()] == ["label=UAL1"]
+    st = c.get("/api/status", headers=BEARER).json()["alerts"]
+    assert st["unacked"] == 1 and st["latest"]["rule_name"] == "renamed" and st["active"] == [{"profile": "adsb", "subject": "A1B2C3"}]
+    hits = c.get("/api/alerts/hits", headers=BEARER).json()
+    assert len(hits["hits"]) == 1 and hits["more"] is False
+    assert c.post("/api/alerts/ack", json={}, headers=BEARER).status_code == 400
+    ack = c.post("/api/alerts/ack", json={"ids": [hits["hits"][0]["id"]]}, headers=BEARER).json()
+    assert ack["acknowledged"] == 1 and ack["summary"]["unacked"] == 0
+    assert c.get("/api/alerts", headers=BEARER).json()["rules"][0]["hits_24h"] in (0, 1)
+    assert c.post("/api/alerts/test", headers=BEARER).status_code == 409  # no webhook set up
+    assert c.delete(f"/api/alerts/rules/{rid}", headers=BEARER).json() == {"deleted": rid}
+    assert c.delete(f"/api/alerts/rules/{rid}", headers=BEARER).status_code == 404
+    assert c.get("/api/alerts/hits", headers=BEARER).json()["hits"][0]["rule_name"] == "renamed"  # kept
+    page = c.get("/alerts", headers=BEARER)
+    assert page.status_code == 200 and "alerts.js" in page.text
+
+
+def test_web_settings_for_the_alert_webhook(tmp_path):
+    f = tmp_path / "hook"
+    f.write_text("https://ntfy.example/hackrf\n")
+    web = settings.WebSettings.from_env(
+        {"HACKRF_WEB_ALERT_WEBHOOK_FILE": str(f), "HACKRF_WEB_ALERT_WEBHOOK_FORMAT": "NTFY", "HACKRF_WEB_URL": "http://h:8766/"}
+    )
+    assert web.alert_webhook_url() == "https://ntfy.example/hackrf" and web.alert_webhook_format == "ntfy"
+    assert web.public_url == "http://h:8766"
+    assert settings.WebSettings().alert_webhook_url() is None
+    with pytest.raises(ValueError):
+        settings.WebSettings.from_env({"HACKRF_WEB_ALERT_WEBHOOK_FORMAT": "slack"})
+    live = settings.LiveSettings(live_dir=tmp_path / "live", min_free_mb=0)
+    gate = web_app.create_app(live, web, [DIGEST], b"k" * 32, feed=False)
+    a = TestClient(gate).get("/api/alerts", headers=BEARER).json()
+    assert a["webhook"] is True and a["webhook_format"] == "ntfy" and "ntfy.example" not in json.dumps(a)

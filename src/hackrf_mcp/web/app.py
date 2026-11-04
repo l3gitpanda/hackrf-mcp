@@ -25,6 +25,15 @@ and the static UI.
   POST /api/live/watch           lend the receiver to a watch of one range
                                  (waterfall only) for a while; retunes one
   POST /api/live/watch/stop      end a watch: back to the rotation
+  GET  /api/alerts               alert rules (with hits in the last 24 h), the
+                                 fields each profile's rules may test, and
+                                 whether a webhook is set up
+  POST /api/alerts/rules         add a rule; PUT/DELETE /api/alerts/rules/<id>
+  POST /api/alerts/preview       what a rule would have matched (default the
+                                 last 7 days)
+  GET  /api/alerts/hits          hits, newest first, paged with before_id
+  POST /api/alerts/ack           acknowledge hits ({"ids": [...]} or {"all": true})
+  POST /api/alerts/test          post a test message to the webhook
   WS   /ws/live                  rows, events, positions and FFT rows as
                                  they happen, and status every few seconds
 
@@ -62,7 +71,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum
 from hackrf_mcp.live_service import WATCH_DEFAULT_MIN, WATCH_MAX_MIN
 from hackrf_mcp.settings import LiveSettings, WebSettings
-from hackrf_mcp.web import basemap
+from hackrf_mcp.web import alerts, basemap
 from hackrf_mcp.web.hub import FeedHub
 from hackrf_mcp.web.sessions import COOKIE, Sessions
 
@@ -92,6 +101,7 @@ PAGES = {
     "/history": "history.html",
     "/bands": "bands.html",
     "/summaries": "summaries.html",
+    "/alerts": "alerts.html",
 }
 
 
@@ -319,6 +329,10 @@ def create_app(
     sessions = Sessions(session_key, web.session_days, digests)
     redact = make_redactor(live)
     hub = FeedHub(live.feed_socket_path, redact)
+    store = alerts.AlertStore(web.state_path(live) / "alerts.db")
+    webhook_url = web.alert_webhook_url()
+    webhook = alerts.Webhook(webhook_url, web.alert_webhook_format, store, web.public_url) if webhook_url else None
+    engine = alerts.AlertEngine(store, live.db_path, live.pager_content, webhook)
 
     def reader():
         return live_log.open_reader(live.db_path)
@@ -405,6 +419,7 @@ def create_app(
             "service": cgroup_stats("hackrf-live.service", cgroup_root),
             "web": cgroup_stats("hackrf-web.service", cgroup_root),
             "feed": hub.status(),
+            "alerts": engine.summary(),
             "now": time.time(),
         }
 
@@ -686,6 +701,121 @@ def create_app(
     async def api_watch_stop(request: Request) -> Response:
         return await _control({"cmd": "watch-stop"})
 
+    # --- alerts
+
+    def api_alerts(request: Request) -> Response:
+        live_profiles.load()
+        day = time.time() - 86400
+        stats = store.rule_stats(day)
+        rules = []
+        for r in store.rules():
+            st = stats.get(r.id, {})
+            rules.append({**r.to_json(), "hits_24h": st.get("hits", 0), "last_hit": st.get("last")})
+        return JSONResponse(
+            {
+                "rules": rules,
+                "fields": {
+                    p.name: alerts.allowed_fields(p, live.pager_content)
+                    for p in live_profiles.PROFILES.values()
+                    if not p.spectrum_only
+                },
+                "ops": alerts.OPS,
+                "webhook": webhook is not None,
+                "webhook_format": web.alert_webhook_format if webhook is not None else None,
+                "summary": engine.summary(),
+            }
+        )
+
+    async def _json_body(request: Request) -> dict:
+        try:
+            body = await request.json()
+        except ValueError as exc:
+            raise ValueError("send a JSON object") from exc
+        if not isinstance(body, dict):
+            raise ValueError("send a JSON object")
+        return body
+
+    async def api_rule_create(request: Request) -> Response:
+        try:
+            rule = alerts.parse_rule(await _json_body(request), live.pager_content)
+            saved = await run_in_threadpool(store.save, rule)
+        except ValueError as exc:
+            return error(400, str(exc))
+        engine.reload()
+        return JSONResponse(saved.to_json(), status_code=201)
+
+    async def api_rule(request: Request) -> Response:
+        rule_id = request.path_params["rule_id"]
+        if request.method == "DELETE":
+            if not await run_in_threadpool(store.delete, rule_id):
+                return error(404, f"no rule {rule_id}")
+            engine.reload()
+            return JSONResponse({"deleted": rule_id})
+        try:
+            rule = alerts.parse_rule(await _json_body(request), live.pager_content, rule_id)
+            saved = await run_in_threadpool(store.save, rule)
+        except KeyError:
+            return error(404, f"no rule {rule_id}")
+        except ValueError as exc:
+            return error(400, str(exc))
+        engine.reload()
+        return JSONResponse(saved.to_json())
+
+    async def api_preview(request: Request) -> Response:
+        now = time.time()
+        try:
+            body = await _json_body(request)
+            rule = alerts.parse_rule(body, live.pager_content)
+            since = live_log.parse_when(body.get("since"), now)
+            until = live_log.parse_when(body.get("until"), now)
+            until = now if until is None else until
+            since = until - 7 * 86400 if since is None else since
+            if since >= until:
+                raise ValueError("since must be before until")
+            out = await run_in_threadpool(engine.preview, rule, max(since, until - 7 * 86400), until)
+        except ValueError as exc:
+            return error(400, str(exc))
+        except live_log.LogNotFound as exc:
+            return error(404, str(exc))
+        return JSONResponse(out)
+
+    @guarded
+    def api_hits(request: Request) -> Response:
+        before = request.query_params.get("before_id")
+        limit = _int(request, "limit", 100, 1, 500)
+        rows = store.hits(limit + 1, int(before) if before else None, request.query_params.get("unacked") == "1")
+        return JSONResponse({"hits": rows[:limit], "more": len(rows) > limit})
+
+    async def api_ack(request: Request) -> Response:
+        try:
+            body = await _json_body(request)
+            ids = None if body.get("all") else [int(i) for i in body.get("ids") or []]
+            if ids is not None and not ids:
+                raise ValueError('give "ids" or "all": true')
+        except (ValueError, TypeError) as exc:
+            return error(400, str(exc))
+        n = await run_in_threadpool(store.ack, ids)
+        engine.refresh()
+        return JSONResponse({"acknowledged": n, "summary": engine.summary()})
+
+    async def api_alert_test(request: Request) -> Response:
+        if webhook is None:
+            return error(409, "no webhook is set up (HACKRF_WEB_ALERT_WEBHOOK_FILE)")
+        now = time.time()
+        hit = {
+            "id": 0,
+            "ts": now,
+            "rule_name": "test",
+            "profile": "test",
+            "kind": None,
+            "subject": None,
+            "label": None,
+            "freq_hz": None,
+            "detail": "a test message from hackrf-web's Alerts screen",
+        }
+        status = await run_in_threadpool(webhook.send, hit, 1)
+        return JSONResponse({"status": status})
+
     async def _control(req: dict) -> Response:
         try:
             st = await run_in_threadpool(control, req, timeout=30)
@@ -747,7 +877,9 @@ def create_app(
     async def lifespan(app):
         if feed:
             hub.start()
+        engine.start()
         yield
+        engine.stop()
         await hub.stop()
 
     routes = [
@@ -772,10 +904,18 @@ def create_app(
         Route("/api/live/stop", api_stop, methods=["POST"]),
         Route("/api/live/watch", api_watch, methods=["POST"]),
         Route("/api/live/watch/stop", api_watch_stop, methods=["POST"]),
+        Route("/api/alerts", api_alerts),
+        Route("/api/alerts/rules", api_rule_create, methods=["POST"]),
+        Route("/api/alerts/rules/{rule_id:int}", api_rule, methods=["PUT", "DELETE"]),
+        Route("/api/alerts/preview", api_preview, methods=["POST"]),
+        Route("/api/alerts/hits", api_hits),
+        Route("/api/alerts/ack", api_ack, methods=["POST"]),
+        Route("/api/alerts/test", api_alert_test, methods=["POST"]),
         WebSocketRoute("/ws/live", ws_live),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=asynccontextmanager(lifespan))
     gate = Gate(app, digests, sessions, web.extra_origins)
     gate.hub = hub  # for the tests
+    gate.alerts = engine
     return gate

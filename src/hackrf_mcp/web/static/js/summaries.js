@@ -6,7 +6,7 @@
 // /api/registry; nothing here names a protocol.
 
 import { api } from './api.js';
-import { paintAppBar, paintClock } from './appbar.js';
+import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
 import { addBasemap } from './basemap.js';
 import { timeTicks } from './historyutil.js';
 import { assignColors, clear, fmtUtc, h, mhzShort, utc } from './util.js';
@@ -60,6 +60,7 @@ async function pollStatus() {
     S.status = st;
     S.statusAt = NOW();
     paintAppBar(st.live, color, 'open');
+    paintAlerts(st.alerts, color, hasMap);
   } catch (e) {
     paintAppBar(null, color, 'closed');
   }

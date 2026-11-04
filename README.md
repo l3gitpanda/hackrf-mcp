@@ -340,7 +340,9 @@ The **Map** screen (`/map`) draws the targets of every profile whose
 protocol module declares a map view (ADS-B aircraft, AIS ships) from the
 `positions` table: live, with arrows turned to the heading, labels, tracks
 of the last 10 minutes to 3 hours and faded markers after 5 minutes without
-a fix; or in History, for any range up to 7 days, with a scrubber over the
+a fix (where labels would overlap, the less important are left out: the
+selected target's comes first, then those with an alert, the moving, the
+newest; pointing at a marker shows its label); or in History, for any range up to 7 days, with a scrubber over the
 receiver's coverage and playback (long ranges come back thinned to one fix
 per target every 20 s to an hour, and the screen says so). A selected
 target shows its fields, its altitude over the track and a link to its rows

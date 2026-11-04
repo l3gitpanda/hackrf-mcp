@@ -273,3 +273,8 @@ body{margin:0;background:#0a0e13}
 .fiw.alerted{box-shadow:inset 3px 0 0 var(--bad)}
 .tbl tbody tr.alerted td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
 .altag{margin-left:6px;vertical-align:middle}
+/* Labels left out so they don't overlap (map.js relabel): shown again
+   while the pointer is on the marker. */
+.mk.decl .tl2{display:none}
+.mk.decl:hover .tl2{display:block;z-index:1000}
+.leaflet-marker-icon:hover{z-index:10000 !important}

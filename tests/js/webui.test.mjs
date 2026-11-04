@@ -396,3 +396,32 @@ test('subjects with an unacknowledged hit, keyed as the Map keys targets', () =>
   assert.ok(sameKeys(k, new Set(['p2|42', 'p1|A1'])));
   assert.ok(!sameKeys(k, new Set(['p1|A1'])));
 });
+
+import { declutter, labelBox, labelRank } from '../../src/hackrf_mcp/web/static/js/maputil.js';
+
+test('map labels: boxes from the text, the important placed first, overlaps left out', () => {
+  const b = labelBox('UAL123', '35000 ft · 450 kn', 100, 50);
+  assert.equal(b.x, 111);
+  assert.equal(b.y, 42);
+  assert.equal(b.h, 26);
+  assert.ok(b.w > 17 * 6);
+  assert.equal(labelBox('A', '', 0, 0).h, 14);
+  const sel = labelRank({ selected: true, ts: 1 });
+  const alerted = labelRank({ alerted: true, ts: 2e9 });
+  const moving = labelRank({ moving: true, fresh: true, ts: 1 });
+  const old = labelRank({ fresh: false, ts: 2e9 });
+  assert.ok(sel > alerted && alerted > moving && moving > old);
+  assert.ok(labelRank({ ts: 2e9 }) > labelRank({ ts: 1e9 })); // newer first
+  // Three labels on top of each other and one apart: the highest of the
+  // three stays, the other two go; the far one stays.
+  const boxes = [
+    { key: 'a', x: 0, y: 0, w: 60, h: 14, rank: 1 },
+    { key: 'b', x: 10, y: 5, w: 60, h: 14, rank: 3 },
+    { key: 'c', x: 20, y: 8, w: 60, h: 14, rank: 2 },
+    { key: 'd', x: 300, y: 300, w: 60, h: 14, rank: 0 },
+  ];
+  assert.deepEqual([...declutter(boxes)].sort(), ['a', 'c']);
+  // Side by side with a gap wider than the padding: both stay.
+  assert.equal(declutter([{ key: 'x', x: 0, y: 0, w: 50, h: 14, rank: 1 }, { key: 'y', x: 60, y: 0, w: 50, h: 14, rank: 0 }]).size, 0);
+  assert.equal(declutter([]).size, 0);
+});

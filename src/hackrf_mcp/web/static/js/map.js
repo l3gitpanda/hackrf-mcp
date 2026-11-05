@@ -10,6 +10,7 @@ import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './app
 import { ago, assignColors, clear, fmtUtc, h, parseUtc, utc } from './util.js';
 import { declutter, heading, labelBox, labelRank, positionAt, prune, targetKey, trackWindow } from './maputil.js';
 import { addBasemap } from './basemap.js';
+import { compass, fmtKm, levelChart, outline } from './rangeutil.js';
 
 const $ = (id) => document.getElementById(id);
 const NOW = () => Date.now() / 1000;
@@ -18,6 +19,10 @@ const SVG = 'http://www.w3.org/2000/svg';
 // stand still are only logged every 5 minutes, so the limit is above that.
 const STALE_S = 330;
 const HIDE_S = 1800;
+// The receiver range layer: refreshed this often while it is shown, and
+// drawn in these colours per altitude band (the API names the bands).
+const RANGE_REFRESH_MS = 5 * 60 * 1000;
+const BAND_COLORS = { low: '#4fd18b', mid: '#ffb547', high: '#6aa8ff', all: '#e1e7ee' };
 
 const S = {
   alerted: new Set(),
@@ -37,7 +42,8 @@ const S = {
   statusAt: 0,
   playing: null,
   fitted: false,
-  layers: { markers: null, tracks: null, rings: null },
+  layers: { markers: null, tracks: null, rings: null, range: null },
+  range: { data: null, timer: null, seq: 0 },
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
@@ -61,6 +67,7 @@ async function init() {
   S.layers.base = L.layerGroup().addTo(S.map);
   S.layers.grid = L.layerGroup().addTo(S.map);
   S.layers.rings = L.layerGroup().addTo(S.map);
+  S.layers.range = L.layerGroup().addTo(S.map);
   S.layers.tracks = L.layerGroup().addTo(S.map);
   S.layers.markers = L.layerGroup().addTo(S.map);
   S.map.on('moveend', () => {
@@ -69,6 +76,7 @@ async function init() {
     relabel();
   });
   wire();
+  setupRange();
   buildLayerChips();
   loadBasemap();
   pollStatus();
@@ -93,6 +101,9 @@ function wire() {
     render();
   });
   for (const id of ['o-tracks', 'o-labels', 'o-rings']) $(id).addEventListener('change', render);
+  $('o-range').addEventListener('change', toggleRange);
+  $('range-of').addEventListener('change', loadRangeLayer);
+  $('range-span').addEventListener('change', loadRangeLayer);
   $('s-close').addEventListener('click', () => select(null));
   $('s-zoom').addEventListener('click', () => {
     const t = S.sel && S.targets.get(S.sel);
@@ -497,6 +508,150 @@ function drawRings() {
     S.layers.rings.addLayer(L.circle(r, { radius: km * 1000, color: '#3a4858', weight: 1, fill: false, interactive: false, dashArray: '4 6' }));
   }
   S.layers.rings.addLayer(L.circleMarker(r, { radius: 4, color: '#e8eef5', weight: 1.5, fillOpacity: 0, interactive: false }));
+}
+
+// --- The receiver range ------------------------------------------------------------------
+// How far the receiver hears in each direction: an outline per altitude
+// band through the farthest position logged in each sector of bearing, and
+// in the side panel the farthest of all and signal level against distance.
+
+function setupRange() {
+  const r = S.registry.receiver;
+  $('range-wrap').hidden = !r;
+  if (!r) return;
+  const sel = $('range-of');
+  clear(sel);
+  for (const p of S.mapProfiles) sel.append(h('option', { value: p }, p));
+  // The first profile whose positions have an altitude (aircraft), as that
+  // range has bands; else the first with a map.
+  const flying = S.mapProfiles.find((p) => role(p, 'alt'));
+  if (flying) sel.value = flying;
+}
+
+function toggleRange() {
+  const on = $('o-range').checked;
+  $('range-opts').hidden = !on;
+  $('range-panel').hidden = !on;
+  clearInterval(S.range.timer);
+  S.range.timer = null;
+  if (!on) {
+    S.range.seq += 1; // a request still on its way is not drawn
+    S.range.data = null;
+    S.layers.range.clearLayers();
+    return;
+  }
+  loadRangeLayer();
+  S.range.timer = setInterval(loadRangeLayer, RANGE_REFRESH_MS);
+}
+
+async function loadRangeLayer() {
+  if (!$('o-range').checked) return;
+  const seq = ++S.range.seq;
+  const span = Number($('range-span').value);
+  const now = NOW();
+  const q = new URLSearchParams({ since: String(Math.round(now - span)), until: String(Math.round(now)), profile: $('range-of').value });
+  $('rg-when').textContent = 'loading…';
+  try {
+    const data = await api(`/api/positions/range?${q}`);
+    if (seq !== S.range.seq) return;
+    S.range.data = data;
+    drawRange();
+    renderRangePanel();
+  } catch (e) {
+    if (seq !== S.range.seq) return;
+    $('rg-when').textContent = '';
+    showError(`Could not load the receiver range: ${e.message}`);
+  }
+}
+
+function bandLabel(b) {
+  const ft = (v) => `${v.toLocaleString('en-US')} ft`;
+  if (b.from_ft == null) return `below ${ft(b.below_ft)}`;
+  if (b.below_ft == null) return `${ft(b.from_ft)} and up`;
+  return `${ft(b.from_ft)}–${ft(b.below_ft)}`;
+}
+
+function drawRange() {
+  S.layers.range.clearLayers();
+  const d = S.range.data;
+  const r = S.registry.receiver;
+  if (!d || !r || !d.sectors.all) return;
+  // The highest band reaches farthest: draw it first so the others show on top.
+  for (const b of [...d.bands].reverse()) {
+    const kms = d.sectors[b.name];
+    if (!kms || !kms.some((v) => v != null)) continue;
+    const c = BAND_COLORS[b.name] || '#8a96a6';
+    S.layers.range.addLayer(L.polygon(outline(r, kms, d.sector_deg), { color: c, weight: 1.5, opacity: 0.9, fillColor: c, fillOpacity: 0.07, interactive: false }));
+  }
+  const all = { color: BAND_COLORS.all, weight: 1.2, opacity: 0.8, fill: !d.bands.length, fillOpacity: 0.07, dashArray: d.bands.length ? '5 5' : null, interactive: false };
+  S.layers.range.addLayer(L.polygon(outline(r, d.sectors.all, d.sector_deg), all));
+}
+
+function renderRangePanel() {
+  const d = S.range.data;
+  const span = Number($('range-span').value);
+  $('rg-when').textContent = span <= 86400 ? 'last 24 hours' : 'last 7 days';
+  $('range-panel').style.setProperty('--pc', color(d.profile));
+  const leg = $('rg-legend');
+  clear(leg);
+  for (const b of d.bands) leg.append(h('span', { '--bc': BAND_COLORS[b.name] || '#8a96a6' }, h('span', { class: 'sw' }), bandLabel(b)));
+  leg.append(h('span', { '--bc': BAND_COLORS.all }, h('span', { class: d.bands.length ? 'sw dash' : 'sw' }), d.bands.length ? 'all altitudes' : 'all positions'));
+  const kv = $('rg-stats');
+  clear(kv);
+  const all = d.sectors.all || [];
+  const heard = all.filter((v) => v != null).length;
+  if (d.farthest) {
+    const f = d.farthest;
+    const who = f.label ? `${f.label} · ${f.subject}` : f.subject;
+    const q = new URLSearchParams({ subject: f.subject, profiles: d.profile, around: String(Math.round(f.ts)) });
+    const bits = [who];
+    if (f.alt != null) bits.push(`${Math.round(f.alt).toLocaleString('en-US')} ft`);
+    bits.push(`${fmtUtc(f.ts)} UTC`);
+    kv.append(
+      h('dt', {}, 'farthest'),
+      h('dd', { class: 'mono' }, `${fmtKm(f.km)} ${compass(f.bearing)} (${Math.round(f.bearing)}°)`, h('br'), h('a', { href: `/log?${q}` }, bits.join(' · '))),
+    );
+    kv.append(h('dt', {}, 'typical'), h('dd', { class: 'mono' }, `${fmtKm(d.median_km)}`, h('span', { class: 'muted' }, ' (median of the directions heard)')));
+  }
+  kv.append(h('dt', {}, 'directions'), h('dd', { class: 'mono' }, `${heard} of ${all.length || Math.round(360 / d.sector_deg)} heard (${d.sector_deg}° each)`));
+  kv.append(h('dt', {}, 'from'), h('dd', { class: 'mono' }, `${d.fixes.toLocaleString('en-US')} positions of ${d.targets.toLocaleString('en-US')} targets`));
+  drawLevelChart(d.levels);
+  const notes = [`Each outline joins the farthest position heard in each ${d.sector_deg}° direction from the receiver.`];
+  if (d.beyond_horizon) notes.push(`${d.beyond_horizon.toLocaleString('en-US')} positions farther than the radio horizon for their altitude were left out as decoding errors.`);
+  if (!d.fixes) notes.push('Nothing was logged with a position in this period.');
+  $('rg-note').textContent = notes.join(' ');
+}
+
+function svgEl(tag, attrs, text) {
+  const el = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  if (text != null) el.textContent = text;
+  return el;
+}
+
+function drawLevelChart(levels) {
+  const svg = $('rg-chart');
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const g = levelChart(levels && levels.bins, levels ? levels.bin_km : 25);
+  if (!g) {
+    svg.append(svgEl('text', { x: 150, y: 74, 'text-anchor': 'middle', class: 'tk' }, 'No signal levels in this period'));
+    return;
+  }
+  const { left, top, right, bottom } = g.box;
+  svg.append(svgEl('line', { x1: left, y1: bottom, x2: right, y2: bottom, class: 'ax' }), svgEl('line', { x1: left, y1: top, x2: left, y2: bottom, class: 'ax' }));
+  g.xticks.forEach((t, i) => {
+    // The last label ends at the axis, so it stays inside the chart.
+    const anchor = i === g.xticks.length - 1 ? 'end' : 'middle';
+    svg.append(svgEl('text', { x: t.x, y: bottom + 13, 'text-anchor': anchor, class: 'tk' }, `${t.v}`));
+  });
+  for (const t of g.yticks) svg.append(svgEl('text', { x: left - 4, y: t.y + 3, 'text-anchor': 'end', class: 'tk' }, `${t.v}`));
+  svg.append(svgEl('text', { x: right, y: top + 9, 'text-anchor': 'end', class: 'tk' }, 'dB (median, 10–90%) · km'));
+  svg.append(svgEl('path', { d: g.band, class: 'band' }), svgEl('path', { d: g.median, class: 'med' }));
+  for (const p of g.dots) {
+    const c = svgEl('circle', { cx: p.x, cy: p.y, r: 2, class: 'dot' });
+    c.append(svgEl('title', {}, `${p.km}–${p.km + levels.bin_km} km: median ${p.db} dB over ${p.n} aircraft-minutes`));
+    svg.append(c);
+  }
 }
 
 // --- Lists and the selected target ----------------------------------------------------------

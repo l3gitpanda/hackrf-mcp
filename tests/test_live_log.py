@@ -286,3 +286,76 @@ def test_position_grid_counts_fixes_and_targets_per_cell(tmp_path):
     coarse = live_log.position_grid(c, 900, 2000, cell_deg=0.002, max_cells=2)
     assert coarse["cell_deg"] > 0.002 and sum(len(v) for v in coarse["cells"].values()) <= 2
     assert live_log.position_grid(c, 900, 2000, cell_deg=0.0)["cell_deg"] == live_log.GRID_MIN_DEG
+
+
+# A made-up receiver, for the range tests.
+RX = (45.0, 10.0)
+
+
+def _toward(bearing, km, origin=RX):
+    """The point `km` from `origin` on `bearing` (degrees): the inverse of
+    live_log.distance_bearing, to place test fixes."""
+    import math
+
+    p0, l0 = math.radians(origin[0]), math.radians(origin[1])
+    d, b = km / live_log.EARTH_KM, math.radians(bearing)
+    p = math.asin(math.sin(p0) * math.cos(d) + math.cos(p0) * math.sin(d) * math.cos(b))
+    lon = l0 + math.atan2(math.sin(b) * math.sin(d) * math.cos(p0), math.cos(d) - math.sin(p0) * math.sin(p))
+    return math.degrees(p), math.degrees(lon)
+
+
+def test_distance_and_bearing_round_trip():
+    import numpy as np
+
+    for bearing, km in ((0, 10), (45, 150), (180, 300), (271, 42.5)):
+        lat, lon = _toward(bearing, km)
+        d, b = live_log.distance_bearing(RX[0], RX[1], np.array([lat]), np.array([lon]))
+        assert abs(d[0] - km) < 0.01 and abs(b[0] - bearing) < 0.01
+    # The horizon to an airliner is a few hundred km; to the ground, far less.
+    assert 450 < live_log.radio_horizon_km(35_000) < 600 and live_log.radio_horizon_km(0) < 80
+
+
+def test_receiver_range_per_sector_band_and_level(tmp_path):
+    w = _writer(tmp_path)
+    fixes = [
+        ("A1", 1000, 10, 100, 30_000),
+        ("A1", 1010, 12, 150, 30_000),  # the farthest in 10-15 degrees, high
+        ("B2", 1020, 92, 50, 5_000),  # 90-95: low
+        ("B2", 1030, 93, 80, 15_000),  # 90-95: mid, and the farthest there
+        ("C3", 1040, 200, 300, 1_000),  # 300 km at 1,000 ft: past the horizon, an error
+        ("D4", 1050, 270, 40, None),  # no altitude: in "all" only
+    ]
+    pos = [live_log.Position(ts, "adsb", s, *_toward(b, km), alt=alt) for s, ts, b, km, alt in fixes]
+    pos.append(live_log.Position(1060, "ais", "S1", *_toward(180, 20)))
+    pos.append(live_log.Position(5000, "adsb", "LATE", *_toward(0, 400), alt=35_000))  # after the range
+    w.write_positions(pos, now=1000)
+    rows = []
+    for i, (km, level) in enumerate(((10, -5.0), (12, -7.0), (14, -6.0), (110, -30.0), (120, -32.0))):
+        lat, lon = _toward(5, km)
+        r = _aircraft(1000 + i, f"L{i}", "UAL1" if i == 4 else None, level=level)
+        r.fields.update(lat=lat, lon=lon, altitude=30_000)
+        rows.append(r)
+    rows.append(_aircraft(1011, "A1", "SWA12"))  # A1's callsign, next to its farthest fix
+    w.write(rows)
+    c = live_log.open_reader(w.path)
+    out = live_log.receiver_range(c, RX, 900, 2000, profile="adsb", sector_deg=5)
+    assert out["sector_deg"] == 5 and out["fixes"] == 5 and out["targets"] == 3 and out["beyond_horizon"] == 1
+    allb, high, mid, low = (out["sectors"][k] for k in ("all", "high", "mid", "low"))
+    assert len(allb) == 72 and allb[2] == 150.0 and allb[18] == 80.0 and allb[54] == 40.0
+    assert sum(v is not None for v in allb) == 3 and allb[40] is None  # 200 degrees: only the error was there
+    assert high[2] == 150.0 and high[18] is None and mid[18] == 80.0 and low[18] == 50.0
+    assert low[54] is None and [b["name"] for b in out["bands"]] == ["low", "mid", "high"]
+    assert out["median_km"] == 80.0
+    f = out["farthest"]
+    assert (f["subject"], f["label"], f["km"], f["alt"]) == ("A1", "SWA12", 150.0, 30_000.0) and abs(f["bearing"] - 12) < 0.1
+    lv = out["levels"]
+    assert lv["bin_km"] == 25 and lv["rows"] == 5
+    near, far = lv["bins"]
+    assert near[:2] == [0.0, 3] and near[3] == -6.0 and far[:2] == [100.0, 2] and far[3] == -31.0
+    # Ships have no altitude: no bands, and no level rows here.
+    ships = live_log.receiver_range(c, RX, 900, 2000, profile="ais")
+    assert ships["bands"] == [] and set(ships["sectors"]) == {"all"} and ships["sectors"]["all"][36] == 20.0
+    assert ships["levels"]["bins"] == [] and ships["farthest"]["label"] is None
+    # Nothing in the range: all empty, no error.
+    none = live_log.receiver_range(c, RX, 9000, 9100)
+    assert none["fixes"] == 0 and none["sectors"] == {} and none["farthest"] is None and none["median_km"] is None

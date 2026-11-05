@@ -104,6 +104,17 @@ body{margin:0;background:#0a0e13}
 .g-map2{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;align-items:start}
 @container (max-width:1000px){.g-map2{grid-template-columns:minmax(0,1fr)}}
 .altspark{width:100%;height:40px}
+/* Map: the receiver range */
+.rglegend{gap:4px 12px;font-size:11.5px;color:var(--text2)}
+.rglegend span{display:inline-flex;align-items:center;gap:5px}
+.rglegend .sw{width:12px;height:3px;border-radius:1px;background:var(--bc)}
+.rglegend .sw.dash{height:0;background:none;border-top:2px dashed var(--bc)}
+.rgchart{width:100%;height:auto;display:block}
+.rgchart .ax{stroke:var(--line);stroke-width:1}
+.rgchart .tk{fill:var(--text2);font:10px var(--mono)}
+.rgchart .band{fill:color-mix(in oklab,var(--pc) 28%,transparent);stroke:none}
+.rgchart .med{fill:none;stroke:var(--pc);stroke-width:1.6}
+.rgchart .dot{fill:var(--pc)}
 /* History */
 .htool{display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px;padding:10px 12px}
 .htool input[type=date]{width:auto}

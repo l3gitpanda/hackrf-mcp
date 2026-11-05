@@ -867,3 +867,159 @@ def position_grid(
     for p, x, y, n, t in rows[:max_cells]:
         cells.setdefault(p, []).append([x, y, n, t])
     return {"cell_deg": cell, "fixes": fixes, "targets": targets, "cells": cells, "truncated": len(rows) > max_cells}
+
+
+# --- How far the receiver hears ------------------------------------------------------
+
+EARTH_KM = 6371.0088
+# The range outline's altitude bands, in feet: (name, from, below).
+RANGE_BANDS = (("low", None, 10_000), ("mid", 10_000, 25_000), ("high", 25_000, None))
+# The receiver's height is not known, so the horizon test assumes a
+# generous one, and allows 10% more for refraction beyond the usual.
+HORIZON_RECEIVER_M = 300.0
+HORIZON_SLACK = 1.1
+
+
+def radio_horizon_km(alt_ft, receiver_m: float = HORIZON_RECEIVER_M):
+    """How far a radio path reaches over a smooth earth (4/3 refraction)
+    from a receiver `receiver_m` up to something at `alt_ft` feet. Works on
+    numbers and numpy arrays."""
+    import numpy as np
+
+    return 4.12 * (np.sqrt(np.maximum(alt_ft, 0.0) * 0.3048) + np.sqrt(receiver_m))
+
+
+def distance_bearing(lat0: float, lon0: float, lat, lon):
+    """Great-circle distance (km) and initial bearing (degrees, 0 = north)
+    from (lat0, lon0) to each (lat, lon): numpy arrays in, arrays out."""
+    import numpy as np
+
+    p0, l0 = np.radians(lat0), np.radians(lon0)
+    p, dl = np.radians(lat), np.radians(lon) - l0
+    a = np.sin((p - p0) / 2) ** 2 + np.cos(p0) * np.cos(p) * np.sin(dl / 2) ** 2
+    km = 2 * EARTH_KM * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+    y = np.sin(dl) * np.cos(p)
+    x = np.cos(p0) * np.sin(p) - np.sin(p0) * np.cos(p) * np.cos(dl)
+    return km, (np.degrees(np.arctan2(y, x)) + 360.0) % 360.0
+
+
+def _beyond_horizon(km, alt):
+    """True where a fix is farther than any radio path to its altitude
+    allows: a decoding error. Fixes with no altitude are never judged."""
+    import numpy as np
+
+    known = np.isfinite(alt)
+    limit = np.where(known, HORIZON_SLACK * radio_horizon_km(np.where(known, alt, 0.0)), np.inf)
+    return km > limit
+
+
+def receiver_range(
+    conn: sqlite3.Connection,
+    receiver: tuple[float, float],
+    since: float,
+    until: float,
+    profile: str = "adsb",
+    sector_deg: float = 5.0,
+    bin_km: float = 25.0,
+) -> dict:
+    """How far the receiver at `receiver` (lat, lon) heard `profile` over
+    [since, until], from the positions table: the farthest fix in each
+    `sector_deg` sector of bearing (sector i spans i*sector_deg up to the
+    next), for all fixes and, where fixes have an altitude, per altitude
+    band (RANGE_BANDS); None where nothing was heard. Fixes farther than
+    the radio horizon for their altitude are decoding errors and are left
+    out (counted in beyond_horizon). Also the farthest fix of all, the
+    median of the sectors' farthest, and the signal level against distance
+    from the per-minute rows (their peak level and last position), as
+    10th/50th/90th percentiles per `bin_km` of distance."""
+    import numpy as np
+
+    n = max(1, int(round(360.0 / sector_deg)))
+    step = 360.0 / n
+    where, args = _position_filter(since, until, profile, None)
+    rows = conn.execute(f"SELECT subject, ts, lat, lon, alt FROM positions WHERE {' AND '.join(where)}", args).fetchall()
+    out: dict = {
+        "sector_deg": step,
+        "fixes": 0,
+        "targets": 0,
+        "beyond_horizon": 0,
+        "bands": [{"name": name, "from_ft": lo, "below_ft": hi} for name, lo, hi in RANGE_BANDS],
+        "sectors": {},
+        "farthest": None,
+        "median_km": None,
+        "levels": {"bin_km": bin_km, "bins": [], "rows": 0},
+    }
+    if rows:
+        lat = np.array([r[2] for r in rows], dtype=float)
+        lon = np.array([r[3] for r in rows], dtype=float)
+        alt = np.array([np.nan if r[4] is None else r[4] for r in rows], dtype=float)
+        km, brg = distance_bearing(receiver[0], receiver[1], lat, lon)
+        bad = _beyond_horizon(km, alt)
+        good = ~bad
+        out["beyond_horizon"] = int(bad.sum())
+        out["fixes"] = int(good.sum())
+        out["targets"] = len({rows[i][0] for i in np.flatnonzero(good)})
+        sector = (brg // step).astype(int) % n
+        masks = {"all": good}
+        if np.isfinite(alt[good]).any():
+            for name, lo, hi in RANGE_BANDS:
+                m = good & np.isfinite(alt)
+                if lo is not None:
+                    m &= alt >= lo
+                if hi is not None:
+                    m &= alt < hi
+                masks[name] = m
+        else:
+            out["bands"] = []
+        for name, m in masks.items():
+            far = np.full(n, -1.0)
+            np.maximum.at(far, sector[m], km[m])
+            out["sectors"][name] = [None if v < 0 else round(float(v), 1) for v in far]
+        heard = [v for v in out["sectors"]["all"] if v is not None]
+        if heard:
+            out["median_km"] = round(float(np.median(heard)), 1)
+            i = int(np.flatnonzero(good)[np.argmax(km[good])])
+            subject, ts = rows[i][0], rows[i][1]
+            label = conn.execute(
+                "SELECT label FROM messages WHERE profile = ? AND subject = ? AND label IS NOT NULL AND label != '' "
+                "AND ts >= ? AND ts <= ? ORDER BY abs(ts - ?) LIMIT 1",
+                (profile, subject, ts - 3600, ts + 3600, ts),
+            ).fetchone()
+            out["farthest"] = {
+                "subject": subject,
+                "label": label[0] if label else None,
+                "ts": ts,
+                "km": round(float(km[i]), 1),
+                "bearing": round(float(brg[i]), 1),
+                "alt": None if not np.isfinite(alt[i]) else float(alt[i]),
+            }
+    out["levels"] = _levels_by_distance(conn, receiver, since, until, profile, bin_km)
+    return out
+
+
+def _levels_by_distance(conn, receiver, since, until, profile, bin_km) -> dict:
+    import numpy as np
+
+    rows = conn.execute(
+        "SELECT level_db, json_extract(fields, '$.lat'), json_extract(fields, '$.lon'), json_extract(fields, '$.altitude') "
+        "FROM messages WHERE profile = ? AND ts >= ? AND ts <= ? AND level_db IS NOT NULL AND json_valid(fields) "
+        "AND json_extract(fields, '$.lat') IS NOT NULL AND json_extract(fields, '$.lon') IS NOT NULL",
+        (profile, since, until),
+    ).fetchall()
+    out = {"bin_km": bin_km, "bins": [], "rows": 0}
+    if not rows:
+        return out
+    level = np.array([r[0] for r in rows], dtype=float)
+    lat = np.array([r[1] for r in rows], dtype=float)
+    lon = np.array([r[2] for r in rows], dtype=float)
+    alt = np.array([r[3] if isinstance(r[3], (int, float)) else np.nan for r in rows], dtype=float)
+    km, _ = distance_bearing(receiver[0], receiver[1], lat, lon)
+    keep = ~_beyond_horizon(km, alt)
+    km, level = km[keep], level[keep]
+    out["rows"] = int(km.size)
+    which = (km // bin_km).astype(int)
+    for b in np.unique(which):
+        lv = level[which == b]
+        p10, p50, p90 = np.percentile(lv, [10, 50, 90])
+        out["bins"].append([round(float(b * bin_km), 1), int(lv.size), round(float(p10), 1), round(float(p50), 1), round(float(p90), 1)])
+    return out

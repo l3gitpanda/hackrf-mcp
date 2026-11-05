@@ -187,7 +187,9 @@ def test_registry_comes_from_the_registries(env):
     assert {"uat", "rds", "dtmf"} <= {d["name"] for d in reg["decoders"]}
     adsb_map = next(v for v in by["adsb"]["views"] if v["name"] == "map")
     assert adsb_map["roles"]["lat"] == "lat" and adsb_map["roles"]["label"] == "callsign"
-    assert [v["name"] for v in by["acars"]["views"]] == ["table", "timeline"]  # the default views
+    assert [v["name"] for v in by["aprs"]["views"]] == ["table", "timeline"]  # the default views
+    # Datalink: a map for the positions aircraft report (ADS-C, CPDLC).
+    assert [v["name"] for v in by["acars"]["views"]] == ["map", "table", "timeline"] and by["acars"]["positions_reported"]
     assert by["flex"]["redacted"] and not by["adsb"]["redacted"]
     assert by["ais"]["spectrum"] and by["ais"]["sample_rate_hz"] == 2_000_000
     assert reg["pager_content"] is False

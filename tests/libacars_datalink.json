@@ -1,0 +1,323 @@
+{
+ "about": "ARINC 622 messages made up for tests (positions, registrations and ground addresses are invented), each decoded by libacars v2.2.1 (MIT licence, the version the image builds) with la_acars_decode_apps() and la_proto_tree_format_json(), the calls acarsdec and dumpvdl2 make. 'text' is the ACARS message text (label B6 for ADS-C, BA for CPDLC, downlink) and 'libacars' what libacars gave for it. adsc_bad_crc has a corrupted CRC.",
+ "cases": {
+  "adsc_periodic": {
+   "label": "B6",
+   "text": "/KUSADYA.ADS.N12345071D557E6F35088BA79A0B0E1F48E23FF036CE",
+   "libacars": {
+    "arinc622": {
+     "msg_type": "adsc_msg",
+     "crc_ok": true,
+     "gs_addr": "KUSADYA",
+     "air_addr": ".N12345",
+     "adsc": {
+      "tags": [
+       {
+        "basic_report": {
+         "lat": 41.250744,
+         "lon": -70.451889,
+         "alt": 35000,
+         "ts_sec": 2534.5,
+         "pos_accuracy_nm": 1.0,
+         "nav_redundancy": true,
+         "tcas_avail": false
+        }
+       },
+       {
+        "earth_ref_data": {
+         "true_trk_deg": 87.978516,
+         "true_trk_valid": true,
+         "gnd_spd_kts": 452.0,
+         "vspd_ftmin": -64
+        }
+       }
+      ],
+      "err": false
+     }
+    }
+   }
+  },
+  "adsc_emergency": {
+   "label": "B6",
+   "text": "/KUSADYA.ADS.N1234509E7EBCB5C3782EE00F40BBD94",
+   "libacars": {
+    "arinc622": {
+     "msg_type": "adsc_msg",
+     "crc_ok": true,
+     "gs_addr": "KUSADYA",
+     "air_addr": ".N12345",
+     "adsc": {
+      "tags": [
+       {
+        "emerg_basic_report": {
+         "lat": -33.861065,
+         "lon": 151.209984,
+         "alt": 12000,
+         "ts_sec": 61.0,
+         "pos_accuracy_nm": 1.0,
+         "nav_redundancy": true,
+         "tcas_avail": false
+        }
+       }
+      ],
+      "err": false
+     }
+    }
+   }
+  },
+  "adsc_with_flight_id": {
+   "label": "B6",
+   "text": "/KUSADYA.ADS.C-FABC0C043071CB38200725555F53E94908B83F8BD576",
+   "libacars": {
+    "arinc622": {
+     "msg_type": "adsc_msg",
+     "crc_ok": true,
+     "gs_addr": "KUSADYA",
+     "air_addr": ".C-FABC",
+     "adsc": {
+      "tags": [
+       {
+        "flight_id": {
+         "flight_id": "ACA123  "
+        }
+       },
+       {
+        "basic_report": {
+         "lat": 52.500057,
+         "lon": -30.249996,
+         "alt": 37000,
+         "ts_sec": 3599.875,
+         "pos_accuracy_nm": 1.0,
+         "nav_redundancy": true,
+         "tcas_avail": false
+        }
+       }
+      ],
+      "err": false
+     }
+    }
+   }
+  },
+  "adsc_no_position": {
+   "label": "B6",
+   "text": "/KUSADYA.ADS.N123450C5413318208206B5B",
+   "libacars": {
+    "arinc622": {
+     "msg_type": "adsc_msg",
+     "crc_ok": true,
+     "gs_addr": "KUSADYA",
+     "air_addr": ".N12345",
+     "adsc": {
+      "tags": [
+       {
+        "flight_id": {
+         "flight_id": "UAL1    "
+        }
+       }
+      ],
+      "err": false
+     }
+    }
+   }
+  },
+  "adsc_bad_crc": {
+   "label": "B6",
+   "text": "/KUSADYA.ADS.N12345071D27D671C7088B81900B751C",
+   "libacars": {
+    "arinc622": {
+     "msg_type": "adsc_msg",
+     "crc_ok": false,
+     "gs_addr": "KUSADYA",
+     "air_addr": ".N12345",
+     "adsc": {
+      "tags": [
+       {
+        "basic_report": {
+         "lat": 40.999947,
+         "lon": -70.000076,
+         "alt": 35000,
+         "ts_sec": 100.0,
+         "pos_accuracy_nm": 1.0,
+         "nav_redundancy": true,
+         "tcas_avail": false
+        }
+       }
+      ],
+      "err": false
+     }
+    }
+   }
+  },
+  "cpdlc_position": {
+   "label": "BA",
+   "text": "/KUSADYA.AT1.N1234523CAA28C000003A91F5464B32A728038D5",
+   "libacars": {
+    "arinc622": {
+     "msg_type": "fans1a_cpdlc_msg",
+     "crc_ok": true,
+     "gs_addr": "KUSADYA",
+     "air_addr": ".N12345",
+     "cpdlc": {
+      "err": false,
+      "atc_downlink_msg": {
+       "header": {
+        "msg_id": 7,
+        "timestamp": {
+         "hour": 18,
+         "min": 42,
+         "sec": 10
+        }
+       },
+       "atc_downlink_msg_element_id": {
+        "choice_label": "POSITION REPORT [positionreport]",
+        "choice": "dM48PositionReport",
+        "data": {
+         "pos_report": {
+          "pos_current": {
+           "choice": "latitudeLongitude",
+           "data": {
+            "lat_lon": {
+             "lat": {
+              "deg": 41,
+              "min": 12.5,
+              "dir": "north"
+             },
+             "lon": {
+              "deg": 70,
+              "min": 30.0,
+              "dir": "west"
+             }
+            }
+           }
+          },
+          "time_at_pos_current": {
+           "hour": 18,
+           "min": 41
+          },
+          "alt": {
+           "choice": "altitudeFlightLevel",
+           "data": {
+            "flight_level": 350
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "cpdlc_position_qnh": {
+   "label": "BA",
+   "text": "/KUSADYA.AT1.N123452380300C0000030ADE03B5FB08346CAE",
+   "libacars": {
+    "arinc622": {
+     "msg_type": "fans1a_cpdlc_msg",
+     "crc_ok": true,
+     "gs_addr": "KUSADYA",
+     "air_addr": ".N12345",
+     "cpdlc": {
+      "err": false,
+      "atc_downlink_msg": {
+       "header": {
+        "msg_id": 7,
+        "timestamp": {
+         "hour": 0,
+         "min": 3,
+         "sec": 0
+        }
+       },
+       "atc_downlink_msg_element_id": {
+        "choice_label": "POSITION REPORT [positionreport]",
+        "choice": "dM48PositionReport",
+        "data": {
+         "pos_report": {
+          "pos_current": {
+           "choice": "latitudeLongitude",
+           "data": {
+            "lat_lon": {
+             "lat": {
+              "deg": 10,
+              "dir": "south"
+             },
+             "lon": {
+              "deg": 120,
+              "min": 5.9,
+              "dir": "east"
+             }
+            }
+           }
+          },
+          "time_at_pos_current": {
+           "hour": 23,
+           "min": 59
+          },
+          "alt": {
+           "choice": "altitudeQNH",
+           "data": {
+            "alt_qnh": {
+             "val": 10500.0,
+             "unit": "ft"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "cpdlc_position_fix": {
+   "label": "BA",
+   "text": "/KUSADYA.AT1.N1234523B0000C00000090A7D39F617D6500E48D",
+   "libacars": {
+    "arinc622": {
+     "msg_type": "fans1a_cpdlc_msg",
+     "crc_ok": true,
+     "gs_addr": "KUSADYA",
+     "air_addr": ".N12345",
+     "cpdlc": {
+      "err": false,
+      "atc_downlink_msg": {
+       "header": {
+        "msg_id": 7,
+        "timestamp": {
+         "hour": 12,
+         "min": 0,
+         "sec": 0
+        }
+       },
+       "atc_downlink_msg_element_id": {
+        "choice_label": "POSITION REPORT [positionreport]",
+        "choice": "dM48PositionReport",
+        "data": {
+         "pos_report": {
+          "pos_current": {
+           "choice": "fixName",
+           "data": {
+            "fix": "BOSOX"
+           }
+          },
+          "time_at_pos_current": {
+           "hour": 11,
+           "min": 58
+          },
+          "alt": {
+           "choice": "altitudeFlightLevel",
+           "data": {
+            "flight_level": 350
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

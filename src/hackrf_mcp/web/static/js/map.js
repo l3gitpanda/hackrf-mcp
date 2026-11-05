@@ -4,11 +4,18 @@
 // for a past range, with tracks. Leaflet (vendored, the global L) does pan
 // and zoom. Nothing is loaded from other sites: the base map is drawn only
 // if the operator has put one on the server (/api/basemap.pmtiles).
+//
+// An aircraft is one target however many profiles have it: those whose
+// subjects are ICAO addresses by the address, and those whose subjects are
+// registrations once /api/aircraft has given the registration's address.
+// Positions a profile only has reported (positions_reported: ADS-C and
+// CPDLC, with the aircraft's own time) are drawn dashed and labelled with
+// their age; otherwise the first profile heard live is the target's own.
 
 import { api, LiveSocket } from './api.js';
 import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { ago, assignColors, clear, fmtUtc, h, parseUtc, utc } from './util.js';
-import { declutter, heading, labelBox, labelRank, positionAt, prune, targetKey, trackWindow } from './maputil.js';
+import { declutter, heading, insertFix, labelBox, labelRank, positionAt, primaryProfile, prune, reportSource, targetKey, trackRuns, trackWindow } from './maputil.js';
 import { addBasemap } from './basemap.js';
 import { compass, fmtKm, levelChart, outline } from './rangeutil.js';
 
@@ -49,6 +56,10 @@ const S = {
   ac: { classes: new Map(), info: new Map(), asked: new Map(), busy: false, credited: false },
   acOff: new Set(),
   acProfiles: [],
+  // Registrations (subject_type 'registration') found to be an aircraft
+  // address: 'profile|subject' -> address; and those already asked about.
+  alias: new Map(),
+  regs: { asked: new Set(), busy: false },
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
@@ -57,16 +68,19 @@ const role = (profile, r) => {
   const v = view(profile);
   return v && v.roles ? v.roles[r] : undefined;
 };
-// Targets whose subject is a 24-bit ICAO address can be looked up by type.
-const isAircraft = (t) => !!(S.profiles[t.profile] && S.profiles[t.profile].subject_type === 'icao24');
-const acInfo = (t) => (isAircraft(t) ? S.ac.info.get(String(t.subject).toUpperCase()) || null : null);
+// Targets keyed by a 24-bit ICAO address can be looked up by type.
+const isAircraft = (t) => !!t.icao;
+const acInfo = (t) => (t.icao ? S.ac.info.get(t.icao) || null : null);
+const keyOf = (profile, subject) => targetKey(profile, subject, S.profiles, S.alias);
+const reported = (profile) => !!(S.profiles[profile] && S.profiles[profile].positions_reported);
+const onAny = (t) => [...t.profiles].some((p) => S.on.has(p));
 // An aircraft's class ('unknown' until looked up); null for other targets.
 const acClass = (t) => {
   if (!isAircraft(t)) return null;
   const i = acInfo(t);
   return i ? i.class : 'unknown';
 };
-const shown = (t) => S.on.has(t.profile) && !S.acOff.has(acClass(t));
+const shown = (t) => onAny(t) && !S.acOff.has(acClass(t));
 // Aircraft take their type's colour while "Colour by type" is on.
 const markerColor = (t) => {
   const c = acClass(t);
@@ -143,7 +157,7 @@ async function pollStatus() {
     S.statusAt = NOW();
     paintAppBar(st.live, color, 'open');
     paintAlerts(st.alerts, color, (p) => !!(S.profiles[p] && view(p)));
-    const keys = alertKeys(st.alerts);
+    const keys = alertedTargets(st.alerts);
     if (!sameKeys(keys, S.alerted)) {
       S.alerted = keys;
       render();
@@ -162,13 +176,58 @@ function showError(msg) {
 // --- Data ----------------------------------------------------------------------------------
 
 function target(profile, subject) {
-  const key = targetKey(profile, subject);
+  const key = keyOf(profile, subject);
   let t = S.targets.get(key);
   if (!t) {
-    t = { key, profile, subject, label: null, kind: null, fields: {}, track: [], last: 0 };
+    const icao = key.startsWith('icao24|') ? key.slice(7) : null;
+    t = { key, profile, subject: icao || subject, icao, label: null, kind: null, fields: {}, track: [], last: 0, profiles: new Set([profile]), dl: {} };
     S.targets.set(key, t);
+  } else if (!t.profiles.has(profile)) {
+    t.profiles.add(profile);
+    const own = primaryProfile(t.profile, profile, S.profiles);
+    if (own !== t.profile) {
+      // Heard live at last: that profile's colour, fields and label from now.
+      t.dl[t.profile] = { label: t.label, fields: t.fields };
+      t.profile = own;
+      t.label = null;
+      t.kind = null;
+      t.fields = {};
+    }
   }
   return t;
+}
+
+// A row's label, kind and fields go to the target's own profile; another
+// profile's (one reporting positions) are kept apart, for what its reports
+// were.
+function noteRow(t, profile, label, kind, fields, replace) {
+  if (profile === t.profile) {
+    if (label) t.label = label;
+    if (kind) t.kind = kind;
+    t.fields = replace ? { ...(fields || {}) } : Object.assign(t.fields, fields || {});
+  } else {
+    const d = t.dl[profile] || (t.dl[profile] = { label: null, fields: {} });
+    if (label) d.label = label;
+    d.fields = replace ? { ...(fields || {}) } : Object.assign(d.fields, fields || {});
+    if (!t.label && label) t.label = label;
+  }
+}
+
+function addFix(t, profile, p, sorted) {
+  const fix = { ts: p.ts, lat: p.lat, lon: p.lon, alt: p.alt, speed: p.speed, track: p.track, via: profile, rep: reported(profile) };
+  if (sorted) insertFix(t.track, fix);
+  else t.track.push(fix);
+  t.last = Math.max(t.last, p.ts);
+}
+
+// The status's targets with an unacknowledged hit, as this screen keys them.
+function alertedTargets(a) {
+  return new Set(
+    [...alertKeys(a)].map((k) => {
+      const i = k.indexOf('|');
+      return keyOf(k.slice(0, i), k.slice(i + 1));
+    }),
+  );
 }
 
 async function loadRange(since, until) {
@@ -187,18 +246,18 @@ async function loadRange(since, until) {
   S.truncated = pos.truncated;
   for (const p of pos.positions) {
     if (!S.profiles[p.profile] || !view(p.profile)) continue;
-    const t = target(p.profile, p.subject);
-    t.track.push({ ts: p.ts, lat: p.lat, lon: p.lon, alt: p.alt, speed: p.speed, track: p.track });
-    t.last = Math.max(t.last, p.ts);
+    addFix(target(p.profile, p.subject), p.profile, p, false);
   }
   sums.forEach((sum, i) => {
     const profile = S.mapProfiles[i];
     for (const e of sum.subjects) {
-      const t = target(profile, e.subject);
-      t.label = e.labels && e.labels.length ? e.labels[e.labels.length - 1] : t.label;
-      t.kind = e.kinds && e.kinds.length ? e.kinds.join(', ') : t.kind;
-      t.fields = e.fields || {};
-      t.rows = e.rows;
+      // A subject with no position in this time makes no target, and adds
+      // no profile to one: its row is only noted.
+      const t = S.targets.get(keyOf(profile, e.subject));
+      if (!t) continue;
+      const label = e.labels && e.labels.length ? e.labels[e.labels.length - 1] : null;
+      noteRow(t, profile, label, e.kinds && e.kinds.length ? e.kinds.join(', ') : null, e.fields, true);
+      if (profile === t.profile) t.rows = e.rows;
       t.last = Math.max(t.last, e.last);
     }
   });
@@ -215,17 +274,16 @@ async function loadRange(since, until) {
 function onMessage(m) {
   if (S.mode !== 'live') return;
   if (m.type === 'position' && view(m.profile || '') !== undefined && S.profiles[m.profile]) {
-    const t = target(m.profile, m.subject);
-    t.track.push({ ts: m.ts, lat: m.lat, lon: m.lon, alt: m.alt, speed: m.speed, track: m.track });
-    t.last = Math.max(t.last, m.ts);
+    addFix(target(m.profile, m.subject), m.profile, m, true);
     S.dirty = true;
   } else if (m.type === 'row' && S.profiles[m.profile] && view(m.profile) && m.subject) {
-    const t = target(m.profile, m.subject);
-    if (m.label) t.label = m.label;
-    t.kind = m.kind;
-    Object.assign(t.fields, m.fields || {});
-    t.last = Math.max(t.last, m.ts_end || m.ts);
-    S.dirty = true;
+    // Rows of subjects with no position yet make no target.
+    const t = S.targets.get(keyOf(m.profile, m.subject));
+    if (t) {
+      noteRow(t, m.profile, m.label, m.kind, m.fields, false);
+      t.last = Math.max(t.last, m.ts_end || m.ts);
+      S.dirty = true;
+    }
   }
 }
 
@@ -240,6 +298,7 @@ function tick() {
     render();
   }
   requestAircraft();
+  requestRegistrations();
 }
 
 // --- Modes ---------------------------------------------------------------------------------
@@ -273,7 +332,7 @@ async function openAt(at, profile, subject) {
   S.cursor = Math.min(Math.max(at, S.since), S.until);
   $('cursor').value = String(Math.round(((S.cursor - S.since) / (S.until - S.since)) * 1000));
   renderCursorLabel();
-  const key = targetKey(profile, subject);
+  const key = keyOf(profile, subject);
   const t = S.targets.get(key);
   if (t) {
     S.sel = key;
@@ -361,7 +420,7 @@ function buildLayerChips() {
     return;
   }
   for (const p of S.mapProfiles) {
-    const n = [...S.targets.values()].filter((t) => t.profile === p && positionAt(t.track, S.cursor, HIDE_S)).length;
+    const n = [...S.targets.values()].filter((t) => t.profiles.has(p) && positionAt(t.track, S.cursor, HIDE_S)).length;
     const chip = h('button', { type: 'button', class: 'tchip', '--pc': color(p), 'aria-pressed': String(S.on.has(p)) }, h('span', { class: 'sw' }), p, h('span', { class: 'n' }, `${n}`));
     chip.addEventListener('click', () => {
       if (S.on.has(p)) S.on.delete(p);
@@ -397,14 +456,28 @@ function icon(t, pos, stale) {
   return L.divIcon({ html: el, className: '', iconSize: [0, 0] });
 }
 
-// A marker's label: its name, and altitude and speed under it.
+// A marker's label: its name, and altitude and speed under it; for a
+// reported position, what reported it and how old it is.
 function labelParts(t, pos) {
-  const alt = pos.alt ?? t.fields[role(t.profile, 'alt')];
+  const alt = fixAlt(t, pos);
   const c = S.ac.classes.get(acClass(t));
   const tag = c && c.notable ? c.short : null; // military, law enforcement, government
-  const sub = [tag, alt != null && alt !== '' ? `${Math.round(alt)} ft` : null, pos.speed != null ? `${Math.round(pos.speed)} kn` : null].filter(Boolean).join(' · ');
+  const rep = pos.rep ? `${fixSource(t, pos)} ${ago(pos.ts, S.cursor).replace(' ago', ' old')}` : null;
+  const sub = [tag, rep, alt != null && alt !== '' ? `${Math.round(alt)} ft` : null, pos.speed != null ? `${Math.round(pos.speed)} kn` : null].filter(Boolean).join(' · ');
   return [t.label || t.subject, sub];
 }
+
+// ADS-C or CPDLC, for a reported fix (else 'datalink').
+function fixSource(t, pos) {
+  const d = pos.via === t.profile ? { fields: t.fields } : t.dl[pos.via];
+  const newest = t.track.filter((f) => f.via === pos.via).pop() === pos;
+  return reportSource(pos, d && d.fields, newest);
+}
+
+// A fix's altitude and speed: its own, else (for a fix heard live) the
+// fields the profile's map view names; a reported fix has only its own.
+const fixAlt = (t, pos) => pos.alt ?? (pos.rep ? null : t.fields[role(t.profile, 'alt')]);
+const fixSpeed = (t, pos) => pos.speed ?? (pos.rep ? null : t.fields[role(t.profile, 'speed')]);
 
 // Leaves out the labels that would overlap a more important one at this
 // zoom (maputil.declutter); their markers stay, and pointing at one shows
@@ -475,8 +548,11 @@ function render() {
       t.marker.setIcon(ic);
     }
     if (showTracks) {
-      const pts = trackWindow(t.track, S.cursor - Number($('trail').value || 1800), S.cursor).map((p) => [p.lat, p.lon]);
-      if (pts.length > 1) S.layers.tracks.addLayer(L.polyline(pts, { color: markerColor(t), weight: S.sel === t.key ? 2.5 : 1.5, opacity: stale ? 0.3 : 0.65, interactive: false }));
+      // Dashed into and out of a reported position (ADS-C, CPDLC).
+      for (const run of trackRuns(trackWindow(t.track, S.cursor - Number($('trail').value || 1800), S.cursor))) {
+        const style = { color: markerColor(t), weight: S.sel === t.key ? 2.5 : 1.5, opacity: stale ? 0.3 : 0.65, dashArray: run.dashed ? '5 6' : null, interactive: false };
+        S.layers.tracks.addLayer(L.polyline(run.pts.map((p) => [p.lat, p.lon]), style));
+      }
     }
   }
   buildLayerChips();
@@ -488,7 +564,7 @@ function render() {
   S.dirty = false;
   const n = [...S.targets.values()].length;
   $('mapnote').textContent = n
-    ? 'Targets are logged only while their profile runs; in a rotation each disappears between its slots. Faded: no fix for over 5 minutes.'
+    ? 'Targets are logged only while their profile runs; in a rotation each disappears between its slots. Faded: no fix for over 5 minutes. Dashed: a position the aircraft reported itself (ADS-C, CPDLC), at the time it gave.'
     : 'Nothing with a position in this time. Positions are logged from 2026-11-02, while a profile with a map view runs.';
 }
 
@@ -548,7 +624,7 @@ async function requestAircraft() {
   const want = [];
   for (const t of S.targets.values()) {
     if (!isAircraft(t)) continue;
-    const icao = String(t.subject).toUpperCase();
+    const icao = t.icao;
     const cs = String(t.label || '').trim();
     if (S.ac.asked.get(icao) === cs) continue;
     want.push([icao, cs]);
@@ -573,6 +649,50 @@ async function requestAircraft() {
   }
 }
 
+// Which aircraft the registrations (ACARS tails) with positions are, asked
+// of /api/aircraft once each, a batch a tick; a target found is merged into
+// the aircraft's own (its ADS-B one, if it has one).
+async function requestRegistrations() {
+  if (S.regs.busy) return;
+  const want = [];
+  for (const t of S.targets.values()) {
+    const p = S.profiles[t.profile];
+    if (t.icao || !p || p.subject_type !== 'registration' || S.regs.asked.has(t.key) || !t.track.length) continue;
+    want.push(t);
+    if (want.length >= 200) break;
+  }
+  if (!want.length) return;
+  S.regs.busy = true;
+  try {
+    const r = await api(`/api/aircraft?r=${encodeURIComponent(want.map((t) => t.subject).join(','))}`);
+    const found = r.registrations || {};
+    for (const old of want) {
+      S.regs.asked.add(old.key);
+      const icao = found[String(old.subject).toUpperCase().replace(/^\.+/, '')];
+      if (icao) mergeInto(old, icao);
+    }
+    render();
+  } catch (e) {
+    // Left to the next tick.
+  } finally {
+    S.regs.busy = false;
+  }
+}
+
+function mergeInto(old, icao) {
+  S.alias.set(old.key, icao);
+  S.targets.delete(old.key);
+  if (old.marker) S.layers.markers.removeLayer(old.marker);
+  const t = target(old.profile, old.subject);
+  for (const f of old.track) insertFix(t.track, f);
+  for (const p of old.profiles) t.profiles.add(p);
+  noteRow(t, old.profile, old.label, old.kind, old.fields, false);
+  for (const [p, d] of Object.entries(old.dl)) if (!t.dl[p]) t.dl[p] = d;
+  t.last = Math.max(t.last, old.last);
+  if (S.sel === old.key) S.sel = t.key;
+  if (S.alerted.has(old.key)) S.alerted.add(t.key);
+}
+
 // The type as a small coloured tag, for the list and the details.
 function typeTag(t) {
   const c = S.ac.classes.get(acClass(t));
@@ -586,7 +706,7 @@ function buildTypeChips() {
   const n = new Map();
   for (const t of S.targets.values()) {
     const c = acClass(t);
-    if (c && S.on.has(t.profile) && positionAt(t.track, S.cursor, HIDE_S)) n.set(c, (n.get(c) || 0) + 1);
+    if (c && onAny(t) && positionAt(t.track, S.cursor, HIDE_S)) n.set(c, (n.get(c) || 0) + 1);
   }
   for (const c of S.ac.classes.values()) {
     const chip = h(
@@ -752,10 +872,10 @@ function drawLevelChart(levels) {
 // --- Lists and the selected target ----------------------------------------------------------
 
 function describe(t, pos) {
-  const bits = [t.kind];
-  const alt = pos.alt ?? t.fields[role(t.profile, 'alt')];
+  const bits = [pos.rep ? `${fixSource(t, pos)} via ${pos.via}` : null, t.kind];
+  const alt = fixAlt(t, pos);
   if (alt != null && alt !== '') bits.push(`${Math.round(alt)} ft`);
-  const spd = pos.speed ?? t.fields[role(t.profile, 'speed')];
+  const spd = fixSpeed(t, pos);
   if (spd != null && spd !== '') bits.push(`${Math.round(spd)} kn`);
   return bits.filter(Boolean).join(' · ');
 }
@@ -781,7 +901,7 @@ function renderList() {
       h('span', { class: 'sw' }),
       h('span', { class: 'nm' }, t.label || t.subject),
       h('span', { class: 'ag' }, ago(pos.ts, S.cursor)),
-      h('span', { class: 'ds' }, typeTag(t), `${t.profile} · ${t.label ? `${t.subject} · ` : ''}${describe(t, pos)}`),
+      h('span', { class: 'ds' }, typeTag(t), `${[...t.profiles].join(' + ')} · ${t.label ? `${t.subject} · ` : ''}${describe(t, pos)}`),
     );
     b.addEventListener('click', () => select(t.key));
     box.append(b);
@@ -809,7 +929,7 @@ function renderSel() {
   // was first seen after it (History mode).
   const pos = positionAt(t.track, S.cursor);
   $('sel').style.setProperty('--pc', color(t.profile));
-  $('s-profile').textContent = t.profile;
+  $('s-profile').textContent = [...t.profiles].join(' + ');
   $('s-kind').textContent = t.kind || '';
   $('s-ident').textContent = t.label ? `${t.label} · ${t.subject}` : t.subject;
   const age = pos ? S.cursor - pos.ts : null;
@@ -855,6 +975,7 @@ function renderSel() {
   if (pos) {
     kv.append(h('dt', {}, 'position'), h('dd', { class: 'mono' }, `${pos.lat.toFixed(5)}, ${pos.lon.toFixed(5)}`));
     kv.append(h('dt', {}, 'fix'), h('dd', { class: 'mono' }, `${utc(pos.ts)} UTC (${ago(pos.ts, S.cursor)})`));
+    if (pos.rep) kv.append(h('dt', {}, 'reported'), h('dd', {}, `${fixSource(t, pos)} over ${pos.via}, at the time the aircraft gave`));
     if (pos.speed != null) kv.append(h('dt', {}, 'speed'), h('dd', { class: 'mono' }, `${pos.speed} kn`));
     if (pos.track != null) kv.append(h('dt', {}, 'track'), h('dd', { class: 'mono' }, `${pos.track}°`));
   }

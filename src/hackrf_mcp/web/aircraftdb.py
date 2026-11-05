@@ -140,8 +140,10 @@ CREATE TABLE aircraft (
     pa_category TEXT,
     pa_tags TEXT
 ) WITHOUT ROWID;
+CREATE INDEX aircraft_registration ON aircraft (registration);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
+REGISTRATION = re.compile(r"^[A-Z0-9-]{2,10}$")
 
 
 def normalise_icao(text: str) -> str | None:
@@ -453,6 +455,45 @@ class AircraftDB:
             except sqlite3.Error:
                 recs = {}
         return {i: describe(i, c, recs.get(i)) for i, c in pairs}
+
+    def by_registration(self, registrations: list[str]) -> dict[str, str]:
+        """{registration: ICAO address} for the registrations (tails) the
+        database knows, as ACARS gives them (upper case, with or without
+        the dash). An FAA record wins over a plane-alert-db one; a
+        registration held by more than one address otherwise is left out.
+        A database built before the index existed is scanned, which is
+        fine for the few tails the Map asks about."""
+        wanted = {}
+        for r in registrations:
+            r = str(r or "").strip().upper().lstrip(".")
+            if REGISTRATION.match(r):
+                wanted[r.replace("-", "")] = r
+        out: dict[str, str] = {}
+        if not wanted or not self.path.exists():
+            return out
+        keys = sorted(wanted)
+        try:
+            with closing(self._open()) as conn:
+                found: dict[str, list[tuple[int, str]]] = {}
+                for k in range(0, len(keys), 500):
+                    chunk = keys[k : k + 500]
+                    marks = ",".join("?" * len(chunk))
+                    q = (
+                        "SELECT icao, faa, registration FROM aircraft WHERE registration IN "
+                        f"({marks}) OR replace(registration, '-', '') IN ({marks})"
+                    )
+                    for icao, faa, reg in conn.execute(q, [*chunk, *chunk]):
+                        found.setdefault(reg.upper().replace("-", ""), []).append((faa, icao))
+        except sqlite3.Error:
+            return out
+        for key, hits in found.items():
+            if key not in wanted:
+                continue
+            faa = {i for f, i in hits if f}
+            icaos = faa or {i for _f, i in hits}
+            if len(icaos) == 1:
+                out[wanted[key]] = icaos.pop()
+        return out
 
     def status(self) -> dict:
         m = self.meta()

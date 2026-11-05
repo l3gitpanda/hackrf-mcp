@@ -232,9 +232,10 @@ owner's Docker stack doing everything else.
 Every milestone above is built. These are next, each its own pull request
 against `homelab`, deployed only with the owner's approval:
 
-- **Receiver range map:** how far the antenna hears in each direction,
-  from the positions table and `HACKRF_LIVE_RECEIVER` (the farthest fix per
-  bearing, level against distance), to judge the antenna and any move.
+- **Receiver range map (done):** how far the antenna hears in each
+  direction, from the positions table and `HACKRF_LIVE_RECEIVER` (the
+  farthest fix per bearing, level against distance), to judge the antenna
+  and any move. The Map's *Receiver range* layer; see the README.
 - **Aircraft details from an offline database:** registration, type,
   operator and a military or government flag per ICAO address, from a
   downloadable aircraft database kept on the worker, for Alerts' fields and

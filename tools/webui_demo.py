@@ -140,9 +140,16 @@ def backfill(db_path: Path, hours: float, now: float) -> None:
     lengths = (600, 600, 300)
     t = now - hours * 3600
     down = (now - hours * 3600 * 0.4, now - hours * 3600 * 0.4 + 2400)
-    # Straight tracks across the area, each subject at its own speed.
+    # Straight tracks across the area, each subject at its own speed and
+    # height, some far enough out for the receiver range to have an edge.
     tracks = {
-        f"DEMO{i:02d}": (HOME[0] + rnd.uniform(-0.6, 0.6), HOME[1] + rnd.uniform(-0.8, 0.8), rnd.uniform(-1, 1), rnd.uniform(-1, 1))
+        f"DEMO{i:02d}": (
+            HOME[0] + rnd.uniform(-2.2, 2.2) * (0.3 if i % 3 else 1),
+            HOME[1] + rnd.uniform(-2.8, 2.8) * (0.3 if i % 3 else 1),
+            rnd.uniform(-1, 1),
+            rnd.uniform(-1, 1),
+            float(rnd.choice([3000, 6500, 12000, 18000, 24000, 31000, 36000, 39000])),
+        )
         for i in range(40)
     }
     w.event("service-start", ts=t)
@@ -168,18 +175,21 @@ def backfill(db_path: Path, hours: float, now: float) -> None:
             for s in heard:
                 if rnd.random() < 0.25:
                     continue
-                lat0, lon0, dlat, dlon = tracks[s]
+                lat0, lon0, dlat, dlon, alt = tracks[s]
                 k = ((m / 3600) % 6) / 6
                 lat, lon = lat0 + dlat * 0.4 * k, lon0 + dlon * 0.4 * k
                 fields = {"messages": rnd.randint(5, 400) if has_map else 1, "type": "DEMO"}
                 if has_map:
-                    fields.update(lat=round(lat, 5), lon=round(lon, 5), speed=rnd.choice([12, 250, 430]))
+                    fields.update(lat=round(lat, 5), lon=round(lon, 5), altitude=int(alt), speed=rnd.choice([12, 250, 430]))
                     for j in range(0, 60, 20):
-                        fixes.append(Position(float(m + j), name, s, lat + dlat * 0.0007 * j, lon + dlon * 0.0007 * j, 30000.0, 250.0, 90.0))
+                        fixes.append(Position(float(m + j), name, s, lat + dlat * 0.0007 * j, lon + dlon * 0.0007 * j, alt, 250.0, 90.0))
+                # Fainter with distance, as a real receiver hears them.
+                km = 111.2 * float(np.hypot(lat - HOME[0], (lon - HOME[1]) * np.cos(np.radians(HOME[0]))))
+                level = round(-6 - 0.09 * km + rnd.gauss(0, 3), 1) if has_map else round(rnd.uniform(-40, -10), 1)
                 rows.append(
                     Row(
                         ts=float(m), ts_end=float(m + 50), profile=name, kind=kind, freq_hz=p.default_freqs_hz[0] if p.default_freqs_hz else None,
-                        level_db=round(rnd.uniform(-40, -10), 1), subject=s, label=f"DEMO {s[-2:]}", fields=fields,
+                        level_db=level, subject=s, label=f"DEMO {s[-2:]}", fields=fields,
                         raw=f"demo {name} {s} (simulated, not decoded)",
                     )
                 )  # fmt: skip
@@ -239,7 +249,8 @@ def main() -> None:
     tmp = Path(args.dir)
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
-    live = settings.LiveSettings(live_dir=tmp / "live", min_free_mb=0)
+    # The demo's receiver sits at HOME, for range rings and the receiver range.
+    live = settings.LiveSettings(live_dir=tmp / "live", min_free_mb=0, receiver=HOME)
     agent_server = None
     if args.agent:
         # The split station: an agent runs tools/fake_hackrf_transfer.py and
@@ -257,7 +268,7 @@ def main() -> None:
         agent_server = agent.AgentServer(a)
         threading.Thread(target=agent_server.serve_forever, daemon=True).start()
         live = settings.LiveSettings(
-            live_dir=tmp / "live", min_free_mb=0, agent=("127.0.0.1", args.port + 1), agent_token_file=tmp / "agent-token"
+            live_dir=tmp / "live", min_free_mb=0, receiver=HOME, agent=("127.0.0.1", args.port + 1), agent_token_file=tmp / "agent-token"
         )
     settings.configure_live(live)
     live.live_dir.mkdir(parents=True)

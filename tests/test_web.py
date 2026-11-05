@@ -507,6 +507,32 @@ def test_positions_counted_on_a_grid_for_the_heat_map(env):
     assert c.get("/api/positions/grid", headers=BEARER).status_code == 400
 
 
+def test_the_receiver_range_route(env):
+    live, gate, _ = env
+    c = TestClient(gate)
+    # No receiver position: nothing to measure from.
+    r = c.get("/api/positions/range", params={"since": "900"}, headers=BEARER)
+    assert r.status_code == 400 and "HACKRF_LIVE_RECEIVER" in r.json()["error"]
+    placed = TestClient(
+        web_app.create_app(
+            settings.LiveSettings(live_dir=live.live_dir, receiver=(33.9, -119.0)), settings.WebSettings(), [DIGEST], b"k" * 32, feed=False
+        )
+    )
+    out = placed.get("/api/positions/range", params={"since": "900", "until": "1100"}, headers=BEARER).json()
+    assert out["profile"] == "adsb" and out["fixes"] == 1 and out["targets"] == 1 and out["sector_deg"] == 5
+    heard = [v for v in out["sectors"]["all"] if v is not None]
+    assert len(heard) == 1 and abs(heard[0] - 55.4) < 0.5 and out["sectors"]["high"] == out["sectors"]["all"]
+    assert out["farthest"]["subject"] == "A1B2C3" and out["farthest"]["label"] == "UAL1"
+    assert out["levels"]["rows"] == 0  # the row has no signal level
+    wide = placed.get("/api/positions/range", params={"since": "900", "sector": "30", "profile": "ais"}, headers=BEARER).json()
+    assert len(wide["sectors"]) == 0 and wide["fixes"] == 0
+    for bad in ({"sector": "x"}, {"sector": "0.5"}, {"sector": "45"}, {"profile": "nope"}, {"since": "2000", "until": "1000"}):
+        q = {"since": "900", **bad}
+        assert placed.get("/api/positions/range", params=q, headers=BEARER).status_code == 400, bad
+    assert placed.get("/api/positions/range", headers=BEARER).status_code == 400
+    assert placed.get("/api/positions/range", params={"since": "900"}).status_code == 401
+
+
 def test_alert_rules_preview_hits_and_acknowledging(env):
     live, gate, _ = env
     c = TestClient(gate)

@@ -501,6 +501,22 @@ the live log is only read. Pager text is a field to match on, and goes
 into a hit and the webhook, only when `HACKRF_MCP_PAGER_CONTENT` is on; a
 row's raw text is never a field (its fields hold the same).
 
+Two kinds of field are worked out as a row is checked rather than read
+from it. For profiles whose subjects are ICAO addresses (ADS-B), the
+aircraft database below gives `aircraft_type` (military, law enforcement,
+government, commercial, private or unknown; the editor offers them as
+chips), `aircraft_registration`, `_manufacturer`, `_model`, `_kind`
+(rotorcraft, balloon, ...), `_registrant`, `_owner`, and plane-alert's
+`_operator`, `_category` and `_tags`; for example, "aircraft_kind equals
+Rotorcraft and aircraft_registrant equals Government". For profiles with a
+map view, `distance_km` from `HACKRF_LIVE_RECEIVER` to the row's position
+("is less than 10"). A hit and the preview show the distance, but the
+webhook gets only the condition, as a distance to a known aircraft at a
+known time, matched against a public flight archive, would place the
+receiver. Hits and the preview tag each aircraft with its class, and a
+webhook message says what the aircraft is (class, registration, type, and
+operator or owner).
+
 A rule can also post its hits to a webhook: put the URL in a file only
 hackrf-web can read and point `HACKRF_WEB_ALERT_WEBHOOK_FILE` at it, with
 `HACKRF_WEB_ALERT_WEBHOOK_FORMAT` `json` (the default), `discord` (mentions
@@ -570,7 +586,7 @@ switches and stops profiles over the control socket, as the MCP tools do.
 | `GET /api/log/histogram`, `/api/coverage` | matching rows per time bucket and profile; what the receiver was doing (running which profile, paused, error, stopped, down), rebuilt from the events |
 | `GET /api/summaries` | for a range, per profile: decoded messages per bucket, subjects heard (per kind) and the busiest of them, with the coverage, from one reading of the log |
 | `GET /api/positions` | map-track points; when a range holds more than `limit`, one fix per target per `step` seconds (the response gives `step`) |
-| `GET /api/alerts`, `POST /api/alerts/rules`, `PUT`/`DELETE /api/alerts/rules/<id>` | alert rules (with hits in the last 24 h) and the fields each profile's rules may test |
+| `GET /api/alerts`, `POST /api/alerts/rules`, `PUT`/`DELETE /api/alerts/rules/<id>` | alert rules (with hits in the last 24 h), the fields each profile's rules may test, and the values of those with a fixed set (the aircraft classes) |
 | `POST /api/alerts/preview`, `GET /api/alerts/hits`, `POST /api/alerts/ack`, `POST /api/alerts/test` | what a rule would have matched; hits, paged; acknowledging; a test message to the webhook |
 | `GET /api/plugins`, `GET /api/panels?slot=` | the catalogue (profiles, decoders, panels and panel errors); a slot's panels run over a range |
 | `GET /api/positions/grid` | positions counted per `cell`-degree cell (fixes and different targets), optionally inside a `bbox`, coarsened when there are more than `max_cells` |

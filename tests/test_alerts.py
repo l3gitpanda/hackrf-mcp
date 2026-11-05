@@ -1,17 +1,20 @@
 """Alerts (web/alerts.py): rules, matching, the engine over a real live
 log, the repeat limit, catching up, a rebuilt log, pager privacy, the
-preview and the webhook against a local server."""
+preview, the webhook against a local server, and the derived fields (the
+aircraft database's and the distance from a made-up receiver)."""
 
 import json
+import sqlite3
 import threading
 import time
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
 from hackrf_mcp import live_profiles
 from hackrf_mcp.live_log import LiveLogWriter, Row
-from hackrf_mcp.web import alerts
+from hackrf_mcp.web import aircraftdb, alerts
 
 SECRET_TEXT = "MEET AT THE DOCK 0300"
 NOW = 2_000_000_000.0
@@ -308,3 +311,155 @@ def test_a_failing_look_is_reported_and_the_next_one_tries_again(env, monkeypatc
     monkeypatch.undo()
     eng.tick()
     assert eng.summary()["error"] is None and calls == [1]
+
+
+# --- Derived fields: the aircraft database and the distance from the receiver ---------
+
+
+# Made up, like the owners below: nowhere near any real station.
+RECEIVER = (10.0, 20.0)
+
+
+def _planes(tmp, rows=()):
+    """An AircraftDB over a small made-up aircraft.db (none at all if no rows)."""
+    db = aircraftdb.AircraftDB(tmp / "web" / "aircraft.db")
+    if rows:
+        db.path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(db.path)) as conn:
+            conn.executescript(aircraftdb.SCHEMA)
+            conn.executemany(
+                "INSERT INTO aircraft (icao, faa, registration, manufacturer, model, type_aircraft, registrant_type, owner, "
+                "pa_class, pa_operator, pa_category, pa_tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            conn.execute("INSERT INTO meta VALUES ('built_at', '1000')")
+            conn.commit()
+    return db
+
+
+PLANES = [
+    ("A1A1A1", 1, "N911SD", "AIRBUS HELICOPTERS", "AS350B3", "6", "5", "EXAMPLE COUNTY SHERIFFS OFFICE", None, None, None, None),
+    ("A0B1C2", 1, "N12345", "CESSNA", "172S", "4", "1", "JANE EXAMPLE", None, None, None, None),
+    ("C0FFEE", 0, "C-POLI", None, None, None, None, None, "Pol", "Example Police Service", "Police Forces", "Eye|Sky"),
+]
+
+
+def _placed(ts, icao, lat, lon, callsign="TEST1"):
+    row = _aircraft(ts, icao, callsign=callsign)
+    return Row(**{**row.__dict__, "fields": {**row.fields, "lat": lat, "lon": lon}})
+
+
+def test_derived_fields_are_offered_only_where_they_apply(tmp_path):
+    live_profiles.load()
+    P = live_profiles.PROFILES
+    both = alerts.Derived(_planes(tmp_path), RECEIVER)
+    adsb = alerts.allowed_fields(P["adsb"], False, both)
+    assert "aircraft_type" in adsb and "aircraft_owner" in adsb and "distance_km" in adsb
+    assert "distance_km" in alerts.allowed_fields(P["ais"], False, both)  # ships have positions
+    assert "aircraft_type" not in alerts.allowed_fields(P["ais"], False, both)  # but aren't aircraft
+    flex = alerts.allowed_fields(P["flex"], False, both)
+    assert not set(flex) & set(alerts.DERIVED_FIELDS)
+    assert not set(alerts.allowed_fields(P["adsb"], False)) & set(alerts.DERIVED_FIELDS)  # nothing to work them out
+    assert "distance_km" not in alerts.allowed_fields(P["adsb"], False, alerts.Derived(_planes(tmp_path)))
+    assert [c["value"] for c in both.choices()["aircraft_type"]] == [c[0] for c in aircraftdb.CLASSES]
+
+    def rule(cond, profiles=("adsb",), derived=both):
+        body = {"name": "r", "profiles": list(profiles), "conditions": [cond]}
+        return alerts.parse_rule(body, pager_content=False, derived=derived)
+
+    # A class's label, short tag or name, in any case, is stored as its name.
+    r = rule({"field": "aircraft_type", "op": "any_of", "values": "Law enforcement, MIL, government"})
+    assert r.conditions[0].values == ("law_enforcement", "military", "government")
+    assert rule({"field": "aircraft_type", "op": "matches", "values": "*gov*"}).conditions[0].values == ("*gov*",)
+    for bad, derived, profiles in [
+        ({"field": "aircraft_type", "op": "any_of", "values": "spaceship"}, both, ("adsb",)),
+        ({"field": "aircraft_type", "op": "any_of", "values": "military"}, both, ("flex",)),
+        ({"field": "aircraft_type", "op": "any_of", "values": "military"}, alerts.NO_DERIVED, ("adsb",)),
+        ({"field": "distance_km", "op": "equals", "values": "3"}, both, ("adsb",)),
+        ({"field": "distance_km", "op": "lt", "values": "3"}, alerts.Derived(_planes(tmp_path)), ("adsb",)),
+    ]:
+        with pytest.raises(ValueError):
+            rule(bad, profiles, derived)
+
+
+def test_aircraft_fields_match_in_the_preview_and_the_engine(env):
+    writer, store, tmp = env
+    derived = alerts.Derived(_planes(tmp, PLANES), RECEIVER)
+    writer.write([
+        _aircraft(NOW - 300, "ADF7C9", callsign="RCH123"),  # military by its address alone
+        _aircraft(NOW - 290, "A1A1A1", callsign="N911SD"),  # a sheriff's helicopter, from the FAA data
+        _aircraft(NOW - 280, "C0FFEE", callsign="POL1"),  # plane-alert-db's Pol
+        _aircraft(NOW - 270, "A0B1C2", callsign="N12345"),  # private
+        _aircraft(NOW - 260, "A4A4A4", callsign="UAL1"),  # commercial by its callsign
+        _page(NOW - 250),
+    ])  # fmt: skip
+    eng = alerts.AlertEngine(store, tmp / "live.db", pager_content=False, derived=derived)
+    body = {"name": "notable", "profiles": [], "conditions": [{"field": "aircraft_type", "op": "any_of", "values": "military, law enforcement"}]}
+    notable = alerts.parse_rule(body, pager_content=False, derived=derived)
+    out = eng.preview(notable, NOW - 3600, NOW)
+    # Nothing in a row's JSON says "military": the prefilter must not drop them.
+    assert out["matches"] == 3 and out["scanned"] == 5  # the page isn't read: flex has no aircraft
+    assert [s["detail"] for s in out["samples"]] == [
+        "aircraft_type=law_enforcement", "aircraft_type=law_enforcement", "aircraft_type=military"
+    ]  # fmt: skip
+    kind = {"name": "helicopters", "profiles": ["adsb"], "conditions": [
+        {"field": "aircraft_kind", "op": "equals", "values": ["Rotorcraft"]},
+        {"field": "aircraft_owner", "op": "matches", "values": ["*sheriff*"]},
+    ]}  # fmt: skip
+    k = eng.preview(alerts.parse_rule(kind, False, derived=derived), NOW - 3600, NOW)
+    assert k["matches"] == 1 and k["samples"][0]["detail"] == "aircraft_kind=Rotorcraft · aircraft_owner=EXAMPLE COUNTY SHERIFFS OFFICE"
+    tags = {"name": "t", "profiles": ["adsb"], "conditions": [{"field": "aircraft_tags", "op": "any_of", "values": ["sky"]}]}
+    assert eng.preview(alerts.parse_rule(tags, False, derived=derived), NOW - 3600, NOW)["matches"] == 1
+    # Live: the engine looks the new rows up and records the class it matched.
+    store.save(notable)
+    eng.reload()
+    assert eng.poll_once(NOW) == []
+    writer.write([_aircraft(NOW + 10, "AE0001", callsign="RCH9"), _aircraft(NOW + 11, "A0B1C2", callsign="N12345")])
+    hits = eng.poll_once(NOW + 20)
+    assert [(h["subject"], h["detail"]) for h in hits] == [("AE0001", "aircraft_type=military")]
+    # Without the database file the address and callsign rules still work.
+    bare = alerts.AlertEngine(store, tmp / "live.db", pager_content=False, derived=alerts.Derived(_planes(tmp / "none")))
+    assert bare.preview(notable, NOW - 3600, NOW + 60)["matches"] == 2  # the two ADF7C8-AFFFFF addresses
+
+
+def test_distance_shows_in_a_hit_and_only_the_condition_reaches_the_webhook(env, catcher):
+    writer, store, tmp = env
+    derived = alerts.Derived(_planes(tmp, PLANES), RECEIVER)
+    wh = alerts.Webhook(catcher, "json", store)
+    eng = alerts.AlertEngine(store, tmp / "live.db", pager_content=False, webhook=wh, derived=derived)
+    near = {"name": "overhead", "profiles": ["adsb"], "webhook": True,
+            "conditions": [{"field": "distance_km", "op": "lt", "values": ["5"]}]}  # fmt: skip
+    rule = alerts.parse_rule(near, False, derived=derived)
+    assert rule.to_json()["text"] == "distance_km is less than 5"
+    writer.write([_placed(NOW - 100, "A1A1A1", 10.01, 20.0), _placed(NOW - 90, "A0B1C2", 10.1, 20.0), _aircraft(NOW - 80, "A4A4A4")])
+    out = eng.preview(rule, NOW - 3600, NOW)
+    assert out["matches"] == 1 and out["samples"][0]["detail"] == "distance_km=1.1"  # 0.01 degrees of latitude
+    store.save(rule)
+    eng.reload()
+    eng.poll_once(NOW)
+    writer.write([_placed(NOW + 5, "A1A1A1", 10.0, 20.02, callsign="N911SD")])
+    hits = eng.poll_once(NOW + 10)
+    assert [h["detail"] for h in hits] == ["distance_km=2.2"]
+    assert "_webhook_detail" not in hits[0] and "_post" not in hits[0]
+    eng.webhook.start()
+    deadline = time.time() + 5
+    while not _Catcher.got and time.time() < deadline:
+        time.sleep(0.05)
+    sent = json.loads(_Catcher.got[0]["body"])
+    assert sent["detail"] == "distance_km is less than 5"
+    raw = _Catcher.got[0]["body"].decode()
+    assert "2.2" not in raw and "10.0" not in raw and "20.0" not in raw and "20.02" not in raw
+    # What the aircraft is goes with it (the owner too: the operator allows it).
+    assert sent["aircraft"]["class"] == "law_enforcement" and sent["aircraft"]["owner"] == "EXAMPLE COUNTY SHERIFFS OFFICE"
+    assert "why" not in sent["aircraft"]
+    assert store.hits()[0]["detail"] == "distance_km=2.2"  # the UI keeps the number
+
+
+def test_the_webhook_text_says_what_the_aircraft_is(env, catcher):
+    _writer, store, _tmp = env
+    info = aircraftdb.describe("C0FFEE", "POL1", {"pa_class": "Pol", "pa_operator": "Example Police Service",
+                                                   "registration": "C-POLI", "pa_type": "AS350"})  # fmt: skip
+    alerts.Webhook(catcher, "discord", store).send(_hit(subject="C0FFEE", label="POL1", aircraft=info))
+    content = json.loads(_Catcher.got[-1]["body"])["content"]
+    assert "C0FFEE (POL1) · Law enforcement, C-POLI, AS350, Example Police Service · squawk=7700" in content
+    assert alerts.aircraft_text(None) == ""

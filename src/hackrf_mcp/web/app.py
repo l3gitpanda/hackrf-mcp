@@ -31,8 +31,9 @@ and the static UI.
                                  (waterfall only) for a while; retunes one
   POST /api/live/watch/stop      end a watch: back to the rotation
   GET  /api/alerts               alert rules (with hits in the last 24 h), the
-                                 fields each profile's rules may test, and
-                                 whether a webhook is set up
+                                 fields each profile's rules may test (with
+                                 the values of those that have a fixed set),
+                                 and whether a webhook is set up
   POST /api/alerts/rules         add a rule; PUT/DELETE /api/alerts/rules/<id>
   POST /api/alerts/preview       what a rule would have matched (default the
                                  last 7 days)
@@ -337,8 +338,11 @@ def create_app(
     store = alerts.AlertStore(web.state_path(live) / "alerts.db")
     webhook_url = web.alert_webhook_url()
     webhook = alerts.Webhook(webhook_url, web.alert_webhook_format, store, web.public_url) if webhook_url else None
-    engine = alerts.AlertEngine(store, live.db_path, live.pager_content, webhook)
     planes = aircraft or aircraftdb.AircraftDB(web.state_path(live) / "aircraft.db", enabled=web.aircraft_db == "weekly")
+    # Rules may test what the aircraft database says and how far a position
+    # is from the receiver; the receiver's position stays in here.
+    derived = alerts.Derived(planes, tuple(live.receiver) if live.receiver else None)
+    engine = alerts.AlertEngine(store, live.db_path, live.pager_content, webhook, derived)
 
     def reader():
         return live_log.open_reader(live.db_path)
@@ -776,10 +780,12 @@ def create_app(
             {
                 "rules": rules,
                 "fields": {
-                    p.name: alerts.allowed_fields(p, live.pager_content)
+                    p.name: alerts.allowed_fields(p, live.pager_content, derived)
                     for p in live_profiles.PROFILES.values()
                     if not p.spectrum_only
                 },
+                # The values a field takes, where it has a fixed set.
+                "choices": derived.choices(),
                 "ops": alerts.OPS,
                 "webhook": webhook is not None,
                 "webhook_format": web.alert_webhook_format if webhook is not None else None,
@@ -798,7 +804,7 @@ def create_app(
 
     async def api_rule_create(request: Request) -> Response:
         try:
-            rule = alerts.parse_rule(await _json_body(request), live.pager_content)
+            rule = alerts.parse_rule(await _json_body(request), live.pager_content, derived=derived)
             saved = await run_in_threadpool(store.save, rule)
         except ValueError as exc:
             return error(400, str(exc))
@@ -813,7 +819,7 @@ def create_app(
             engine.reload()
             return JSONResponse({"deleted": rule_id})
         try:
-            rule = alerts.parse_rule(await _json_body(request), live.pager_content, rule_id)
+            rule = alerts.parse_rule(await _json_body(request), live.pager_content, rule_id, derived)
             saved = await run_in_threadpool(store.save, rule)
         except KeyError:
             return error(404, f"no rule {rule_id}")
@@ -826,7 +832,7 @@ def create_app(
         now = time.time()
         try:
             body = await _json_body(request)
-            rule = alerts.parse_rule(body, live.pager_content)
+            rule = alerts.parse_rule(body, live.pager_content, derived=derived)
             since = live_log.parse_when(body.get("since"), now)
             until = live_log.parse_when(body.get("until"), now)
             until = now if until is None else until

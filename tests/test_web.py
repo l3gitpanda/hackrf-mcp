@@ -573,6 +573,35 @@ def test_alert_rules_preview_hits_and_acknowledging(env):
     assert page.status_code == 200 and "alerts.js" in page.text
 
 
+def test_alert_rules_on_aircraft_types_and_the_distance_from_the_receiver(env):
+    live, gate, _ = env
+    c = TestClient(gate)
+    a = c.get("/api/alerts", headers=BEARER).json()
+    assert "aircraft_type" in a["fields"]["adsb"] and "aircraft_owner" in a["fields"]["adsb"]
+    assert "aircraft_type" not in a["fields"]["flex"] and "distance_km" not in a["fields"]["adsb"]  # no receiver set
+    assert [x["value"] for x in a["choices"]["aircraft_type"]][:2] == ["military", "law_enforcement"]
+    near = {"name": "near", "profiles": ["adsb"], "conditions": [{"field": "distance_km", "op": "lt", "values": ["20"]}]}
+    assert c.post("/api/alerts/rules", json=near, headers=BEARER).status_code == 400
+    # A made-up receiver 9.2 km west of the logged aircraft.
+    placed = TestClient(
+        web_app.create_app(
+            settings.LiveSettings(live_dir=live.live_dir, receiver=(33.9, -118.5)), settings.WebSettings(), [DIGEST], b"k" * 32, feed=False
+        )
+    )
+    a = placed.get("/api/alerts", headers=BEARER).json()
+    assert "distance_km" in a["fields"]["adsb"] and "distance_km" not in a["fields"]["flex"]
+    assert "-118.5" not in json.dumps(a)
+    pv = placed.post("/api/alerts/preview", json={**near, "since": "0", "until": "2000"}, headers=BEARER).json()
+    assert pv["matches"] == 1 and pv["samples"][0]["detail"] == "distance_km=9.2" and "-118.5" not in json.dumps(pv)
+    typed = {"name": "airlines", "profiles": [], "conditions": [{"field": "aircraft_type", "op": "any_of", "values": "Commercial"}]}
+    r = placed.post("/api/alerts/rules", json=typed, headers=BEARER)
+    assert r.status_code == 201 and r.json()["conditions"][0]["values"] == ["commercial"]  # the label, stored as the name
+    pv = placed.post("/api/alerts/preview", json={**typed, "since": "0", "until": "2000"}, headers=BEARER).json()
+    assert pv["matches"] == 1 and pv["samples"][0]["detail"] == "aircraft_type=commercial"  # UAL1: an airline callsign
+    bad = {**typed, "conditions": [{"field": "aircraft_type", "op": "any_of", "values": "spaceship"}]}
+    assert "aircraft_type is one of" in placed.post("/api/alerts/rules", json=bad, headers=BEARER).json()["error"]
+
+
 def test_web_settings_for_the_alert_webhook(tmp_path):
     f = tmp_path / "hook"
     f.write_text("https://ntfy.example/hackrf\n")

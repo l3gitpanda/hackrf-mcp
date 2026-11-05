@@ -413,7 +413,7 @@ test('panel files described and laid out', () => {
   assert.equal(windowText(1800), '30 min');
 });
 
-import { draftOf, fieldsFor, hitWhen, parseValues, repeatText, ruleBody, sameRule } from '../../src/hackrf_mcp/web/static/js/alertutil.js';
+import { aircraftToAsk, draftOf, fieldsFor, hasChoice, hitWhen, parseValues, repeatText, ruleBody, sameRule, toggleChoice } from '../../src/hackrf_mcp/web/static/js/alertutil.js';
 import { alertKeys, hitLinks, sameKeys } from '../../src/hackrf_mcp/web/static/js/appbar.js';
 
 test('alert rules: values typed as text, fields for the chosen profiles, drafts round-trip', () => {
@@ -522,4 +522,31 @@ test('the signal-against-distance chart: a 10-90% band, the median line and tidy
   assert.ok(g.dots[0].y < g.dots[1].y);
   assert.ok(g.band.startsWith('M') && g.band.endsWith('Z') && g.median.split('L').length === 2);
   assert.deepEqual(g.box, { left: 34, top: 6, right: 294, bottom: 122 });
+});
+
+test('a field with a fixed set of values: choices toggle in the value list by value or label', () => {
+  const mil = { value: 'military', label: 'Military' };
+  const law = { value: 'law_enforcement', label: 'Law enforcement' };
+  assert.equal(toggleChoice('', mil, false), 'military');
+  assert.equal(toggleChoice('military', law, false), 'military, law_enforcement');
+  assert.equal(toggleChoice('military, law_enforcement', mil, false), 'law_enforcement');
+  assert.equal(hasChoice('Law Enforcement', law), true); // a typed label counts
+  assert.equal(toggleChoice('Law enforcement, military', law, false), 'military');
+  assert.equal(toggleChoice('military', law, true), 'law_enforcement'); // 'equals' keeps one
+  assert.equal(toggleChoice('military', mil, true), '');
+  assert.equal(hasChoice('', mil), false);
+});
+
+test('aircraft to look up: rows of ICAO-address profiles, once each, with the callsign', () => {
+  const profiles = { air: { subject_type: 'icao24' }, ships: { subject_type: null } };
+  const rows = [
+    { profile: 'air', subject: 'a1b2c3', label: 'UAL1 ' },
+    { profile: 'air', subject: 'A1B2C3', label: 'UAL1' },
+    { profile: 'air', subject: 'ADF7C9', label: null },
+    { profile: 'air', subject: 'N123AB' }, // not an address
+    { profile: 'ships', subject: '366999999' },
+    { profile: 'air', subject: 'C0FFEE' },
+  ];
+  assert.deepEqual(aircraftToAsk(rows, profiles, new Map([['C0FFEE', null]])), ['A1B2C3:UAL1', 'ADF7C9']);
+  assert.deepEqual(aircraftToAsk([], profiles, new Map()), []);
 });

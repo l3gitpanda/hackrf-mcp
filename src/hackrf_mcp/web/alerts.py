@@ -18,6 +18,21 @@ like any other matched field, only when the operator allows pager content
 (HACKRF_MCP_PAGER_CONTENT); with it off, a hit records the rule instead. A
 row's raw text is never a field (its fields hold the same).
 
+Some fields aren't in the row and are worked out as it is checked (see
+Derived):
+  aircraft_type and the other aircraft_* fields, from the aircraft
+    database (web/aircraftdb.py), for profiles whose subjects are ICAO
+    addresses (subject_type "icao24"): the class (military, law
+    enforcement, government, commercial, private, unknown), registration,
+    make and model, kind, registrant type, owner, and plane-alert-db's
+    operator, category and tags. They are the database's as it is when
+    the row is checked.
+  distance_km, from the receiver (HACKRF_LIVE_RECEIVER) to the row's
+    position, for profiles with a map view. A hit shows the distance;
+    the webhook gets the condition instead ("distance_km is less than
+    10"), because distances to a known aircraft at known times would let
+    anyone with a public flight archive work out where the receiver is.
+
 A hit is shown in the UI until acknowledged and, if the rule asks and the
 operator has set one up (HACKRF_WEB_ALERT_WEBHOOK_FILE), posted to a
 webhook: JSON, Discord or ntfy. Hits for rows logged more than
@@ -29,6 +44,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import math
 import queue
 import sqlite3
 import threading
@@ -42,6 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from hackrf_mcp import live_log, live_profiles
+from hackrf_mcp.web import aircraftdb
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rules (
@@ -97,11 +114,143 @@ ACTIVE_MAX = 50
 POLL_S = 2.0
 BATCH = 2000
 
+# The derived aircraft fields, and the key of aircraftdb.describe() each is.
+AIRCRAFT_FIELDS = {
+    "aircraft_type": "class",
+    "aircraft_registration": "registration",
+    "aircraft_manufacturer": "manufacturer",
+    "aircraft_model": "model",
+    "aircraft_kind": "kind",
+    "aircraft_registrant": "registrant",
+    "aircraft_owner": "owner",
+    "aircraft_operator": "operator",
+    "aircraft_category": "category",
+    "aircraft_tags": "tags",
+}
+DISTANCE = "distance_km"
+DERIVED_FIELDS = (*AIRCRAFT_FIELDS, DISTANCE)
+# Derived fields whose values the webhook doesn't carry (see the module).
+NOT_POSTED = (DISTANCE,)
+CLASS_NAMES = tuple(c[0] for c in aircraftdb.CLASSES)
 
-def allowed_fields(profile: live_profiles.Profile, pager_content: bool) -> list[str]:
+
+def position_fields(profile: live_profiles.Profile) -> tuple[str, str] | None:
+    """The fields holding a row's latitude and longitude, from the profile's
+    map view; None for a profile without one."""
+    for v in profile.ui_views():
+        if v.name == "map":
+            roles = dict(v.roles)
+            if "lat" in roles and "lon" in roles:
+                return roles["lat"], roles["lon"]
+    return None
+
+
+def distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle distance between two (lat, lon) points."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * 6371.0088 * math.asin(min(1.0, math.sqrt(h)))
+
+
+class Derived:
+    """The fields a rule can test that aren't in the row (see the module):
+    the aircraft fields when there is an aircraft database (`aircraft`, an
+    AircraftDB; it classifies by address and callsign even before its file
+    is built), and distance_km when the receiver's position is known
+    (`receiver`, (lat, lon)). The position is used here and nowhere else:
+    no field, hit or message holds it."""
+
+    def __init__(self, aircraft: aircraftdb.AircraftDB | None = None, receiver: tuple[float, float] | None = None):
+        self.aircraft = aircraft
+        self.receiver = (float(receiver[0]), float(receiver[1])) if receiver else None
+
+    def fields(self, profile: live_profiles.Profile) -> list[str]:
+        out = []
+        if self.aircraft is not None and profile.subject_type == "icao24":
+            out += list(AIRCRAFT_FIELDS)
+        if self.receiver is not None and position_fields(profile):
+            out.append(DISTANCE)
+        return out
+
+    def choices(self) -> dict[str, list[dict]]:
+        """The values a field takes, for the rule editor: the aircraft
+        classes, in the registry's order."""
+        if self.aircraft is None:
+            return {}
+        return {
+            "aircraft_type": [{"value": n, "label": label, "color": c} for n, label, _short, c, _notable in aircraftdb.CLASSES]
+        }
+
+    def add(self, items: list[tuple[dict, dict]], wanted: set[str], cache: dict | None = None) -> None:
+        """Adds the `wanted` derived fields to each (row, fields) pair's
+        fields, in place, with one database lookup for all of them. A
+        profile's own field of the same name is left as it is. `cache`
+        keeps lookups across calls (a preview's chunks)."""
+        want_aircraft = self.aircraft is not None and any(f in AIRCRAFT_FIELDS for f in wanted)
+        want_distance = self.receiver is not None and DISTANCE in wanted
+        if not (want_aircraft or want_distance):
+            return
+        cache = {} if cache is None else cache
+        if want_aircraft:
+            asked = {}
+            for row, fields in items:
+                key = _aircraft_key(row, fields)
+                if key is not None and key not in cache:
+                    asked[key] = None
+            if asked:
+                found = self.aircraft.lookup(list(asked))
+                for icao, callsign in asked:
+                    cache[(icao, callsign)] = found.get(icao)
+        for row, fields in items:
+            p = live_profiles.PROFILES.get(row.get("profile"))
+            if p is None:
+                continue
+            if want_aircraft and p.subject_type == "icao24":
+                info = cache.get(_aircraft_key(row, fields))
+                if info:
+                    for name, key in AIRCRAFT_FIELDS.items():
+                        if name in wanted and info.get(key) not in (None, "", []):
+                            fields.setdefault(name, info[key])
+            if want_distance and (pos := position_fields(p)):
+                try:
+                    here = (float(fields[pos[0]]), float(fields[pos[1]]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if -90 <= here[0] <= 90 and -180 <= here[1] <= 180:
+                    fields.setdefault(DISTANCE, round(distance_km(self.receiver, here), 1))
+
+    def aircraft_of(self, hits: list[dict]) -> dict[str, dict]:
+        """{icao: aircraftdb.describe(...)} for hits on aircraft, for the
+        webhook to say what each one is."""
+        if self.aircraft is None:
+            return {}
+        wanted = []
+        for h in hits:
+            p = live_profiles.PROFILES.get(h.get("profile"))
+            if p is not None and p.subject_type == "icao24" and h.get("subject"):
+                wanted.append((h["subject"], h.get("label")))
+        return self.aircraft.lookup(wanted) if wanted else {}
+
+
+def _aircraft_key(row: dict, fields: dict) -> tuple[str, str | None] | None:
+    p = live_profiles.PROFILES.get(row.get("profile"))
+    if p is None or p.subject_type != "icao24":
+        return None
+    icao = aircraftdb.normalise_icao(str(row.get("subject") or ""))
+    if icao is None:
+        return None
+    callsign = fields.get("callsign") or row.get("label")
+    return icao, (str(callsign).strip().upper() or None) if callsign else None
+
+
+NO_DERIVED = Derived()
+
+
+def allowed_fields(profile: live_profiles.Profile, pager_content: bool, derived: Derived = NO_DERIVED) -> list[str]:
     """What a rule on this profile may test: the row's columns and the
     profile's summary and table fields, without positions; never raw text,
-    and pager text only when the operator allows pager content."""
+    and pager text only when the operator allows pager content; then the
+    derived fields the profile has."""
     out = list(BASE_FIELDS)
     fields = list(profile.summary_fields)
     for v in profile.ui_views():
@@ -113,6 +262,7 @@ def allowed_fields(profile: live_profiles.Profile, pager_content: bool) -> list[
         out.append(f)
     if profile.redact is not None and pager_content and "message" not in out:
         out.append("message")
+    out += [f for f in derived.fields(profile) if f not in out]
     return out
 
 
@@ -152,7 +302,26 @@ class Rule:
         }
 
 
-def parse_rule(body: dict, pager_content: bool, rule_id: int | None = None) -> Rule:
+def _class_values(op: str, values: tuple[str, ...]) -> tuple[str, ...]:
+    """aircraft_type's values as class names: a class's label ("Law
+    enforcement") is taken for its name; anything else is refused, except
+    in a pattern."""
+    if op == "matches":
+        return values
+    by_text = {}
+    for n, label, short, _c, _notable in aircraftdb.CLASSES:
+        for t in (n, label, short, n.replace("_", " ")):
+            by_text[t.casefold()] = n
+    out = []
+    for v in values:
+        n = by_text.get(v.casefold())
+        if n is None:
+            raise ValueError(f"aircraft_type is one of {', '.join(CLASS_NAMES)}, not {v!r}")
+        out.append(n)
+    return tuple(dict.fromkeys(out))
+
+
+def parse_rule(body: dict, pager_content: bool, rule_id: int | None = None, derived: Derived = NO_DERIVED) -> Rule:
     """A rule from the UI's JSON, checked: known profiles, fields those
     profiles allow, known operators, numbers where a comparison needs one."""
     if not isinstance(body, dict):
@@ -168,7 +337,7 @@ def parse_rule(body: dict, pager_content: bool, rule_id: int | None = None) -> R
     chosen = [live_profiles.PROFILES[p] for p in profiles] or list(live_profiles.PROFILES.values())
     allowed = set()
     for p in chosen:
-        allowed.update(allowed_fields(p, pager_content))
+        allowed.update(allowed_fields(p, pager_content, derived))
     raw_conditions = body.get("conditions") or []
     if not isinstance(raw_conditions, list) or not raw_conditions:
         raise ValueError("a rule needs at least one condition")
@@ -194,11 +363,15 @@ def parse_rule(body: dict, pager_content: bool, rule_id: int | None = None) -> R
             raise ValueError(f"at most {MAX_VALUES} values of up to 200 characters")
         if op in ("equals", "gt", "lt") and len(values) != 1:
             raise ValueError(f"{OPS[op]} takes one value")
+        if field == DISTANCE and op not in ("gt", "lt"):
+            raise ValueError(f"{DISTANCE} takes {OPS['gt']} or {OPS['lt']}")
         if op in ("gt", "lt"):
             try:
                 float(values[0])
             except ValueError as exc:
                 raise ValueError(f"{field} {OPS[op]} needs a number") from exc
+        if field == "aircraft_type":
+            values = _class_values(op, values)
         conditions.append(Condition(field, op, values))
     try:
         repeat_s = int(body.get("repeat_s", 600))
@@ -245,10 +418,13 @@ def _holds(c: Condition, values: list) -> bool:
     return any(t in wanted for t in texts)
 
 
-def match(rule: Rule, row: dict, fields: dict, pager_content: bool = False) -> list[str] | None:
+def match(
+    rule: Rule, row: dict, fields: dict, pager_content: bool = False, hide: tuple[str, ...] = ()
+) -> list[str] | None:
     """The matched values, as "field=value", if every condition holds for
-    the row; else None. Pager text is given as the condition itself unless
-    the operator allows pager content."""
+    the row; else None. Pager text, and the fields in `hide`, are given as
+    the condition itself (pager text unless the operator allows pager
+    content). Derived fields must already be in `fields` (Derived.add)."""
     if rule.profiles and row.get("profile") not in rule.profiles:
         return None
     out = []
@@ -256,11 +432,16 @@ def match(rule: Rule, row: dict, fields: dict, pager_content: bool = False) -> l
         values = _values_of(row, fields, c.field)
         if not _holds(c, values):
             return None
-        if c.field == "message" and not pager_content:
-            out.append(c.text())  # the rule, not the text it matched
+        if (c.field == "message" and not pager_content) or c.field in hide:
+            out.append(c.text())  # the rule, not the value it matched
         else:
             out.append(f"{c.field}={', '.join(str(v) for v in values)}")
     return out
+
+
+def derived_wanted(rules: list[Rule]) -> set[str]:
+    """The derived fields any of these rules tests."""
+    return {c.field for r in rules for c in r.conditions if c.field in DERIVED_FIELDS}
 
 
 def _prefilter(rule: Rule) -> tuple[str, list]:
@@ -268,6 +449,8 @@ def _prefilter(rule: Rule) -> tuple[str, list]:
     rest, so a preview parses few rows. match() still decides."""
     where, args = [], []
     for c in rule.conditions:
+        if c.field in DERIVED_FIELDS:
+            continue  # not in the row: worked out as it is checked
         if c.field in ("subject", "label", "kind") and c.op in ("any_of", "equals"):
             where.append(f"lower({c.field}) IN ({', '.join('?' * len(c.values))})")
             args += [v.casefold() for v in c.values]
@@ -292,6 +475,19 @@ def _prefilter(rule: Rule) -> tuple[str, list]:
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+
+
+def aircraft_text(info: dict | None) -> str:
+    """'Military, 05-5140, Boeing C-17A, United States Air Force' from
+    aircraftdb.describe(): class, registration, type, operator or owner."""
+    if not info:
+        return ""
+    labels = {n: label for n, label, *_ in aircraftdb.CLASSES}
+    model = " ".join(x for x in (info.get("manufacturer"), info.get("model")) if x) or info.get("type")
+    parts = [labels.get(info.get("class"), info.get("class")), info.get("registration"), model]
+    who = info.get("operator") or info.get("owner")
+    parts.append(who)
+    return ", ".join(str(p) for p in parts if p)
 
 
 # --- The store ------------------------------------------------------------------------
@@ -528,10 +724,13 @@ class Webhook:
         return f"{self.base_url}/log?{q}"
 
     def request(self, hit: dict) -> urllib.request.Request:
+        """The webhook's request for a hit. `aircraft` (aircraftdb.describe()
+        of the subject, if it is an aircraft) says what it is."""
         who = hit.get("subject") or "?"
         if hit.get("label") and hit["label"] != who:
             who += f" ({hit['label']})"
-        text = f"{hit['rule_name']}: {hit['profile']} {who} · {hit['detail']} · {_iso(hit['ts'])}"
+        ac = aircraft_text(hit.get("aircraft"))
+        text = f"{hit['rule_name']}: {hit['profile']} {who}{f' · {ac}' if ac else ''} · {hit['detail']} · {_iso(hit['ts'])}"
         link = self.link(hit)
         if self.fmt == "discord":
             # Labels arrive over the air: no mentions, whatever they say.
@@ -554,6 +753,8 @@ class Webhook:
             "time": _iso(hit["ts"]),
             "link": link,
         }
+        if hit.get("aircraft"):
+            body["aircraft"] = {k: v for k, v in hit["aircraft"].items() if k != "why"}
         return self._json(body)
 
     def _json(self, body: dict) -> urllib.request.Request:
@@ -583,14 +784,24 @@ class Webhook:
 
 
 class AlertEngine:
-    """Checks every row the live service logs against the enabled rules."""
+    """Checks every row the live service logs against the enabled rules.
+    `derived` works out the fields rules may test that aren't in the row."""
 
-    def __init__(self, store: AlertStore, live_db: Path, pager_content: bool, webhook: Webhook | None = None):
+    def __init__(
+        self,
+        store: AlertStore,
+        live_db: Path,
+        pager_content: bool,
+        webhook: Webhook | None = None,
+        derived: Derived = NO_DERIVED,
+    ):
         self.store = store
         self.live_db = Path(live_db)
         self.pager_content = pager_content
         self.webhook = webhook
+        self.derived = derived
         self.rules: list[Rule] = []
+        self.wanted: set[str] = set()
         self.last: dict[tuple, float] = {}
         self._summary: dict = {}
         self._stop = threading.Event()
@@ -601,6 +812,7 @@ class AlertEngine:
     def reload(self) -> None:
         """Re-reads the rules (after a change) and the summary."""
         self.rules = [r for r in self.store.rules() if r.enabled]
+        self.wanted = derived_wanted(self.rules)
         longest = max([r.repeat_s for r in self.rules] or [0])
         self.last = self.store.last_hits(time.time() - longest - 3600)
         self.refresh()
@@ -640,6 +852,19 @@ class AlertEngine:
         except Exception as exc:  # noqa: BLE001 - the thread must outlive any one row
             self.error = f"checking rows: {type(exc).__name__}: {exc}"
 
+    def _prepare(self, rows: list, wanted: set[str], cache: dict | None = None) -> list[tuple[dict, dict]]:
+        """Rows as (row, fields), with the derived fields `wanted` added."""
+        items = []
+        for r in rows:
+            row = dict(r)
+            try:
+                fields = json.loads(row.get("fields") or "{}")
+            except ValueError:
+                fields = {}
+            items.append((row, fields if isinstance(fields, dict) else {}))
+        self.derived.add(items, wanted, cache)
+        return items
+
     def poll_once(self, now: float | None = None) -> list[dict]:
         """Checks the rows logged since the last look; returns the new hits."""
         now = time.time() if now is None else now
@@ -657,25 +882,28 @@ class AlertEngine:
                 rows = conn.execute("SELECT * FROM messages WHERE id > ? ORDER BY id LIMIT ?", (mark, BATCH)).fetchall()
                 if not rows:
                     break
-                for r in rows:
-                    hits += self._check(dict(r), now)
+                if self.rules:
+                    for row, fields in self._prepare(rows, self.wanted):
+                        hits += self._check(row, fields, now)
                 mark = rows[-1]["id"]
                 self.store.set_state("watermark", str(mark))
         if hits:
             self.store.add_hits(hits)
+            posted = [h for h in hits if h.get("_post")]
+            aircraft = self.derived.aircraft_of(posted) if posted else {}
             for h in hits:
-                if h.pop("_post", False):
-                    self.webhook.submit(dict(h))
+                post = h.pop("_post", False)
+                detail = h.pop("_webhook_detail", None)
+                if post:
+                    out = {**h, "detail": detail or h["detail"]}
+                    info = aircraft.get(str(h.get("subject") or "").upper())
+                    if info:
+                        out["aircraft"] = info
+                    self.webhook.submit(out)
             self.refresh()
         return hits
 
-    def _check(self, row: dict, now: float) -> list[dict]:
-        if not self.rules:
-            return []
-        try:
-            fields = json.loads(row.get("fields") or "{}")
-        except ValueError:
-            fields = {}
+    def _check(self, row: dict, fields: dict, now: float) -> list[dict]:
         out = []
         for rule in self.rules:
             detail = match(rule, row, fields, self.pager_content)
@@ -693,23 +921,24 @@ class AlertEngine:
                 status = "queued"
             elif rule.webhook:
                 status = "not sent: no webhook set up"
-            out.append(
-                {
-                    "ts": row["ts"],
-                    "recorded": now,
-                    "rule_id": rule.id,
-                    "rule_name": rule.name,
-                    "profile": row["profile"],
-                    "kind": row.get("kind"),
-                    "subject": row.get("subject"),
-                    "label": row.get("label"),
-                    "freq_hz": row.get("freq_hz"),
-                    "detail": " · ".join(detail),
-                    "row_id": row["id"],
-                    "webhook": status,
-                    "_post": post,
-                }
-            )
+            hit = {
+                "ts": row["ts"],
+                "recorded": now,
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "profile": row["profile"],
+                "kind": row.get("kind"),
+                "subject": row.get("subject"),
+                "label": row.get("label"),
+                "freq_hz": row.get("freq_hz"),
+                "detail": " · ".join(detail),
+                "row_id": row["id"],
+                "webhook": status,
+                "_post": post,
+            }
+            if post and any(c.field in NOT_POSTED for c in rule.conditions):
+                hit["_webhook_detail"] = " · ".join(match(rule, row, fields, self.pager_content, hide=NOT_POSTED) or detail)
+            out.append(hit)
         return out
 
     def preview(self, rule: Rule, since: float, until: float, limit: int = 50, max_rows: int = 400_000) -> dict:
@@ -718,36 +947,44 @@ class AlertEngine:
         ignoring the repeat limit."""
         where = "ts >= ? AND ts <= ?"
         args: list = [since, until]
-        if rule.profiles:
-            where += f" AND profile IN ({', '.join('?' * len(rule.profiles))})"
-            args += list(rule.profiles)
+        profiles = list(rule.profiles)
+        wanted = derived_wanted([rule])
+        if wanted:
+            # Only the profiles that have every derived field the rule tests.
+            names = profiles or list(live_profiles.PROFILES)
+            profiles = [
+                n for n in names if n in live_profiles.PROFILES and wanted <= set(self.derived.fields(live_profiles.PROFILES[n]))
+            ]
+            if not profiles:
+                return {"since": since, "until": until, "matches": 0, "scanned": 0, "truncated": False, "samples": []}
+        if profiles:
+            where += f" AND profile IN ({', '.join('?' * len(profiles))})"
+            args += profiles
         extra, extra_args = _prefilter(rule)
         n = 0
         scanned = 0
         samples: list[dict] = []
+        cache: dict = {}
         with closing(live_log.open_reader(self.live_db)) as conn:
             sql = f"SELECT * FROM messages WHERE {where}{extra} ORDER BY ts DESC, id DESC LIMIT ?"
-            for r in conn.execute(sql, [*args, *extra_args, max_rows]):
-                scanned += 1
-                row = dict(r)
-                try:
-                    fields = json.loads(row.get("fields") or "{}")
-                except ValueError:
-                    fields = {}
-                detail = match(rule, row, fields, self.pager_content)
-                if detail is None:
-                    continue
-                n += 1
-                if len(samples) < limit:
-                    samples.append(
-                        {
-                            "ts": row["ts"],
-                            "profile": row["profile"],
-                            "kind": row.get("kind"),
-                            "subject": row.get("subject"),
-                            "label": row.get("label"),
-                            "freq_hz": row.get("freq_hz"),
-                            "detail": " · ".join(detail),
-                        }
-                    )
+            cur = conn.execute(sql, [*args, *extra_args, max_rows])
+            while rows := cur.fetchmany(BATCH):
+                scanned += len(rows)
+                for row, fields in self._prepare(rows, wanted, cache):
+                    detail = match(rule, row, fields, self.pager_content)
+                    if detail is None:
+                        continue
+                    n += 1
+                    if len(samples) < limit:
+                        samples.append(
+                            {
+                                "ts": row["ts"],
+                                "profile": row["profile"],
+                                "kind": row.get("kind"),
+                                "subject": row.get("subject"),
+                                "label": row.get("label"),
+                                "freq_hz": row.get("freq_hz"),
+                                "detail": " · ".join(detail),
+                            }
+                        )
         return {"since": since, "until": until, "matches": n, "scanned": scanned, "truncated": scanned >= max_rows, "samples": samples}

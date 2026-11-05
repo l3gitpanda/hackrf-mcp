@@ -1,13 +1,15 @@
 // The Alerts screen: rules over the live log (a field is any of, equals,
 // matches, or is above or below a value), a preview of what a rule would
 // have matched in the last 7 days, and the hits with their acknowledgement.
-// Profiles, their fields and colours come from the API; nothing here names
-// a protocol. hackrf-web checks the rows itself (web/alerts.py), with this
-// page open or not.
+// Profiles, their fields (with the values of those that have a fixed set,
+// such as the aircraft classes) and colours come from the API; nothing here
+// names a protocol. hackrf-web checks the rows itself (web/alerts.py), with
+// this page open or not. Hits and preview rows on aircraft show the class
+// the aircraft database gives them.
 
 import { api, post } from './api.js';
 import { hitLinks, paintAlerts, paintAppBar, paintClock } from './appbar.js';
-import { REPEATS, draftOf, fieldsFor, hitWhen, parseValues, repeatText, ruleBody, sameRule } from './alertutil.js';
+import { REPEATS, aircraftToAsk, draftOf, fieldsFor, hasChoice, hitWhen, parseValues, repeatText, ruleBody, sameRule, toggleChoice } from './alertutil.js';
 import { ago, assignColors, clear, h } from './util.js';
 
 const $ = (id) => document.getElementById(id);
@@ -28,6 +30,11 @@ const S = {
   statusAt: 0,
   previewSeq: 0,
   previewTimer: null,
+  preview: null,
+  // Aircraft classes (from the registry) and what /api/aircraft said per
+  // ICAO address (null: asked, nothing known).
+  acClasses: new Map(),
+  ac: new Map(),
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
@@ -40,6 +47,7 @@ async function init() {
   S.registry = await api('/api/registry');
   for (const p of S.registry.profiles) S.profiles[p.name] = p;
   S.colors = assignColors(S.registry.profiles);
+  for (const c of (S.registry.aircraft && S.registry.aircraft.classes) || []) S.acClasses.set(c.name, c);
   for (const [v, label] of REPEATS) $('ed-repeat').append(h('option', { value: String(v) }, label));
   wire();
   await loadRules();
@@ -237,6 +245,7 @@ function renderConditions() {
     del.hidden = S.draft.conditions.length < 2;
     field.addEventListener('change', () => {
       c.field = field.value;
+      renderConditions(); // a field with a fixed set of values shows them
       changed();
     });
     op.addEventListener('change', () => {
@@ -254,6 +263,20 @@ function renderConditions() {
       changed();
     });
     box.append(h('div', { class: 'condrow' }, field, op, values, del));
+    const choices = (S.data.choices || {})[c.field];
+    if (choices && (c.op === 'any_of' || c.op === 'equals')) {
+      const row = h('div', { class: 'condchoices', role: 'group', 'aria-label': `Condition ${i + 1}: ${c.field.replace(/_/g, ' ')}` });
+      for (const ch of choices) {
+        const chip = h('button', { type: 'button', class: 'tchip', '--pc': ch.color || '#8a96a6', 'aria-pressed': String(hasChoice(c.values, ch)) }, h('span', { class: 'sw' }), ch.label || ch.value);
+        chip.addEventListener('click', () => {
+          c.values = toggleChoice(c.values, ch, c.op === 'equals');
+          renderConditions();
+          changed();
+        });
+        row.append(chip);
+      }
+      box.append(row);
+    }
   });
   $('ed-fieldnote').textContent = S.registry.pager_content ? '' : 'Pager text is never a field to match on.';
 }
@@ -311,7 +334,8 @@ function preview() {
 
 async function runPreview() {
   const body = ruleBody(S.draft);
-  const tbody = clear($('pv'));
+  clear($('pv'));
+  S.preview = null;
   if (!body.conditions.length || body.conditions.some((c) => !c.values.length)) {
     $('pv-count').textContent = 'Give every condition a value to see what it would match.';
     return;
@@ -327,19 +351,56 @@ async function runPreview() {
   }
   if (seq !== S.previewSeq) return;
   $('pv-count').textContent = `${out.matches.toLocaleString('en-US')} matching ${out.matches === 1 ? 'row' : 'rows'}${out.truncated ? ' (more rows than were read)' : ''}`;
-  for (const s of out.samples.slice(0, 50)) {
+  S.preview = out.samples.slice(0, 50);
+  renderPreview();
+  lookAircraft(S.preview, renderPreview);
+}
+
+function renderPreview() {
+  const tbody = clear($('pv'));
+  for (const s of S.preview || []) {
     tbody.append(
       h(
         'tr',
         {},
         h('td', { class: 'mono' }, hitWhen(s.ts, NOW())),
         h('td', {}, h('span', { class: 'pbadge', '--pc': color(s.profile) }, s.profile)),
-        h('td', { class: 'mono' }, s.subject || '—'),
+        h('td', { class: 'mono' }, acTag(s), s.subject || '—'),
         h('td', {}, s.label || '—'),
         h('td', { class: 'mono wc' }, s.detail),
       ),
     );
   }
+}
+
+// --- Aircraft --------------------------------------------------------------------------------
+
+// Asks /api/aircraft what the aircraft among these rows are, once each, then
+// redraws.
+async function lookAircraft(rows, redraw) {
+  if (!S.acClasses.size) return;
+  const ask = aircraftToAsk(rows, S.profiles, S.ac);
+  if (!ask.length) return;
+  let r;
+  try {
+    r = await api(`/api/aircraft?a=${encodeURIComponent(ask.join(','))}`);
+  } catch (e) {
+    return; // the tags are extra: the rows stand without them
+  }
+  for (const [icao, info] of Object.entries(r.aircraft || {})) S.ac.set(icao, info);
+  for (const a of ask) if (!S.ac.has(a.split(':')[0])) S.ac.set(a.split(':')[0], null);
+  redraw();
+}
+
+// A row's aircraft class as a tag (its registration, type and operator or
+// owner on hover); null for anything else.
+function acTag(x) {
+  const info = x.subject ? S.ac.get(String(x.subject).toUpperCase()) : null;
+  const c = info && S.acClasses.get(info.class);
+  if (!c) return null;
+  const model = [info.manufacturer, info.model].filter(Boolean).join(' ') || info.type;
+  const title = [c.label, info.registration, model, info.operator || info.owner].filter(Boolean).join(' · ');
+  return h('span', { class: 'actag', '--cc': c.color, title }, c.short);
 }
 
 // --- Hits ----------------------------------------------------------------------------------
@@ -356,6 +417,7 @@ async function loadHits(more = false) {
   S.hits = more ? [...S.hits, ...out.hits] : out.hits;
   S.more = out.more;
   renderHits();
+  lookAircraft(S.hits, renderHits);
 }
 
 function renderHits() {
@@ -389,6 +451,7 @@ function renderHits() {
         h(
           'td',
           {},
+          acTag(x),
           h('a', { class: 'mono', href: links.log, title: 'Open in the log' }, x.subject || '—'),
           hasMap(x.profile) && x.subject ? h('a', { class: 'btn sm ghost maplink', href: links.map }, 'Map') : null,
         ),

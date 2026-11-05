@@ -68,3 +68,34 @@ export function hitWhen(ts, now) {
   const d = new Date(ts * 1000).toISOString();
   return d.slice(0, 10) === new Date(now * 1000).toISOString().slice(0, 10) ? d.slice(11, 19) : `${d.slice(5, 10)} ${d.slice(11, 16)}`;
 }
+
+// A field's value list with a choice switched on or off (a field with a
+// fixed set of values, from /api/alerts' choices). A choice is on when the
+// list names its value or its label; 'equals' (single) keeps one value.
+export function hasChoice(text, choice) {
+  const names = [choice.value, choice.label].filter(Boolean).map((v) => String(v).toLowerCase());
+  return parseValues(text).some((v) => names.includes(v.toLowerCase()));
+}
+export function toggleChoice(text, choice, single) {
+  const on = hasChoice(text, choice);
+  if (single) return on ? '' : choice.value;
+  if (on) {
+    const names = [choice.value, choice.label].filter(Boolean).map((v) => String(v).toLowerCase());
+    return parseValues(text).filter((v) => !names.includes(v.toLowerCase())).join(', ');
+  }
+  return [...parseValues(text), choice.value].join(', ');
+}
+
+// Hits or preview rows that are aircraft (their profile's subjects are ICAO
+// addresses) and not yet looked up, as /api/aircraft's list: ICAO:CALLSIGN.
+export function aircraftToAsk(rows, profiles, known) {
+  const out = new Map();
+  for (const r of rows || []) {
+    const p = (profiles || {})[r.profile];
+    if (!p || p.subject_type !== 'icao24' || !r.subject) continue;
+    const icao = String(r.subject).toUpperCase();
+    if (!/^[0-9A-F]{6}$/.test(icao) || (known && known.has(icao)) || out.has(icao)) continue;
+    out.set(icao, r.label ? `${icao}:${String(r.label).trim()}` : icao);
+  }
+  return [...out.values()].slice(0, 500);
+}

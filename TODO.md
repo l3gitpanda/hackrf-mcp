@@ -242,7 +242,10 @@ against `homelab`, deployed only with the owner's approval:
   Summaries' names. Agreed with the owner on 2026-11-05: the FAA registry
   and plane-alert-db, every owner name shown, refreshed weekly. The
   database, `/api/aircraft` and the types on the Map are built (see the
-  README); next Alerts' fields and Summaries' names.
+  README), and Alerts' fields: the aircraft type and every database field,
+  owner included in hits and the webhook, plus a distance from the
+  receiver for any profile with positions (the owner's choices,
+  2026-11-05); next Summaries' names.
 - **ADS-C and CPDLC positions from datalink:** libacars already unpacks
   them in the ACARS and VDL2 decoders; put those positions on the Map, so
   aircraft beyond ADS-B range show too.

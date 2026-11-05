@@ -19,6 +19,7 @@ and the static UI.
                                  and signal level against distance
   GET  /api/aircraft             what kind of aircraft ICAO addresses are
                                  (military, law enforcement, ...) and whose,
+                                 and the addresses of registrations (r=),
                                  from web/aircraftdb.py
   GET  /api/basemap.pmtiles      the map's base map (vector tiles, byte
                                  ranges), if the operator has put one in the
@@ -179,6 +180,7 @@ def registry_json(live: LiveSettings) -> dict:
                 "views": [v.to_json() for v in p.ui_views()],
                 "color": p.color,
                 "subject_type": p.subject_type,
+                "positions_reported": p.positions_reported,
                 "spectrum": p.sample_rate_hz > 0,
                 "redacted": p.redact is not None and not live.pager_content,
             }
@@ -621,16 +623,21 @@ def create_app(
     @guarded
     def api_aircraft(request: Request) -> Response:
         # a=ICAO[:CALLSIGN],... ; the callsign lets an airline flight be told apart.
+        # r=REGISTRATION,... ; the address of each tail the database knows.
         items = [x for x in (request.query_params.get("a") or "").split(",") if x.strip()]
-        if not items:
-            raise ValueError("a (ICAO addresses, each with :CALLSIGN if known, comma-separated) is required")
-        if len(items) > 500:
+        regs = [x.strip() for x in (request.query_params.get("r") or "").split(",") if x.strip()]
+        if not items and not regs:
+            raise ValueError("a (ICAO addresses, each with :CALLSIGN if known) or r (registrations), comma-separated, is required")
+        if len(items) > 500 or len(regs) > 500:
             raise ValueError("at most 500 aircraft at a time")
         wanted = []
         for x in items:
             icao, _, callsign = x.strip().partition(":")
             wanted.append((icao, callsign or None))
-        return JSONResponse({"aircraft": planes.lookup(wanted), "db": planes.status()})
+        out = {"aircraft": planes.lookup(wanted), "db": planes.status()}
+        if regs:
+            out["registrations"] = planes.by_registration(regs)
+        return JSONResponse(out)
 
     @guarded
     def api_events(request: Request) -> Response:

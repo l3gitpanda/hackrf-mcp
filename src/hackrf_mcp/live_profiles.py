@@ -112,8 +112,16 @@ class Profile:
     channel_bw_hz: int = 0
     # What its subjects are, when that lets other data be joined to them:
     # "icao24" for a 24-bit ICAO aircraft address (hex), which the web UI's
-    # aircraft database (web/aircraftdb.py) looks up. None for anything else.
+    # aircraft database (web/aircraftdb.py) looks up, and by which the Map
+    # draws one aircraft heard by several profiles as one target;
+    # "registration" for an aircraft's registration (tail), which the web
+    # UI maps to its address through the same database. None for anything
+    # else.
     subject_type: str | None = None
+    # Its positions are reports an aircraft sends of where it was and when
+    # (ADS-C, CPDLC; see datalink.py), not fixes heard live: they can be
+    # minutes old, and the Map draws them as such.
+    positions_reported: bool = False
 
     def ui_views(self) -> tuple[View, ...]:
         if self.views:

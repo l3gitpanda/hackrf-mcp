@@ -100,7 +100,7 @@ test('the pointer reads out the exact frequency and its bin', () => {
   assert.equal(binAt(512, 1), 511);
 });
 
-import { heading, positionAt, prune, targetKey, trackWindow } from '../../src/hackrf_mcp/web/static/js/maputil.js';
+import { heading, insertFix, positionAt, primaryProfile, prune, reportSource, targetKey, trackRuns, trackWindow } from '../../src/hackrf_mcp/web/static/js/maputil.js';
 
 test('the map finds each target where it was at the cursor', () => {
   const track = [{ ts: 10, lat: 1 }, { ts: 20, lat: 2 }, { ts: 30, lat: 3 }];
@@ -549,4 +549,37 @@ test('aircraft to look up: rows of ICAO-address profiles, once each, with the ca
   ];
   assert.deepEqual(aircraftToAsk(rows, profiles, new Map([['C0FFEE', null]])), ['A1B2C3:UAL1', 'ADF7C9']);
   assert.deepEqual(aircraftToAsk([], profiles, new Map()), []);
+});
+
+test('one aircraft heard by several profiles is one target, by its address', () => {
+  const profiles = { live: { subject_type: 'icao24' }, dl: { subject_type: 'icao24', positions_reported: true }, tails: { subject_type: 'registration', positions_reported: true }, ships: {} };
+  assert.equal(targetKey('live', 'a1b2c3', profiles), 'icao24|A1B2C3');
+  assert.equal(targetKey('dl', 'A1B2C3', profiles), 'icao24|A1B2C3');
+  assert.equal(targetKey('dl', '10916A0', profiles), 'dl|10916A0'); // not an address
+  assert.equal(targetKey('ships', '366999999', profiles), 'ships|366999999');
+  assert.equal(targetKey('tails', 'N12345', profiles), 'tails|N12345'); // until its address is known
+  assert.equal(targetKey('tails', 'N12345', profiles, new Map([['tails|N12345', 'A0B1C2']])), 'icao24|A0B1C2');
+  assert.equal(targetKey('live', 'A1B2C3'), 'live|A1B2C3'); // without the registry, as before
+  // The first profile is the target's own, unless it only reports and the next is heard live.
+  assert.equal(primaryProfile('dl', 'live', profiles), 'live');
+  assert.equal(primaryProfile('live', 'dl', profiles), 'live');
+  assert.equal(primaryProfile('dl', 'tails', profiles), 'dl');
+  assert.equal(primaryProfile(null, 'dl', profiles), 'dl');
+});
+
+test('reported fixes go in time order, are drawn dashed, and say what they were', () => {
+  const tr = [{ ts: 10 }, { ts: 20 }, { ts: 40 }];
+  insertFix(tr, { ts: 30, rep: true });
+  insertFix(tr, { ts: 50 });
+  insertFix(tr, { ts: 5 });
+  assert.deepEqual(tr.map((f) => f.ts), [5, 10, 20, 30, 40, 50]);
+  const runs = trackRuns(tr);
+  assert.deepEqual(runs.map((r) => [r.dashed, r.pts.map((f) => f.ts)]), [[false, [5, 10, 20]], [true, [20, 30, 40]], [false, [40, 50]]]);
+  assert.deepEqual(trackRuns([{ ts: 1 }]), []);
+  assert.equal(reportSource({ ts: 100.25 }, { pos_source: 'ADS-C', pos_ts: 100.25 }), 'ADS-C');
+  assert.equal(reportSource({ ts: 100 }, { pos_source: 'ADS-C', pos_ts: 900 }), 'datalink'); // a later report's row
+  assert.equal(reportSource({ ts: 100 }, null), 'datalink');
+  // A summary's fields don't say which fix: the newest one reported is it.
+  assert.equal(reportSource({ ts: 100 }, { pos_source: 'CPDLC' }, true), 'CPDLC');
+  assert.equal(reportSource({ ts: 100 }, { pos_source: 'CPDLC' }, false), 'datalink');
 });

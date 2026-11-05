@@ -237,8 +237,8 @@ how an assistant moves the receiver to another band, and search the log.
 |---|---|---|---|
 | `adsb` | `dump1090-mutability` | 1090 MHz, 2.4 MS/s | one row per aircraft per minute: callsign, squawk, altitude range, last position, speed, track, messages, strongest RSSI |
 | `ais` | `AIS-catcher` | 162.0 MHz, 2 MS/s | one row per ship, base station or aid to navigation per minute for position reports; one row per other message (static/voyage data, safety text) |
-| `acars` | `acarsdec` | 130.8 MHz, 2 MS/s: 130.025–131.550 MHz | one row per message |
-| `vdl2` | `dumpvdl2` | 136.8125 MHz, 2.1 MS/s: 136.650–136.975 MHz | one row per frame |
+| `acars` | `acarsdec` | 130.8 MHz, 2 MS/s: 130.025–131.550 MHz | one row per message; ADS-C and CPDLC position reports also as positions (see below) |
+| `vdl2` | `dumpvdl2` | 136.8125 MHz, 2.1 MS/s: 136.650–136.975 MHz | one row per frame; ADS-C and CPDLC position reports also as positions |
 | `flex`, `pocsag` | `multimon-ng` | the channels given, 2.205 MS/s | one row per page: time, channel, capcode, message type (see below) |
 | `aprs` | `multimon-ng` | 144.390 MHz, 2.205 MS/s | one row per packet |
 | `eas` | `multimon-ng` | the seven NOAA Weather Radio channels, 162.400–162.550 MHz | one row per SAME header |
@@ -379,6 +379,29 @@ target shows its fields, its altitude over the track and a link to its rows
 in the Log. The map is [Leaflet](https://leafletjs.com/) 1.9.4 with a
 lat/lon grid and range rings 25 to 200 km around `HACKRF_LIVE_RECEIVER`
 when it is set. Nothing is loaded from other sites when it is viewed.
+
+**Positions aircraft report: ADS-C and CPDLC.** libacars, built into
+acarsdec and dumpvdl2, decodes the ARINC 622 messages inside ACARS: ADS-C
+reports and FANS-1/A CPDLC. `datalink.py` takes the aircraft's current
+position out of them: every ADS-C report holding one (basic, emergency and
+event reports, with the ground speed and track when the message has them;
+predicted and projected points are where it will be, and are left out), and
+a CPDLC POSITION REPORT given as a latitude and longitude (a fix name would
+need a navigation database). Messages failing ARINC 622's CRC, or with a
+time more than an hour old, are left out. Each becomes a position at the time
+the aircraft gave: ADS-C carries seconds past the hour, CPDLC an hour and
+minute, so the time is the latest one matching, not after the message was
+received. The message's row holds the newest one as `lat`, `lon`, `alt`,
+`pos_source` (ADS-C or CPDLC) and `pos_ts`. On the Map they join the
+aircraft's own track: VDL2 names aircraft by their 24-bit address
+(`subject_type` `icao24`), and ACARS by registration (`registration`),
+which the aircraft database maps to an address (`/api/aircraft?r=`); a
+registration it doesn't know stays a marker of its own. Reported positions
+are drawn dashed, labelled with what sent them and how old they are, and
+faded like any fix over 5 minutes old; profiles whose positions are reports
+say so in the registry (`positions_reported`). Over land these are rare:
+VHF carries far less ADS-C and CPDLC than oceanic HF and satellite links,
+and an aircraft heard on VHF is about as close as one heard on ADS-B.
 
 **Aircraft types.** Aircraft (profiles whose subjects are ICAO addresses,
 `subject_type` `icao24`) are coloured by type on the Map: military, law
@@ -530,7 +553,9 @@ not posted. The URL is never logged or shown.
 (military, law enforcement, government, commercial, private or unknown) and
 whose, for the Map: `GET /api/aircraft?a=ICAO[:CALLSIGN],...` gives the
 class, why, and what is known (registration, make and model, aircraft type,
-registrant and owner, plane-alert's operator, type, category and tags). It
+registrant and owner, plane-alert's operator, type, category and tags), and
+`r=REGISTRATION,...` the address of each registration it knows (an FAA
+record first; one held by two addresses otherwise is left out). It
 merges two public databases into `aircraft.db` in hackrf-web's state
 directory:
 

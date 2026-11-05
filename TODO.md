@@ -246,9 +246,15 @@ against `homelab`, deployed only with the owner's approval:
   owner included in hits and the webhook, plus a distance from the
   receiver for any profile with positions (the owner's choices,
   2026-11-05); next Summaries' names.
-- **ADS-C and CPDLC positions from datalink:** libacars already unpacks
-  them in the ACARS and VDL2 decoders; put those positions on the Map, so
-  aircraft beyond ADS-B range show too.
+- **ADS-C and CPDLC positions from datalink:** built (see the README):
+  libacars' ADS-C reports and CPDLC position reports from ACARS and VDL2
+  become positions at the aircraft's own time, joined to the aircraft's
+  track on the Map by address (VDL2) or registration (ACARS), dashed and
+  labelled with their age (the owner's choices, 2026-11-05). Proven on
+  messages libacars v2.2.1 itself decoded and on the station's own VDL2 and
+  ACARS envelopes, which held CPDLC but no position yet; the on-air proof
+  waits for a real report. Over CONUS, VHF carries few, and they are within
+  about ADS-B range.
 - **Capture from the waterfall:** drag across a signal on Live or History
   to record it into the capture directory (through the agent, pausing live
   decoding as a device tool does), then run a decoder on it.

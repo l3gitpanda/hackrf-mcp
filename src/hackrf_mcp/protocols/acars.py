@@ -1,5 +1,6 @@
 """ACARS aircraft datalink (VHF AM, 129-131.6 MHz), with acarsdec:
-offline decoding and the live `acars` profile."""
+offline decoding and the live `acars` profile. ADS-C and CPDLC position
+reports that libacars decodes in a message go on the map (datalink.py)."""
 
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from scipy import signal as scipy_signal
 
-from hackrf_mcp import decoders, iq, live_profiles
+from hackrf_mcp import datalink, decoders, iq, live_profiles
 from hackrf_mcp.decoders import (
     Capture,
     DecodeError,
@@ -24,8 +25,8 @@ from hackrf_mcp.decoders import (
     s16,
     tail,
 )
-from hackrf_mcp.live_log import Row
-from hackrf_mcp.live_profiles import ChannelPipeline, Profile, wav_header
+from hackrf_mcp.live_log import Position, Row
+from hackrf_mcp.live_profiles import ChannelPipeline, Profile, View, wav_header
 
 
 ACARS_RATE = 12_500
@@ -87,26 +88,44 @@ def decode_acars(cap: Capture, program: str, timeout: float, workdir: Path, freq
 
 def parse_acars(line: str, freq_hz: int, now: float) -> Row | None:
     """One acarsdec -o 4 JSON line."""
+    return parse_acars_positions(line, freq_hz, now)[0]
+
+
+def parse_acars_positions(line: str, freq_hz: int, now: float) -> tuple[Row | None, list[Position]]:
+    """One acarsdec -o 4 JSON line, and the positions the aircraft reports
+    in it (ADS-C, CPDLC), under the row's subject. The row holds the newest
+    one's fields (lat, lon, alt, pos_source, pos_ts)."""
     if not line.startswith("{"):
-        return None
+        return None, []
     try:
         e = json.loads(line)
     except ValueError:
-        return None
+        return None, []
+    if not isinstance(e, dict):
+        return None, []
     tail = str(e.get("tail", "")).strip().lstrip(".")
     flight = str(e.get("flight", "")).strip()
     fields = {k: v for k, v in e.items() if k not in ("station_id", "app", "channel", "freq", "timestamp")}
-    return Row(
+    subject = tail.upper() or flight.upper() or None
+    reported = datalink.positions(e, now) if subject else []
+    if reported:
+        fields.update(reported[-1].fields())
+    row = Row(
         ts=now,
         profile="acars",
         kind="acars",
         freq_hz=freq_hz,
         level_db=e.get("level"),
-        subject=tail.upper() or flight.upper() or None,
+        subject=subject,
         label=flight or None,
         fields=fields,
         raw=line,
     )
+    return row, [datalink_position("acars", subject, p) for p in reported]
+
+
+def datalink_position(profile: str, subject: str, p: datalink.DatalinkPosition) -> Position:
+    return Position(p.ts, profile, subject, p.lat, p.lon, p.alt, p.speed, p.track)
 
 
 class AcarsPipeline(ChannelPipeline):
@@ -132,10 +151,13 @@ class AcarsPipeline(ChannelPipeline):
         return s16(out, 16_000.0)
 
     def on_line(self, i: int, freq_hz: int, line: str) -> None:
-        row = parse_acars(line, freq_hz, time.time())
+        row, reported = parse_acars_positions(line, freq_hz, time.time())
         if row is not None:
             self.ctx.emit(row)
             self.ctx.count(1)
+        # Each report as sent: they are few, and two in a minute are two.
+        for p in reported:
+            self.ctx.emit_position(p)
 
 
 decoders.register(
@@ -164,5 +186,19 @@ live_profiles.register(
         help="  acars  - aircraft datalink, the US channels 130.025-131.550 MHz.",
         summary_kinds=("acars",),
         summary_fields=("flight", "label", "mode"),
+        # The subject is the aircraft's registration (its tail), else the
+        # flight; the web UI finds the aircraft's address from it.
+        subject_type="registration",
+        positions_reported=True,
+        views=(
+            View(
+                "map",
+                ("acars",),
+                ("flight", "pos_source", "alt"),
+                (("lat", "lat"), ("lon", "lon"), ("alt", "alt"), ("label", "flight")),
+            ),
+            View("table", ("acars",), ("flight", "label", "mode", "pos_source", "alt")),
+            View("timeline", ("acars",)),
+        ),
     )
 )

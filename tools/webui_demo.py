@@ -148,7 +148,8 @@ class DemoPipeline(Pipeline):
     def _rows(self) -> None:
         p = self.tuning.profile
         kind = p.summary_kinds[0] if p.summary_kinds else p.name
-        has_map = any(v.name == "map" for v in p.ui_views())
+        # Reported positions (ADS-C, CPDLC) come from demo_datalink instead.
+        has_map = any(v.name == "map" for v in p.ui_views()) and not p.positions_reported
         subjects = [f"DEMO{i:02d}" for i in range(8)]
         pos = {s: [HOME[0] + random.uniform(-0.3, 0.3), HOME[1] + random.uniform(-0.3, 0.3)] for s in subjects}
         rnd = random.Random(p.name)
@@ -221,7 +222,7 @@ def backfill(db_path: Path, hours: float, now: float) -> None:
             continue
         p = live_profiles.PROFILES[name]
         kind = p.summary_kinds[0] if p.summary_kinds else name
-        has_map = any(v.name == "map" for v in p.ui_views())
+        has_map = any(v.name == "map" for v in p.ui_views()) and not p.positions_reported
         end = min(t + length, now - 60)
         w.event("start", name, f"{name}: demo backfill", ts=t)
         rows, fixes = [], []
@@ -260,6 +261,41 @@ def backfill(db_path: Path, hours: float, now: float) -> None:
         w.event("stop", name, "switching", ts=end)
         t = end
     w.close()
+
+
+def demo_datalink(svc, last_fix: dict, stop: threading.Event) -> None:
+    """Positions demo aircraft report themselves, as ADS-C and CPDLC over
+    VDL2 and ACARS would: whenever ADS-B has gone quiet (the rotation is on
+    another profile), demo aircraft 3 reports over VDL2 by its address,
+    aircraft 4 over ACARS by its registration (which the demo aircraft.db
+    maps to its address), and a tail the database doesn't know over ACARS,
+    each a little on from its last fix, 15 s after it."""
+    done = {}
+    while not stop.wait(5):
+        now = time.time()
+        for i, profile, how in ((3, "vdl2", "ADS-C"), (4, "acars", "CPDLC"), (5, "acars", "CPDLC")):
+            icao, callsign = demo_aircraft(i)
+            fix = last_fix.get(("adsb", icao))
+            if fix is None or now - fix.ts < 20 or done.get(i) == fix.ts:
+                continue
+            done[i] = fix.ts
+            # After its last fix, as on the station (one band at a time).
+            at = fix.ts + 15
+            lat, lon, alt = fix.lat + 0.03, fix.lon + 0.04, 35000.0
+            if i == 3:
+                subject, label = icao, callsign
+                fields = {"src": icao, "src_type": "Aircraft", "dst": "10916A", "dst_type": "Ground station", "frame_type": "I"}
+            elif i == 4:
+                subject, label = f"N{300 + i}DM", callsign
+                fields = {"flight": callsign, "label": "BA", "mode": "2"}
+            else:
+                subject, label = "N999ZZ", "DMO999"  # no such aircraft in the database
+                lat, lon = fix.lat - 0.15, fix.lon - 0.1
+                fields = {"flight": label, "label": "BA", "mode": "2"}
+            fields.update(lat=round(lat, 5), lon=round(lon, 5), alt=int(alt), pos_source=how, pos_ts=round(at, 3))
+            svc._emit_position(Position(at, profile, subject, lat, lon, alt))
+            svc._emit(Row(ts=now, profile=profile, kind=profile, freq_hz=None, level_db=-20.0, subject=subject, label=label,
+                          fields=fields, raw=f"demo {profile} {how} report (simulated, not decoded)"))  # fmt: skip
 
 
 def start_catcher() -> int:
@@ -357,6 +393,16 @@ def main() -> None:
         program_finder=found, spectrum=rec,
     )  # fmt: skip
     svc.attach_feed(live_feed.FeedServer(live.feed_socket_path).start())
+    # Remember each aircraft's last fix, for the reports demo_datalink makes.
+    last_fix: dict = {}
+    emit_position = svc._emit_position
+
+    def remember(p):
+        last_fix[(p.profile, p.subject)] = p
+        emit_position(p)
+
+    svc._emit_position = remember
+    threading.Thread(target=demo_datalink, args=(svc, last_fix, svc.shutdown), daemon=True).start()
     control = ControlServer(live.socket_path, svc)
     threading.Thread(target=control.serve_forever, daemon=True).start()
     threading.Thread(target=svc.serve_forever, daemon=True).start()

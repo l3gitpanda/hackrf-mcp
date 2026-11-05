@@ -1,5 +1,6 @@
 """VDL Mode 2 aircraft datalink (136.6-137 MHz), with dumpvdl2: offline
-decoding and the live `vdl2` profile."""
+decoding and the live `vdl2` profile. ADS-C and CPDLC position reports that
+libacars decodes in a message go on the map (datalink.py)."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ import re
 import time
 from pathlib import Path
 
-from hackrf_mcp import decoders, iq, live_profiles
+from hackrf_mcp import datalink, decoders, iq, live_profiles
 from hackrf_mcp.decoders import (
     AutoGain,
     Capture,
@@ -20,8 +21,8 @@ from hackrf_mcp.decoders import (
     nothing,
     sc16,
 )
-from hackrf_mcp.live_log import Row
-from hackrf_mcp.live_profiles import Pipeline, Proc, Profile, line_buffered
+from hackrf_mcp.live_log import Position, Row
+from hackrf_mcp.live_profiles import Pipeline, Proc, Profile, View, line_buffered
 
 
 VDL2_CHANNELS = (
@@ -103,12 +104,21 @@ def decode_vdl2(cap: Capture, program: str, timeout: float, workdir: Path, freqs
 
 def parse_vdl2(line: str, now: float) -> Row | None:
     """One dumpvdl2 decoded:json line."""
+    return parse_vdl2_positions(line, now)[0]
+
+
+def parse_vdl2_positions(line: str, now: float) -> tuple[Row | None, list[Position]]:
+    """One dumpvdl2 decoded:json line, and the positions the aircraft
+    reports in it (ADS-C, CPDLC), under its address. The row holds the
+    newest one's fields (lat, lon, alt, pos_source, pos_ts)."""
     if not line.startswith("{"):
-        return None
+        return None, []
     try:
         e = json.loads(line)
     except ValueError:
-        return None
+        return None, []
+    if not isinstance(e, dict):
+        return None, []
     v = e.get("vdl2", e)
     avlc = v.get("avlc") or {}
     src, dst = avlc.get("src") or {}, avlc.get("dst") or {}
@@ -127,17 +137,23 @@ def parse_vdl2(line: str, now: float) -> Row | None:
     # Name the aircraft whichever end of the link it is.
     aircraft = src if src.get("type") == "Aircraft" else dst if dst.get("type") == "Aircraft" else src
     reg = str(acars.get("reg", "")).strip().lstrip(".")
-    return Row(
+    subject = str(aircraft.get("addr", "")).upper() or None
+    # Only an aircraft's own downlink says where it is.
+    reported = datalink.positions(e, now) if subject and src.get("type") == "Aircraft" else []
+    if reported:
+        fields.update(reported[-1].fields())
+    row = Row(
         ts=now,
         profile="vdl2",
         kind="vdl2",
         freq_hz=v.get("freq"),
         level_db=v.get("sig_level"),
-        subject=str(aircraft.get("addr", "")).upper() or None,
+        subject=subject,
         label=str(acars.get("flight", "")).strip() or reg or None,
         fields={k: x for k, x in fields.items() if x not in (None, "", {})},
         raw=line,
     )
+    return row, [Position(p.ts, "vdl2", subject, p.lat, p.lon, p.alt, p.speed, p.track) for p in reported]
 
 
 class Vdl2Pipeline(Pipeline):
@@ -172,10 +188,13 @@ class Vdl2Pipeline(Pipeline):
         self.source.start(feed)
 
     def _line(self, line: str) -> None:
-        row = parse_vdl2(line, time.time())
+        row, reported = parse_vdl2_positions(line, time.time())
         if row is not None:
             self.ctx.emit(row)
             self.ctx.count(1)
+        # Each report as sent: they are few, and two in a minute are two.
+        for p in reported:
+            self.ctx.emit_position(p)
 
 
 decoders.register(
@@ -204,5 +223,15 @@ live_profiles.register(
         help="  vdl2   - aircraft datalink, 136.650-136.975 MHz.",
         summary_kinds=("vdl2",),
         summary_fields=("src_type", "dst", "dst_type"),
+        # The subject is the aircraft's 24-bit address (its ICAO address)
+        # whichever end of the link it is; a frame with no aircraft end
+        # keeps the ground station's.
+        subject_type="icao24",
+        positions_reported=True,
+        views=(
+            View("map", ("vdl2",), ("pos_source", "alt", "dst"), (("lat", "lat"), ("lon", "lon"), ("alt", "alt"))),
+            View("table", ("vdl2",), ("src_type", "dst", "dst_type", "pos_source", "alt")),
+            View("timeline", ("vdl2",)),
+        ),
     )
 )

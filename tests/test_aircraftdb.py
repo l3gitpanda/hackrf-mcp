@@ -245,4 +245,30 @@ def test_the_aircraft_route_registry_and_status(built, tmp_path):
     assert c.get("/api/status", headers=BEARER).json()["aircraft_db"]["plane_alert_rows"] == 5
     assert c.get("/api/aircraft", headers=BEARER).status_code == 400
     assert c.get("/api/aircraft", params={"a": ",".join(["A1A1A1"] * 501)}, headers=BEARER).status_code == 400
+    # Registrations (ACARS tails) to addresses.
+    regs = c.get("/api/aircraft", params={"r": "N911SD,.C-POLI"}, headers=BEARER).json()
+    assert regs["registrations"] == {"N911SD": "A1A1A1", "C-POLI": "C0FFEE"} and regs["aircraft"] == {}
+    types = {p["name"]: (p["subject_type"], p["positions_reported"]) for p in reg["profiles"]}
+    assert types["vdl2"] == ("icao24", True) and types["acars"] == ("registration", True) and types["adsb"] == ("icao24", False)
     assert c.get("/api/aircraft", params={"a": "A1A1A1"}).status_code == 401
+
+
+def test_registrations_to_addresses(built, tmp_path):
+    db, _ = built
+    # As ACARS gives them: dots in front, with or without the dash.
+    assert db.by_registration(["N12345", ".C-POLI", "100001", "NOPE", "bad reg!", ""]) == {
+        "N12345": "A0B1C2",  # FAA and plane-alert-db agree
+        "C-POLI": "C0FFEE",
+        "100001": "AE1234",  # plane-alert-db's 10-0001
+    }
+    # The FAA record wins; two plane-alert-db addresses for one registration is no answer.
+    _faa_zip(tmp_path / "faa.zip")
+    _pa_csv(tmp_path / "pa2.csv", rows=PA + [
+        ["ABC123", "N12345", "Someone else", "C172", "C172", "Civ", "", "", "", "", ""],
+        ["400ABD", "G-GOVT", "Example Government", "BAe 146", "B462", "Gov", "", "", "", "", ""],
+    ])  # fmt: skip
+    other = A.AircraftDB(tmp_path / "other" / "aircraft.db")
+    other.path.parent.mkdir()
+    A.build(other.path, tmp_path / "faa.zip", tmp_path / "pa2.csv", now=1000.0)
+    assert other.by_registration(["N12345", "G-GOVT", "GGOVT"]) == {"N12345": "A0B1C2"}
+    assert A.AircraftDB(tmp_path / "none.db").by_registration(["N12345"]) == {}

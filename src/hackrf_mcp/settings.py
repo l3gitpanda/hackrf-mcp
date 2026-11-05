@@ -279,6 +279,10 @@ class WebSettings:
     # The UI's address as browsers reach it (HACKRF_WEB_URL), for the links
     # in webhook messages; none without it.
     public_url: str | None = None
+    # The aircraft database (web/aircraftdb.py): "weekly" downloads the FAA
+    # registry and plane-alert-db and rebuilds it every 7 days; "off" (the
+    # default) makes no outbound connection, and lookups use rules alone.
+    aircraft_db: str = "off"
 
     def __post_init__(self) -> None:
         if not 0 < self.port < 65536:
@@ -287,6 +291,8 @@ class WebSettings:
             raise ValueError("HACKRF_WEB_SESSION_DAYS must be above 0")
         if self.alert_webhook_format not in ("json", "discord", "ntfy"):
             raise ValueError("HACKRF_WEB_ALERT_WEBHOOK_FORMAT must be json, discord or ntfy")
+        if self.aircraft_db not in ("off", "weekly"):
+            raise ValueError("HACKRF_WEB_AIRCRAFT_DB must be off or weekly")
 
     def alert_webhook_url(self) -> str | None:
         """The webhook's URL from its file, or None when none is set up."""
@@ -322,4 +328,6 @@ class WebSettings:
             kwargs["alert_webhook_format"] = v.strip().lower()
         if v := env.get("HACKRF_WEB_URL"):
             kwargs["public_url"] = v.strip().rstrip("/")
+        if v := env.get("HACKRF_WEB_AIRCRAFT_DB"):
+            kwargs["aircraft_db"] = v.strip().lower()
         return cls(**kwargs)

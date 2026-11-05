@@ -15,6 +15,9 @@ and the static UI.
   GET  /api/events               starts, stops, pauses, errors
   GET  /api/positions            map-track points, thinned for long ranges
   GET  /api/positions/grid       positions counted per map cell (a heat map)
+  GET  /api/aircraft             what kind of aircraft ICAO addresses are
+                                 (military, law enforcement, ...) and whose,
+                                 from web/aircraftdb.py
   GET  /api/basemap.pmtiles      the map's base map (vector tiles, byte
                                  ranges), if the operator has put one in the
                                  web state directory (see web/basemap.py)
@@ -76,7 +79,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum, procstats
 from hackrf_mcp.live_service import WATCH_DEFAULT_MIN, WATCH_MAX_MIN
 from hackrf_mcp.settings import LiveSettings, WebSettings
-from hackrf_mcp.web import alerts, basemap, panels
+from hackrf_mcp.web import aircraftdb, alerts, basemap, panels
 from hackrf_mcp.web.hub import FeedHub
 from hackrf_mcp.web.sessions import COOKIE, Sessions
 
@@ -172,6 +175,7 @@ def registry_json(live: LiveSettings) -> dict:
                 "summary_fields": list(p.summary_fields),
                 "views": [v.to_json() for v in p.ui_views()],
                 "color": p.color,
+                "subject_type": p.subject_type,
                 "spectrum": p.sample_rate_hz > 0,
                 "redacted": p.redact is not None and not live.pager_content,
             }
@@ -321,6 +325,7 @@ def create_app(
     cgroup_root: Path = CGROUP,
     own_stats: Callable[[], dict | None] = procstats.own,
     feed: bool = True,
+    aircraft: aircraftdb.AircraftDB | None = None,
 ) -> ASGIApp:
     if not digests:
         raise ValueError("hackrf-web needs at least one accepted token")
@@ -331,6 +336,7 @@ def create_app(
     webhook_url = web.alert_webhook_url()
     webhook = alerts.Webhook(webhook_url, web.alert_webhook_format, store, web.public_url) if webhook_url else None
     engine = alerts.AlertEngine(store, live.db_path, live.pager_content, webhook)
+    planes = aircraft or aircraftdb.AircraftDB(web.state_path(live) / "aircraft.db", enabled=web.aircraft_db == "weekly")
 
     def reader():
         return live_log.open_reader(live.db_path)
@@ -393,7 +399,18 @@ def create_app(
     # --- the API
 
     def api_registry(request: Request) -> Response:
-        return JSONResponse({**registry_json(live), "basemap": basemap.info(basemap_path)})
+        return JSONResponse(
+            {
+                **registry_json(live),
+                "basemap": basemap.info(basemap_path),
+                # The aircraft classes the Map shows, and whose data they are.
+                "aircraft": {
+                    "classes": [{"name": n, "label": label, "color": c} for n, label, c in aircraftdb.CLASSES],
+                    "credit": aircraftdb.CREDIT,
+                    "enabled": planes.enabled,
+                },
+            }
+        )
 
     status_cache: dict = {"at": 0.0, "value": None}
 
@@ -421,6 +438,7 @@ def create_app(
             "web": cgroup_stats("hackrf-web.service", cgroup_root) or own_stats(),
             "feed": hub.status(),
             "alerts": engine.summary(),
+            "aircraft_db": planes.status(),
             "now": time.time(),
         }
 
@@ -567,6 +585,20 @@ def create_app(
                 max_cells=_int(request, "max_cells", 20_000, 100, 50_000),
             )
         return JSONResponse({"since": since, "until": until, **out})
+
+    @guarded
+    def api_aircraft(request: Request) -> Response:
+        # a=ICAO[:CALLSIGN],... ; the callsign lets an airline flight be told apart.
+        items = [x for x in (request.query_params.get("a") or "").split(",") if x.strip()]
+        if not items:
+            raise ValueError("a (ICAO addresses, each with :CALLSIGN if known, comma-separated) is required")
+        if len(items) > 500:
+            raise ValueError("at most 500 aircraft at a time")
+        wanted = []
+        for x in items:
+            icao, _, callsign = x.strip().partition(":")
+            wanted.append((icao, callsign or None))
+        return JSONResponse({"aircraft": planes.lookup(wanted), "db": planes.status()})
 
     @guarded
     def api_events(request: Request) -> Response:
@@ -921,7 +953,9 @@ def create_app(
         if feed:
             hub.start()
         engine.start()
+        planes.start()
         yield
+        planes.stop()
         engine.stop()
         await hub.stop()
 
@@ -940,6 +974,7 @@ def create_app(
         Route("/api/events", api_events),
         Route("/api/positions", api_positions),
         Route("/api/positions/grid", api_position_grid),
+        Route("/api/aircraft", api_aircraft),
         Route("/api/basemap.pmtiles", api_basemap),
         Route("/api/spectrum/segments", api_segments),
         Route("/api/spectrum", api_spectrum),
@@ -963,4 +998,5 @@ def create_app(
     gate = Gate(app, digests, sessions, web.extra_origins)
     gate.hub = hub  # for the tests
     gate.alerts = engine
+    gate.aircraft = planes
     return gate

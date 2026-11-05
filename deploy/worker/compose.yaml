@@ -57,6 +57,9 @@ services:
       # HACKRF_WEB_ALERT_WEBHOOK_FILE: /run/secrets/alert-webhook
       # HACKRF_WEB_ALERT_WEBHOOK_FORMAT: discord   # json (default), discord or ntfy
       # HACKRF_WEB_URL: http://192.0.2.10:8766      # for links in the messages
+      # Aircraft classes on the Map (military, law enforcement, ...): download
+      # the FAA registry and plane-alert-db weekly (about 75 MB each time).
+      # HACKRF_WEB_AIRCRAFT_DB: weekly
     # volumes:
     #   - hackrf-data:/data
     #   - ./alert-webhook:/run/secrets/alert-webhook:ro

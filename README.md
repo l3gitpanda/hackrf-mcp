@@ -380,6 +380,16 @@ in the Log. The map is [Leaflet](https://leafletjs.com/) 1.9.4 with a
 lat/lon grid and range rings 25 to 200 km around `HACKRF_LIVE_RECEIVER`
 when it is set. Nothing is loaded from other sites when it is viewed.
 
+**Aircraft types.** Aircraft (profiles whose subjects are ICAO addresses,
+`subject_type` `icao24`) are coloured by type on the Map: military, law
+enforcement, government, commercial, private or unknown, from the aircraft
+database below; a row of chips with counts shows or hides each type, and
+"Colour by type" goes back to the profile's colour. Military, law
+enforcement and government aircraft carry a MIL, LAW or GOV tag in their
+label. A selected aircraft shows its type and why, registration, make and
+model, owner and operator, and the In view list tags each one. The sources
+are credited on the map once a database is in use.
+
 **Receiver range.** With `HACKRF_LIVE_RECEIVER` set, the Map's *Receiver
 range* layer shows how far the antenna hears in each direction over the
 last 24 hours or 7 days, to judge the antenna and any move of it: an
@@ -499,6 +509,38 @@ link back to the Log in each message. Hits are posted from a thread of their
 own with a 10 s timeout and two retries; one for a row logged more than 30
 minutes before it was checked (a catch-up after an outage) is recorded but
 not posted. The URL is never logged or shown.
+
+**Aircraft database.** What kind of aircraft an ICAO address is
+(military, law enforcement, government, commercial, private or unknown) and
+whose, for the Map: `GET /api/aircraft?a=ICAO[:CALLSIGN],...` gives the
+class, why, and what is known (registration, make and model, aircraft type,
+registrant and owner, plane-alert's operator, type, category and tags). It
+merges two public databases into `aircraft.db` in hackrf-web's state
+directory:
+
+- the FAA Aircraft Registry's Releasable Aircraft Database (public domain,
+  every US civil registration with its address), keeping only the
+  N-number, make and model, aircraft type, registrant type and name (never
+  addresses or co-owners);
+- [plane-alert-db](https://github.com/sdr-enthusiasts/plane-alert-db) (©
+  SDR-Enthusiasts and contributors, ODbL 1.0, contents DbCL 1.0): about
+  17,000 notable aircraft worldwide tagged military, police, government or
+  civil.
+
+It is off unless `HACKRF_WEB_AIRCRAFT_DB=weekly`: then hackrf-web downloads
+both at start when it has no database, and again when it is a week old
+(about 75 MB; a build takes about 12 s and 50 MiB and makes a 25 MiB file;
+a failed attempt is retried after 6 hours and the old file stays in use).
+That is hackrf-web's only outbound connection, and it only downloads. The
+rules, first match wins: plane-alert's military or police tag; an address
+in ADF7C8-AFFFFF (the US block above every civil N-number); an FAA
+government registrant named for an armed force (military) or for police
+work (law enforcement); plane-alert's government tag, any other government
+registrant or the Civil Air Patrol (government); an airline-style callsign
+(commercial); any other FAA registration or plane-alert civil entry
+(private); else unknown. Without the database only the address range and
+the callsign rules apply. A city's or county's aircraft whose owner name
+doesn't say police can only be called government.
 
 **Plugins.** The **Plugins** screen (`/plugins`) is the catalogue: every
 live profile with its program (installed or missing), tuning, kinds, views

@@ -44,6 +44,11 @@ const S = {
   fitted: false,
   layers: { markers: null, tracks: null, rings: null, range: null },
   range: { data: null, timer: null, seq: 0 },
+  // Aircraft types (web/aircraftdb.py): the classes from the registry, what
+  // /api/aircraft said per ICAO address, and with which callsign it was asked.
+  ac: { classes: new Map(), info: new Map(), asked: new Map(), busy: false, credited: false },
+  acOff: new Set(),
+  acProfiles: [],
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
@@ -51,6 +56,21 @@ const view = (profile) => (S.profiles[profile].views || []).find((v) => v.name =
 const role = (profile, r) => {
   const v = view(profile);
   return v && v.roles ? v.roles[r] : undefined;
+};
+// Targets whose subject is a 24-bit ICAO address can be looked up by type.
+const isAircraft = (t) => !!(S.profiles[t.profile] && S.profiles[t.profile].subject_type === 'icao24');
+const acInfo = (t) => (isAircraft(t) ? S.ac.info.get(String(t.subject).toUpperCase()) || null : null);
+// An aircraft's class ('unknown' until looked up); null for other targets.
+const acClass = (t) => {
+  if (!isAircraft(t)) return null;
+  const i = acInfo(t);
+  return i ? i.class : 'unknown';
+};
+const shown = (t) => S.on.has(t.profile) && !S.acOff.has(acClass(t));
+// Aircraft take their type's colour while "Colour by type" is on.
+const markerColor = (t) => {
+  const c = acClass(t);
+  return c && $('o-actype').checked && S.ac.classes.has(c) ? S.ac.classes.get(c).color : color(t.profile);
 };
 
 // --- Start-up ------------------------------------------------------------------------------
@@ -61,6 +81,9 @@ async function init() {
   S.colors = assignColors(S.registry.profiles);
   S.mapProfiles = S.registry.profiles.filter((p) => view(p.name)).map((p) => p.name);
   for (const p of S.mapProfiles) S.on.add(p);
+  for (const c of (S.registry.aircraft && S.registry.aircraft.classes) || []) S.ac.classes.set(c.name, c);
+  S.acProfiles = S.mapProfiles.filter((p) => S.profiles[p].subject_type === 'icao24');
+  $('ac-row').hidden = !S.acProfiles.length || !S.ac.classes.size;
   S.map = L.map('map', { zoomControl: true, attributionControl: true, worldCopyJump: true, preferCanvas: false }).setView([20, 0], 2);
   S.map.attributionControl.setPrefix('Leaflet');
   L.control.scale({ imperial: true, metric: true }).addTo(S.map);
@@ -102,6 +125,7 @@ function wire() {
   });
   for (const id of ['o-tracks', 'o-labels', 'o-rings']) $(id).addEventListener('change', render);
   $('o-range').addEventListener('change', toggleRange);
+  $('o-actype').addEventListener('change', render);
   $('range-of').addEventListener('change', loadRangeLayer);
   $('range-span').addEventListener('change', loadRangeLayer);
   $('s-close').addEventListener('click', () => select(null));
@@ -215,6 +239,7 @@ function tick() {
     $('t-sub').textContent = 'now, updating';
     render();
   }
+  requestAircraft();
 }
 
 // --- Modes ---------------------------------------------------------------------------------
@@ -368,14 +393,16 @@ function icon(t, pos, stale) {
   const [text, sub] = labelParts(t, pos);
   const label = h('span', { class: 'tl2' }, text, sub ? h('small', {}, sub) : null);
   const cls = `mk${stale ? ' stale' : ''}${S.sel === t.key ? ' sel' : ''}${$('o-labels').checked ? '' : ' nolabel'}${S.alerted.has(t.key) ? ' alerted' : ''}${S.decl.has(t.key) ? ' decl' : ''}`;
-  const el = h('div', { class: cls, '--pc': color(t.profile) }, h('span', { class: 'ico' }, svg), label);
+  const el = h('div', { class: cls, '--pc': markerColor(t) }, h('span', { class: 'ico' }, svg), label);
   return L.divIcon({ html: el, className: '', iconSize: [0, 0] });
 }
 
 // A marker's label: its name, and altitude and speed under it.
 function labelParts(t, pos) {
   const alt = pos.alt ?? t.fields[role(t.profile, 'alt')];
-  const sub = [alt != null && alt !== '' ? `${Math.round(alt)} ft` : null, pos.speed != null ? `${Math.round(pos.speed)} kn` : null].filter(Boolean).join(' · ');
+  const c = S.ac.classes.get(acClass(t));
+  const tag = c && c.notable ? c.short : null; // military, law enforcement, government
+  const sub = [tag, alt != null && alt !== '' ? `${Math.round(alt)} ft` : null, pos.speed != null ? `${Math.round(pos.speed)} kn` : null].filter(Boolean).join(' · ');
   return [t.label || t.subject, sub];
 }
 
@@ -387,7 +414,7 @@ function relabel() {
   if ($('o-labels').checked) {
     const size = S.map.getSize();
     for (const t of S.targets.values()) {
-      if (!t.marker || !S.on.has(t.profile)) continue;
+      if (!t.marker || !shown(t)) continue;
       const pos = positionAt(t.track, S.cursor, HIDE_S);
       if (!pos) continue;
       const pt = S.map.latLngToContainerPoint([pos.lat, pos.lon]);
@@ -421,7 +448,7 @@ function render() {
   S.layers.tracks.clearLayers();
   const seen = new Set();
   for (const t of S.targets.values()) {
-    if (!S.on.has(t.profile)) {
+    if (!shown(t)) {
       if (t.marker) {
         S.layers.markers.removeLayer(t.marker);
         t.marker = null;
@@ -449,10 +476,11 @@ function render() {
     }
     if (showTracks) {
       const pts = trackWindow(t.track, S.cursor - Number($('trail').value || 1800), S.cursor).map((p) => [p.lat, p.lon]);
-      if (pts.length > 1) S.layers.tracks.addLayer(L.polyline(pts, { color: color(t.profile), weight: S.sel === t.key ? 2.5 : 1.5, opacity: stale ? 0.3 : 0.65, interactive: false }));
+      if (pts.length > 1) S.layers.tracks.addLayer(L.polyline(pts, { color: markerColor(t), weight: S.sel === t.key ? 2.5 : 1.5, opacity: stale ? 0.3 : 0.65, interactive: false }));
     }
   }
   buildLayerChips();
+  buildTypeChips();
   drawRings();
   renderList();
   renderSel();
@@ -508,6 +536,73 @@ function drawRings() {
     S.layers.rings.addLayer(L.circle(r, { radius: km * 1000, color: '#3a4858', weight: 1, fill: false, interactive: false, dashArray: '4 6' }));
   }
   S.layers.rings.addLayer(L.circleMarker(r, { radius: 4, color: '#e8eef5', weight: 1.5, fillOpacity: 0, interactive: false }));
+}
+
+// --- Aircraft types --------------------------------------------------------------------------
+// What kind of aircraft each ICAO address is (military, law enforcement,
+// ...), asked of /api/aircraft for targets not yet asked about, or asked
+// with another callsign (it can make a flight commercial), a batch a tick.
+
+async function requestAircraft() {
+  if (S.ac.busy || !S.acProfiles.length || !S.ac.classes.size) return;
+  const want = [];
+  for (const t of S.targets.values()) {
+    if (!isAircraft(t)) continue;
+    const icao = String(t.subject).toUpperCase();
+    const cs = String(t.label || '').trim();
+    if (S.ac.asked.get(icao) === cs) continue;
+    want.push([icao, cs]);
+    if (want.length >= 400) break;
+  }
+  if (!want.length) return;
+  S.ac.busy = true;
+  try {
+    const q = want.map(([i, c]) => (c ? `${i}:${c}` : i)).join(',');
+    const r = await api(`/api/aircraft?a=${encodeURIComponent(q)}`);
+    for (const [i, c] of want) S.ac.asked.set(i, c);
+    for (const [i, info] of Object.entries(r.aircraft || {})) S.ac.info.set(i, info);
+    if (r.db && r.db.built_at && !S.ac.credited && S.registry.aircraft) {
+      S.map.attributionControl.addAttribution(S.registry.aircraft.credit);
+      S.ac.credited = true;
+    }
+    render();
+  } catch (e) {
+    // Left to the next tick.
+  } finally {
+    S.ac.busy = false;
+  }
+}
+
+// The type as a small coloured tag, for the list and the details.
+function typeTag(t) {
+  const c = S.ac.classes.get(acClass(t));
+  return c ? h('span', { class: 'actag', '--cc': c.color }, c.label) : null;
+}
+
+function buildTypeChips() {
+  if ($('ac-row').hidden) return;
+  const box = $('actypes');
+  clear(box);
+  const n = new Map();
+  for (const t of S.targets.values()) {
+    const c = acClass(t);
+    if (c && S.on.has(t.profile) && positionAt(t.track, S.cursor, HIDE_S)) n.set(c, (n.get(c) || 0) + 1);
+  }
+  for (const c of S.ac.classes.values()) {
+    const chip = h(
+      'button',
+      { type: 'button', class: 'tchip', '--pc': c.color, 'aria-pressed': String(!S.acOff.has(c.name)), title: `Show or hide ${c.label.toLowerCase()} aircraft` },
+      h('span', { class: 'sw' }),
+      c.label,
+      h('span', { class: 'n' }, `${n.get(c.name) || 0}`),
+    );
+    chip.addEventListener('click', () => {
+      if (S.acOff.has(c.name)) S.acOff.delete(c.name);
+      else S.acOff.add(c.name);
+      render();
+    });
+    box.append(chip);
+  }
 }
 
 // --- The receiver range ------------------------------------------------------------------
@@ -671,7 +766,7 @@ function renderList() {
   const bounds = S.map.getBounds();
   const rows = [];
   for (const t of S.targets.values()) {
-    if (!S.on.has(t.profile)) continue;
+    if (!shown(t)) continue;
     const pos = positionAt(t.track, S.cursor, HIDE_S);
     if (!pos || !bounds.contains([pos.lat, pos.lon])) continue;
     rows.push({ t, pos });
@@ -682,11 +777,11 @@ function renderList() {
     const stale = S.cursor - pos.ts > STALE_S;
     const b = h(
       'button',
-      { type: 'button', class: `tli${stale ? ' stale' : ''}${S.sel === t.key ? ' on' : ''}${S.alerted.has(t.key) ? ' alerted' : ''}`, '--pc': color(t.profile) },
+      { type: 'button', class: `tli${stale ? ' stale' : ''}${S.sel === t.key ? ' on' : ''}${S.alerted.has(t.key) ? ' alerted' : ''}`, '--pc': markerColor(t) },
       h('span', { class: 'sw' }),
       h('span', { class: 'nm' }, t.label || t.subject),
       h('span', { class: 'ag' }, ago(pos.ts, S.cursor)),
-      h('span', { class: 'ds' }, `${t.profile} · ${t.label ? `${t.subject} · ` : ''}${describe(t, pos)}`),
+      h('span', { class: 'ds' }, typeTag(t), `${t.profile} · ${t.label ? `${t.subject} · ` : ''}${describe(t, pos)}`),
     );
     b.addEventListener('click', () => select(t.key));
     box.append(b);
@@ -742,6 +837,21 @@ function renderSel() {
   }
   const kv = $('s-fields');
   clear(kv);
+  if (isAircraft(t)) {
+    const info = acInfo(t);
+    kv.append(h('dt', {}, 'type'), h('dd', {}, typeTag(t) || 'Unknown', h('span', { class: 'acwhy' }, info ? info.why : 'looking up…')));
+    if (info) {
+      const craft = [info.manufacturer, info.model].filter(Boolean).join(' ');
+      const rows = [
+        ['registration', info.registration],
+        ['aircraft', [craft, info.type && info.type !== craft ? info.type : null, info.kind ? `(${info.kind})` : null].filter(Boolean).join(' ')],
+        ['owner', info.owner ? `${info.owner}${info.registrant ? ` (${info.registrant.toLowerCase()})` : ''}` : null],
+        ['operator', info.operator],
+        ['listed as', [info.category, ...(info.tags || [])].filter(Boolean).join(' · ')], // plane-alert-db
+      ];
+      for (const [k, v] of rows) if (v) kv.append(h('dt', {}, k), h('dd', {}, v));
+    }
+  }
   if (pos) {
     kv.append(h('dt', {}, 'position'), h('dd', { class: 'mono' }, `${pos.lat.toFixed(5)}, ${pos.lon.toFixed(5)}`));
     kv.append(h('dt', {}, 'fix'), h('dd', { class: 'mono' }, `${utc(pos.ts)} UTC (${ago(pos.ts, S.cursor)})`));

@@ -110,6 +110,10 @@ class Profile:
     # whole channel then stays inside the usable band and clear of the DC
     # spike at the centre (LoRa's are 125-500 kHz; the others' are narrow).
     channel_bw_hz: int = 0
+    # What its subjects are, when that lets other data be joined to them:
+    # "icao24" for a 24-bit ICAO aircraft address (hex), which the web UI's
+    # aircraft database (web/aircraftdb.py) looks up. None for anything else.
+    subject_type: str | None = None
 
     def ui_views(self) -> tuple[View, ...]:
         if self.views:

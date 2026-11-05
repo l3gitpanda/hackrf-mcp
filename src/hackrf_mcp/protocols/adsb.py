@@ -322,6 +322,7 @@ live_profiles.register(
            position, speed, track, messages, strongest RSSI.""",
         summary_kinds=("aircraft",),
         summary_fields=("callsign", "squawk", "altitude_min", "altitude_max", "lat", "lon", "speed", "messages"),
+        subject_type="icao24",
         views=(
             View(
                 "map",

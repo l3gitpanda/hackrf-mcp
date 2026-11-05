@@ -104,6 +104,9 @@ body{margin:0;background:#0a0e13}
 .g-map2{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;align-items:start}
 @container (max-width:1000px){.g-map2{grid-template-columns:minmax(0,1fr)}}
 .altspark{width:100%;height:40px}
+/* Map: aircraft types */
+.actag{display:inline-block;font:600 10px/15px var(--mono);padding:0 5px;border-radius:3px;margin-right:6px;color:var(--cc);background:color-mix(in oklab,var(--cc) 18%,transparent);border:1px solid color-mix(in oklab,var(--cc) 45%,transparent)}
+.acwhy{display:block;color:var(--text2);font-size:11.5px;margin-top:2px}
 /* Map: the receiver range */
 .rglegend{gap:4px 12px;font-size:11.5px;color:var(--text2)}
 .rglegend span{display:inline-flex;align-items:center;gap:5px}

@@ -407,7 +407,10 @@ def create_app(
                 "basemap": basemap.info(basemap_path),
                 # The aircraft classes the Map shows, and whose data they are.
                 "aircraft": {
-                    "classes": [{"name": n, "label": label, "color": c} for n, label, c in aircraftdb.CLASSES],
+                    "classes": [
+                        {"name": n, "label": label, "short": short, "color": c, "notable": notable}
+                        for n, label, short, c, notable in aircraftdb.CLASSES
+                    ],
                     "credit": aircraftdb.CREDIT,
                     "enabled": planes.enabled,
                 },

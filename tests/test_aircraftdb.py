@@ -238,6 +238,7 @@ def test_the_aircraft_route_registry_and_status(built, tmp_path):
     assert out["db"]["faa_rows"] == 8
     reg = c.get("/api/registry", headers=BEARER).json()
     assert [k["name"] for k in reg["aircraft"]["classes"]][:3] == ["military", "law_enforcement", "government"]
+    assert {k["short"] for k in reg["aircraft"]["classes"] if k["notable"]} == {"MIL", "LAW", "GOV"}
     assert "ODbL" in reg["aircraft"]["credit"] and reg["aircraft"]["enabled"] is False
     types = {p["name"]: p["subject_type"] for p in reg["profiles"]}
     assert types["adsb"] == "icao24" and types["ais"] is None

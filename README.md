@@ -380,6 +380,16 @@ in the Log. The map is [Leaflet](https://leafletjs.com/) 1.9.4 with a
 lat/lon grid and range rings 25 to 200 km around `HACKRF_LIVE_RECEIVER`
 when it is set. Nothing is loaded from other sites when it is viewed.
 
+**Aircraft types.** Aircraft (profiles whose subjects are ICAO addresses,
+`subject_type` `icao24`) are coloured by type on the Map: military, law
+enforcement, government, commercial, private or unknown, from the aircraft
+database below; a row of chips with counts shows or hides each type, and
+"Colour by type" goes back to the profile's colour. Military, law
+enforcement and government aircraft carry a MIL, LAW or GOV tag in their
+label. A selected aircraft shows its type and why, registration, make and
+model, owner and operator, and the In view list tags each one. The sources
+are credited on the map once a database is in use.
+
 **Receiver range.** With `HACKRF_LIVE_RECEIVER` set, the Map's *Receiver
 range* layer shows how far the antenna hears in each direction over the
 last 24 hours or 7 days, to judge the antenna and any move of it: an

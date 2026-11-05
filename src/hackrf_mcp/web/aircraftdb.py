@@ -75,14 +75,15 @@ CREDIT = (
     "and contributors (ODbL 1.0)"
 )
 
-# The classes, in the order the UI lists them, with a colour each.
+# The classes, in the order the UI lists them: name, label, a short tag,
+# a colour, and whether the Map tags them on the marker (the notable ones).
 CLASSES = (
-    ("military", "Military", "#ff6b6b"),
-    ("law_enforcement", "Law enforcement", "#5aa9ff"),
-    ("government", "Government", "#c58cff"),
-    ("commercial", "Commercial", "#ffd166"),
-    ("private", "Private", "#8fd46a"),
-    ("unknown", "Unknown", "#8a96a6"),
+    ("military", "Military", "MIL", "#ff6b6b", True),
+    ("law_enforcement", "Law enforcement", "LAW", "#5aa9ff", True),
+    ("government", "Government", "GOV", "#c58cff", True),
+    ("commercial", "Commercial", "COM", "#ffd166", False),
+    ("private", "Private", "PVT", "#8fd46a", False),
+    ("unknown", "Unknown", "?", "#8a96a6", False),
 )
 
 # FAA MASTER "TYPE REGISTRANT" and "TYPE AIRCRAFT" (ardata.pdf).

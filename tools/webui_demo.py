@@ -34,6 +34,62 @@ from hackrf_mcp.live_spectrum import SpectrumRecorder, SpectrumWriter
 HOME = (33.86, -118.28)
 
 
+def demo_aircraft(i: int) -> tuple[str, str]:
+    """A made-up ICAO address and callsign for demo aircraft i, each type of
+    aircraft in turn (military, law enforcement, government, commercial
+    twice, private, unknown), to match demo_aircraft_db."""
+    kind = i % 7
+    addr = 0xAE0000 + i if kind == 0 else 0xA0D000 + i
+    callsign = (f"RCH{100 + i}", f"N{100 + i}SD", f"N{100 + i}SU", f"DMO{100 + i}", f"DMO{200 + i}", f"N{100 + i}PV", "")[kind]
+    return f"{addr:06X}", callsign
+
+
+def subject_and_label(p, s: str) -> tuple[str, str | None]:
+    """A profile whose subjects are aircraft addresses gets demo aircraft;
+    the others keep DEMOnn."""
+    if p.subject_type == "icao24":
+        icao, callsign = demo_aircraft(int(s[-2:]))
+        return icao, callsign or None
+    return s, f"DEMO {s[-2:]}"
+
+
+def demo_aircraft_db(path: Path) -> None:
+    """An aircraft database for the demo aircraft alone, all made up, so the
+    Map's types show without downloading the real ones."""
+    import sqlite3
+
+    from hackrf_mcp.web import aircraftdb
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.executescript(aircraftdb.SCHEMA)
+    for i in range(40):
+        icao, _ = demo_aircraft(i)
+        kind = i % 7
+        if kind == 0:
+            conn.execute(
+                "INSERT INTO aircraft (icao, pa_class, pa_operator, pa_type, pa_category) VALUES (?, 'Mil', ?, ?, ?)",
+                (icao, "Example Air Force", "C-17A Globemaster III", "Example Air Force"),
+            )
+            continue
+        faa = {
+            1: (f"N{100 + i}SD", "AIRBUS HELICOPTERS", "AS350B3", "6", "5", "EXAMPLE COUNTY SHERIFFS OFFICE"),
+            2: (f"N{100 + i}SU", "CESSNA", "172S", "4", "5", "EXAMPLE STATE UNIVERSITY"),
+            3: (f"N{300 + i}DM", "BOEING", "737-8", "5", "3", "DEMO AIRLINES INC"),
+            4: (f"N{300 + i}DM", "AIRBUS", "A321-271NX", "5", "3", "DEMO AIRLINES INC"),
+            5: (f"N{100 + i}PV", "PIPER", "PA-28-181", "4", "1", "A. N. EXAMPLE"),
+        }.get(kind)
+        if faa:
+            conn.execute(
+                "INSERT INTO aircraft (icao, faa, registration, manufacturer, model, type_aircraft, registrant_type, owner) "
+                "VALUES (?, 1, ?, ?, ?, ?, ?, ?)",
+                (icao, *faa),
+            )
+    conn.execute("INSERT INTO meta VALUES ('built_at', ?)", (str(time.time()),))
+    conn.commit()
+    conn.close()
+
+
 class LoopSource(FileSource):
     """A capture played in a loop, in real time."""
 
@@ -106,11 +162,12 @@ class DemoPipeline(Pipeline):
                 for k in p.summary_fields
                 if k not in ("lat", "lon")
             }
+            subject, label = subject_and_label(p, s)
             if has_map:
                 pos[s][0] += rnd.uniform(-0.01, 0.01)
                 pos[s][1] += rnd.uniform(-0.01, 0.01)
                 fields.update(lat=round(pos[s][0], 5), lon=round(pos[s][1], 5))
-                self.ctx.emit_position(Position(time.time(), p.name, s, pos[s][0], pos[s][1], 30000.0, 250.0, 90.0))
+                self.ctx.emit_position(Position(time.time(), p.name, subject, pos[s][0], pos[s][1], 30000.0, 250.0, 90.0))
             self.ctx.emit(
                 Row(
                     ts=time.time(),
@@ -118,8 +175,8 @@ class DemoPipeline(Pipeline):
                     kind=kind,
                     freq_hz=freq,
                     level_db=round(rnd.uniform(-40, -10), 1),
-                    subject=s,
-                    label=f"DEMO {s[-2:]}",
+                    subject=subject,
+                    label=label,
                     fields=fields,
                     raw=f"demo {p.name} {s} (simulated, not decoded)",
                 )
@@ -176,20 +233,21 @@ def backfill(db_path: Path, hours: float, now: float) -> None:
                 if rnd.random() < 0.25:
                     continue
                 lat0, lon0, dlat, dlon, alt = tracks[s]
+                subject, label = subject_and_label(p, s)
                 k = ((m / 3600) % 6) / 6
                 lat, lon = lat0 + dlat * 0.4 * k, lon0 + dlon * 0.4 * k
                 fields = {"messages": rnd.randint(5, 400) if has_map else 1, "type": "DEMO"}
                 if has_map:
                     fields.update(lat=round(lat, 5), lon=round(lon, 5), altitude=int(alt), speed=rnd.choice([12, 250, 430]))
                     for j in range(0, 60, 20):
-                        fixes.append(Position(float(m + j), name, s, lat + dlat * 0.0007 * j, lon + dlon * 0.0007 * j, alt, 250.0, 90.0))
+                        fixes.append(Position(float(m + j), name, subject, lat + dlat * 0.0007 * j, lon + dlon * 0.0007 * j, alt, 250.0, 90.0))
                 # Fainter with distance, as a real receiver hears them.
                 km = 111.2 * float(np.hypot(lat - HOME[0], (lon - HOME[1]) * np.cos(np.radians(HOME[0]))))
                 level = round(-6 - 0.09 * km + rnd.gauss(0, 3), 1) if has_map else round(rnd.uniform(-40, -10), 1)
                 rows.append(
                     Row(
                         ts=float(m), ts_end=float(m + 50), profile=name, kind=kind, freq_hz=p.default_freqs_hz[0] if p.default_freqs_hz else None,
-                        level_db=level, subject=s, label=f"DEMO {s[-2:]}", fields=fields,
+                        level_db=level, subject=subject, label=label, fields=fields,
                         raw=f"demo {name} {s} (simulated, not decoded)",
                     )
                 )  # fmt: skip
@@ -319,6 +377,7 @@ def main() -> None:
     from hackrf_mcp.web.app import create_app
 
     web = settings.WebSettings()
+    demo_aircraft_db(web.state_path(live) / "aircraft.db")
     if args.webhook_catcher:
         hook = tmp / "webhook-url"
         hook.write_text(f"http://127.0.0.1:{start_catcher()}/demo-hook")

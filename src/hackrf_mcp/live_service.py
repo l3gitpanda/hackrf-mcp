@@ -21,6 +21,10 @@ holds it free until resume or until the lease runs out, whichever is first,
 so a client that dies mid-call can't leave decoding stopped. The MCP server
 pauses the service around every device tool call (see live_client.py).
 
+With HACKRF_LIVE_OCCUPANCY on, the service also takes the HackRF itself
+every few minutes for an occupancy sweep (occupancy.py), with the same kind
+of hold, and hands it back to whatever should be running.
+
 `python -m hackrf_mcp.live_service --replay FILE ...` runs one profile over a
 capture file instead of the HackRF and prints what was logged.
 """
@@ -41,7 +45,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hackrf_mcp import cli, live_feed, live_log, live_profiles, live_spectrum, procstats, settings
+from hackrf_mcp import cli, live_feed, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
 from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
@@ -213,6 +217,7 @@ class LiveService:
         self.shutdown = threading.Event()
         self.started_at = clock()
         self.agent_link = None  # the split station's live_import.AgentLink, if any
+        self.occupancy: occupancy.Scheduler | None = None
 
         self.desired: dict | None = None  # {"spec": Spec} or {"schedule": [(Spec, minutes)], "anchor": t}
         self.hold: dict | None = None  # {"owner", "until", "token", "since", "stopped"}
@@ -622,7 +627,7 @@ class LiveService:
             self._stop_pipeline("stopped on request")
         return {"ok": True, **self.status()}
 
-    def _cmd_pause(self, req: dict) -> dict:
+    def _cmd_pause(self, req: dict, log: bool = True) -> dict:
         owner = str(req.get("owner") or "a client")[:80]
         lease = min(max(float(req.get("lease_s", 120)), 1.0), MAX_LEASE_S)
         with self.lock:
@@ -637,20 +642,46 @@ class LiveService:
             token = secrets.token_hex(8)
             self.hold = {"owner": owner, "until": now + lease, "token": token, "since": since, "stopped": was}
             self._stop_pipeline(f"paused for {owner}")
-            if was and not renewal:
+            if was and not renewal and log:
                 self._event("pause", was, f"for {owner}, lease {lease:.0f} s")
         return {"ok": True, "token": token, "paused_profile": was, "lease_s": lease}
 
-    def _cmd_resume(self, req: dict) -> dict:
+    def _cmd_resume(self, req: dict, log: bool = True) -> dict:
         with self.lock:
             hold = self.hold
             if hold is None or hold["token"] != req.get("token"):
                 return {"ok": True, "resumed": False}
             self.hold = None
-            if hold.get("stopped"):
+            if hold.get("stopped") and log:
                 self._event("resume", hold["stopped"], f"after {hold['owner']} ({self.clock() - hold['since']:.0f} s)")
         self.wake.set()
         return {"ok": True, "resumed": True}
+
+    # --- occupancy sweeps -----------------------------------------------
+
+    def occupancy_take(self, lease_s: float) -> dict:
+        """Take the HackRF for an occupancy sweep: {"state": "ok", "token",
+        "paused_profile"} once the decoder has let go; {"state": "watch"}
+        while a watch has it (the slot is skipped); {"state": "busy",
+        "owner"} while a device tool holds it (the slot may wait). Checked
+        and taken under one lock, so a device tool's pause can't be
+        replaced. The slot's own events say what happened, so the hold
+        logs no pause or resume of its own."""
+        with self.lock:
+            now = self.clock()
+            if self.watch is not None and now < self.watch["until"]:
+                return {"state": "watch"}
+            if self.hold is not None and now < self.hold["until"]:
+                return {"state": "busy", "owner": self.hold["owner"]}
+            r = self._cmd_pause({"owner": occupancy.OWNER, "lease_s": lease_s}, log=False)
+        return {"state": "ok", "token": r["token"], "paused_profile": r["paused_profile"]}
+
+    def occupancy_give(self, token: str) -> bool:
+        """Hand the HackRF back: the supervisor starts whatever should be
+        running now (the profile, the rotation's current entry, a watch
+        asked for meanwhile). False if the hold had already gone (its lease
+        ran out, or a device tool's pause replaced it)."""
+        return self._cmd_resume({"token": token}, log=False)["resumed"]
 
     # --- status ---------------------------------------------------------
 
@@ -758,6 +789,7 @@ class LiveService:
             )
         out["log"] = log
         out["spectrum"] = self.spectrum_status()
+        out["occupancy"] = self.occupancy.status() if self.occupancy is not None else {"enabled": False}
         out["feed"] = self.feed.status() if self.feed is not None else None
         out["agent"] = self.agent_link.status() if self.agent_link is not None else None
         return out
@@ -848,7 +880,9 @@ def serve(live: settings.LiveSettings) -> None:
         "service-start",
         None,
         f"pid {os.getpid()}, pager content {'on' if live.pager_content else 'off'}, spectrum history "
-        + (f"on (duty {live.spectrum_duty:g})" if recorder else "off"),
+        + (f"on (duty {live.spectrum_duty:g})" if recorder else "off")
+        + ", occupancy sweeps "
+        + (f"every {live.occupancy_interval_min} min" if live.occupancy else "off"),
     )
     link = None
     if live.agent is not None:
@@ -862,6 +896,7 @@ def serve(live: settings.LiveSettings) -> None:
         service.agent_link = link
         link.start()
     service.load()
+    sched = start_occupancy(service, live) if live.occupancy else None
     server = ControlServer(live.socket_path, service)
     threading.Thread(target=server.serve_forever, daemon=True, name="control").start()
 
@@ -884,12 +919,42 @@ def serve(live: settings.LiveSettings) -> None:
             pass
         if link is not None:
             link.stop()
+        if sched is not None and sched.stop():
+            sched.writer.close()
         service._event("service-stop", None, None)
         feed.close()
         pump.stop()
         writer.close()
         if spectrum_writer is not None:
             spectrum_writer.close()
+
+
+def start_occupancy(service: LiveService, live: settings.LiveSettings, run_sweep=None) -> occupancy.Scheduler:
+    """Open occupancy.db and start the slot schedule. Alert hits are read
+    from hackrf-web's alerts.db, in its state directory (the same
+    environment gives both services the same one)."""
+    writer = occupancy.OccupancyWriter(
+        live.occupancy_db_path,
+        live.occupancy_max_age_days * 86400,
+        live.occupancy_daily_days * 86400,
+        int(live.occupancy_max_mb * MIB),
+        int(live.min_free_mb * MIB),
+    )
+    writer.prune()
+    alerts_db = settings.WebSettings.from_env().state_path(live) / "alerts.db"
+    sched = occupancy.Scheduler(
+        service,
+        occupancy.Plan.from_live(live),
+        writer,
+        live.occupancy_interval_min * 60,
+        live.occupancy_late_min * 60,
+        live.occupancy_alert_quiet_min * 60,
+        alerts_db,
+        run_sweep or occupancy.sweep_runner(live),
+    )
+    service.occupancy = sched
+    sched.start()
+    return sched
 
 
 def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:

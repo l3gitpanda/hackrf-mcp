@@ -1607,6 +1607,23 @@ def _format_live_status(st: dict) -> str:
             lines.append(
                 f"  Spectrum rows dropped: {sp['rows_dropped']}" + (" (free disk below the floor)" if sp.get("low_disk") else "")
             )
+    oc = st.get("occupancy") or {}
+    if oc and not oc.get("enabled"):
+        lines.append("  Occupancy sweeps: off (HACKRF_LIVE_OCCUPANCY).")
+    elif oc:
+        last = oc.get("last") or {}
+        lo, hi = oc.get("range_mhz") or (0, 0)
+        lines.append(
+            f"  Occupancy sweeps: every {oc.get('interval_min', 0):g} min on the UTC clock, {lo}-{hi} MHz, "
+            f"{oc.get('passes')} passes at {(oc.get('bin_hz') or 0) / 1e3:.1f} kHz, LNA {oc.get('lna_gain_db')} dB, "
+            f"VGA {oc.get('vga_gain_db')} dB, amp off; next {_utc(oc.get('next_slot'))}; "
+            f"{oc.get('stored', 0)} stored, {oc.get('skipped', 0)} skipped and {oc.get('errors', 0)} failed since the "
+            f"service started"
+            + (f", last {last.get('result')} {_ago(last.get('at'), now)}: {last.get('detail')}" if last else "")
+            + f". {oc.get('path')}, {oc.get('file_bytes', 0) / storage.MIB:.1f} MiB of {oc.get('max_mb'):g} MiB, "
+            f"{oc.get('slots_kept', 0)} slots (kept {oc.get('max_age_days'):g} days) and {oc.get('days_kept', 0)} daily "
+            f"roll-ups (kept {oc.get('daily_days'):g} days)."
+        )
     feed = st.get("feed")
     if feed:
         lines.append(
@@ -1635,7 +1652,9 @@ def hackrf_live_status() -> str:
     when; decoded-message and log-row rates; whether samples are arriving
     at the full rate; the last error; a rotation schedule if one is set;
     the size and limits of the log and of the spectrum history (one row of
-    mean and peak power per bin per second of the band being decoded); and
+    mean and peak power per bin per second of the band being decoded);
+    occupancy sweeps, if the operator has turned them on (a short wide
+    sweep every few minutes, which pauses decoding for a few seconds); and
     recent events (starts, stops, pauses, errors) from the log.
 
     This does not access the HackRF device.

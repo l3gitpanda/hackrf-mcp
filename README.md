@@ -335,6 +335,51 @@ and limits.
 | `HACKRF_LIVE_SPECTRUM_MINUTE_DAYS` | `90` | minute rows older than this are deleted |
 | `HACKRF_LIVE_SPECTRUM_DUTY` | `1` | share of the samples transformed (0-1]; below 1 the peak can miss short bursts |
 
+**Spectrum occupancy.** With `HACKRF_LIVE_OCCUPANCY` on, the live service
+also lends the HackRF to `hackrf_sweep` for a few seconds every 15 minutes,
+on the UTC clock (:00, :15, :30, :45), to build a record of what is on the
+air across a wide range and when
+([`occupancy.py`](src/hackrf_mcp/occupancy.py)). Each slot sweeps 24-1704
+MHz (hackrf_sweep rounds the top up to a 20 MHz step) 20 times at a 100 kHz
+bin width (98 kHz in practice: 17,136 bins) with fixed gains (LNA 24, VGA
+40, amplifier off), so slots compare over time, and keeps the mean of the
+passes (in linear power) and the peak of each bin. One pass measures each
+bin from a single FFT frame of about 10 us, so it sees steady carriers but
+catches bursts only by luck; the mean of 20 shows how busy a bin is and the
+peak catches more of the bursts. Levels are on the spectrum history's scale
+(0 dBFS a full-scale tone). On the owner's station a slot held the HackRF
+for 4.2 s and decoding was back about 8 s after it stopped.
+
+A slot takes the receiver the way a device tool does, with a lease, and
+whatever should be running (the profile, the rotation's current entry, a
+watch asked for meanwhile) resumes as soon as the sweep ends. A slot is
+skipped while a watch has the receiver, and within
+`HACKRF_LIVE_OCCUPANCY_ALERT_QUIET_MIN` of an alert hit; one that finds the
+HackRF lent to a device tool waits for it up to
+`HACKRF_LIVE_OCCUPANCY_LATE_MIN`. Each slot logs an `occupancy-done`,
+`occupancy-skip` or `occupancy-error` event; its pause shows in coverage
+like a device tool's. Slots go to `$HACKRF_LIVE_DIR/occupancy.db`, about 35
+KB each (1.2 GB a year), with one roll-up per UTC day (the mean of the
+means, the peak of the peaks) kept longer for year views. The web UI's
+`/api/occupancy*` routes serve the heat map, hour-of-day and day-of-week
+views, ranges well above their usual level at that hour (by default 10 dB
+over the bin's median at the same UTC hour over the 7 days before), and one
+cell's level.
+
+| Variable | Default | |
+|---|---|---|
+| `HACKRF_LIVE_OCCUPANCY` | `false` | run occupancy sweeps (each stops decoding for a few seconds) |
+| `HACKRF_LIVE_OCCUPANCY_INTERVAL_MIN` | `15` | minutes between slots; must divide a day |
+| `HACKRF_LIVE_OCCUPANCY_RANGE_MHZ` | `24-1700` | the range swept, `LOW-HIGH` within 1-6000 |
+| `HACKRF_LIVE_OCCUPANCY_BIN_HZ` | `100000` | hackrf_sweep's bin width (2445-5000000) |
+| `HACKRF_LIVE_OCCUPANCY_PASSES` | `20` | sweeps averaged per slot (1-200), about 0.21 s each over 24-1700 MHz |
+| `HACKRF_LIVE_OCCUPANCY_LNA_GAIN`, `HACKRF_LIVE_OCCUPANCY_VGA_GAIN` | 24, 40 | fixed gains; the amplifier is always off |
+| `HACKRF_LIVE_OCCUPANCY_LATE_MIN` | `10` | how long a slot waits for a device tool, under the interval |
+| `HACKRF_LIVE_OCCUPANCY_ALERT_QUIET_MIN` | `10` | skip a slot this soon after an alert hit (0: never) |
+| `HACKRF_LIVE_OCCUPANCY_MAX_MB` | `2048` | the oldest slots (then daily rows) beyond this are deleted |
+| `HACKRF_LIVE_OCCUPANCY_MAX_AGE_DAYS` | `365` | slots older than this are deleted |
+| `HACKRF_LIVE_OCCUPANCY_DAILY_DAYS` | `1826` | daily roll-ups older than this are deleted |
+
 The unit limits the service to `MemoryMax=512M` and 1.5 cores
 (`CPUQuota=150%`), and gives way under contention (`CPUWeight=50`,
 `Nice=10`). The profile last started is saved and resumed after a restart

@@ -380,6 +380,19 @@ in the Log. The map is [Leaflet](https://leafletjs.com/) 1.9.4 with a
 lat/lon grid and range rings 25 to 200 km around `HACKRF_LIVE_RECEIVER`
 when it is set. Nothing is loaded from other sites when it is viewed.
 
+**Receiver range.** With `HACKRF_LIVE_RECEIVER` set, the Map's *Receiver
+range* layer shows how far the antenna hears in each direction over the
+last 24 hours or 7 days, to judge the antenna and any move of it: an
+outline through the farthest position logged in each 5° sector of bearing,
+one per altitude band (below 10,000 ft, 10,000-25,000 ft, 25,000 ft and up)
+for profiles whose positions have an altitude. Its panel gives the farthest
+target (linked to its rows in the Log), the median of the directions'
+farthest, and the signal level against distance from the per-minute rows
+(their peak level and last position: median and 10-90% per 25 km).
+Positions farther than the radio horizon allows for their altitude are
+decoding errors and are left out. It is computed on request from the log
+(`GET /api/positions/range`); nothing is stored.
+
 **Base map.** Streets, coast and places come from an extract of
 OpenStreetMap vector tiles that the operator makes once and keeps on the
 station, never in the repository (it says where the station is):

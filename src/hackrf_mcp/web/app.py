@@ -15,6 +15,8 @@ and the static UI.
   GET  /api/events               starts, stops, pauses, errors
   GET  /api/positions            map-track points, thinned for long ranges
   GET  /api/positions/grid       positions counted per map cell (a heat map)
+  GET  /api/positions/range      how far the receiver hears in each direction,
+                                 and signal level against distance
   GET  /api/basemap.pmtiles      the map's base map (vector tiles, byte
                                  ranges), if the operator has put one in the
                                  web state directory (see web/basemap.py)
@@ -569,6 +571,29 @@ def create_app(
         return JSONResponse({"since": since, "until": until, **out})
 
     @guarded
+    def api_position_range(request: Request) -> Response:
+        if not live.receiver:
+            raise ValueError("the receiver's position is not set (HACKRF_LIVE_RECEIVER), so there is no range to draw")
+        now = time.time()
+        since = _when(request, "since", now)
+        until = _when(request, "until", now) or now
+        if since is None or since >= until:
+            raise ValueError("since (before until) is required")
+        profile = request.query_params.get("profile") or "adsb"
+        live_profiles.load()
+        if profile not in live_profiles.PROFILES:
+            raise ValueError(f"unknown profile {profile!r}")
+        try:
+            sector = float(request.query_params.get("sector", 5))
+        except ValueError as exc:
+            raise ValueError("sector is a width in degrees") from exc
+        if not 1 <= sector <= 30:
+            raise ValueError("sector is a width in degrees, from 1 to 30")
+        with closing(reader()) as conn:
+            out = live_log.receiver_range(conn, tuple(live.receiver), since, until, profile=profile, sector_deg=sector)
+        return JSONResponse({"since": since, "until": until, "profile": profile, **out})
+
+    @guarded
     def api_events(request: Request) -> Response:
         now = time.time()
         with closing(reader()) as conn:
@@ -940,6 +965,7 @@ def create_app(
         Route("/api/events", api_events),
         Route("/api/positions", api_positions),
         Route("/api/positions/grid", api_position_grid),
+        Route("/api/positions/range", api_position_range),
         Route("/api/basemap.pmtiles", api_basemap),
         Route("/api/spectrum/segments", api_segments),
         Route("/api/spectrum", api_spectrum),

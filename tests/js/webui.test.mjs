@@ -8,6 +8,7 @@ import { bandsAt, layoutBands, officialAt, rangeText, serviceText } from '../../
 import { bandList, bandsInView, clampCenter, leftText, parseMhz, scrolled, watchTuning } from '../../src/hackrf_mcp/web/static/js/watchutil.js';
 import { parseQuery, search } from '../../src/hackrf_mcp/web/static/js/bandsearch.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
+import { compass, destination, fmtKm, levelChart, outline } from '../../src/hackrf_mcp/web/static/js/rangeutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
   const c = assignColors([{ name: 'adsb' }, { name: 'ais', color: PALETTE[0] }, { name: 'acars' }]);
@@ -475,4 +476,50 @@ test('map labels: boxes from the text, the important placed first, overlaps left
   // Side by side with a gap wider than the padding: both stay.
   assert.equal(declutter([{ key: 'x', x: 0, y: 0, w: 50, h: 14, rank: 1 }, { key: 'y', x: 60, y: 0, w: 50, h: 14, rank: 0 }]).size, 0);
   assert.equal(declutter([]).size, 0);
+});
+
+test('the range outline: points at a distance and bearing, an arc per sector, the receiver where nothing was heard', () => {
+  const rx = [45, 10];
+  // 111.2 km north is one degree of latitude; due east stays near the same latitude.
+  const [n0, n1] = destination(45, 10, 0, 111.195);
+  assert.ok(Math.abs(n0 - 46) < 1e-3 && Math.abs(n1 - 10) < 1e-9);
+  const [e0, e1] = destination(45, 10, 90, 50);
+  assert.ok(Math.abs(e0 - 45) < 0.02 && e1 > 10.6 && e1 < 10.7);
+  // Across the antimeridian the longitude wraps.
+  assert.ok(destination(0, 179.9, 90, 50)[1] < -179);
+  const kms = [100, null, 50, 0];
+  const pts = outline(rx, kms, 90);
+  assert.equal(pts.length, 3 + 1 + 3 + 1);
+  assert.deepEqual(pts[3], rx);
+  assert.deepEqual(pts[7], rx);
+  // Sector 0's arc runs from 0 to 90 degrees at 100 km.
+  assert.ok(Math.abs(pts[0][0] - destination(45, 10, 0, 100)[0]) < 1e-12);
+  assert.deepEqual(pts[2], destination(45, 10, 90, 100));
+  assert.deepEqual(pts[4], destination(45, 10, 180, 50));
+});
+
+test('compass points and distances in km and miles', () => {
+  assert.equal(compass(0), 'N');
+  assert.equal(compass(22.5), 'NNE');
+  assert.equal(compass(359), 'N');
+  assert.equal(compass(-90), 'W');
+  assert.equal(compass(200), 'SSW');
+  assert.equal(fmtKm(312.4), '312 km (194 mi)');
+  assert.equal(fmtKm(8.04), '8.0 km (5.0 mi)');
+  assert.equal(fmtKm(null), '—');
+});
+
+test('the signal-against-distance chart: a 10-90% band, the median line and tidy ticks', () => {
+  assert.equal(levelChart([], 25), null);
+  assert.equal(levelChart([[0, 0, -5, -5, -5]], 25), null);
+  const g = levelChart([[0, 3, -8, -6, -5], [100, 2, -33, -31, -30]], 25, 300, 140, [34, 6, 6, 18]);
+  // Bins are drawn at their middles: 12.5 and 112.5 km, on an axis to 125 km.
+  assert.deepEqual(g.xticks.map((t) => t.v), [0, 25, 50, 75, 100, 125]);
+  assert.equal(g.dots.length, 2);
+  assert.ok(Math.abs(g.dots[0].x - (34 + (12.5 / 125) * 260)) < 1e-9);
+  assert.ok(g.yticks[0].v <= -33 && g.yticks[g.yticks.length - 1].v >= -5);
+  // Louder is higher on the chart.
+  assert.ok(g.dots[0].y < g.dots[1].y);
+  assert.ok(g.band.startsWith('M') && g.band.endsWith('Z') && g.median.split('L').length === 2);
+  assert.deepEqual(g.box, { left: 34, top: 6, right: 294, bottom: 122 });
 });

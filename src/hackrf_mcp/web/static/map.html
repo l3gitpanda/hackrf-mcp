@@ -79,6 +79,15 @@
         <label class="check"><input type="checkbox" id="o-tracks" checked>Tracks</label>
         <label class="check"><input type="checkbox" id="o-labels" checked>Labels</label>
         <label class="check" id="rings-wrap" hidden><input type="checkbox" id="o-rings" checked>Range rings</label>
+        <label class="check" id="range-wrap" hidden><input type="checkbox" id="o-range">Receiver range</label>
+        <span class="row" id="range-opts" hidden>
+          <label class="sr" for="range-of">Range of</label><select id="range-of" class="inp"></select>
+          <label class="sr" for="range-span">Over the last</label>
+          <select id="range-span" class="inp">
+            <option value="86400">24 hours</option>
+            <option value="604800" selected>7 days</option>
+          </select>
+        </span>
       </div>
     </section>
     <div class="g-map2">
@@ -106,6 +115,16 @@
             </div>
             <dl class="kv" id="s-fields"></dl>
             <div class="row wr"><a class="btn sm" id="s-log" href="/log">Open in log</a><button type="button" class="btn sm" id="s-zoom">Zoom to</button></div>
+          </div>
+        </section>
+        <section class="panel" id="range-panel" hidden>
+          <div class="ph"><h2>Receiver range</h2><span class="sp"></span><span class="mono muted" id="rg-when"></span></div>
+          <div class="pb col">
+            <div class="row wr rglegend" id="rg-legend"></div>
+            <dl class="kv" id="rg-stats"></dl>
+            <span class="cap">Signal against distance</span>
+            <svg class="rgchart" id="rg-chart" viewBox="0 0 300 140" role="img" aria-label="Signal level against distance"></svg>
+            <p class="muted sm" id="rg-note"></p>
           </div>
         </section>
         <section class="panel">

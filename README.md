@@ -623,8 +623,11 @@ there opens the Live screen's form to record it now, and says so.
 log as it is, with no storage of its own: when each profile was on the air
 and the gaps between; per profile, how many different subjects it heard
 (aircraft, ships, capcodes ...; AIS by kind), its decoded messages and the
-20 busiest subjects with their fields, each linking to its rows in the Log;
-messages per time bucket with the time on the air beneath; and a heat map
+20 busiest subjects with their fields, each linking to its rows in the Log
+(for profiles whose subjects are aircraft, ICAO addresses or tails, with an
+Aircraft column from the offline aircraft database as on the Map: class,
+registration, make and model, owner or operator, and the whole record on
+pointing); messages per time bucket with the time on the air beneath; and a heat map
 of where the profiles with positions were, one profile at a time, counting
 different targets (or fixes) per cell on the same base map as the Map, the
 cells finer as you zoom in. ADS-B and AIS rows are per-minute summaries, so

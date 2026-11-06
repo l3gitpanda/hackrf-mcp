@@ -295,10 +295,7 @@ test('band search: frequencies, ranges and words', () => {
   assert.equal(search(plan, official, '').official.length, 0);
 });
 
-import {
-  areaPath, binAlpha, binLabels, binOf, bucketsFor, cellFor, columnsOf, dropEchoes, durText, fieldText, gridImage, heatBins,
-  kindsText, mercY, numericCols, onAir, rangeOf, runsOf, tickTimes,
-} from '../../src/hackrf_mcp/web/static/js/summutil.js';
+import { aircraftName, aircraftQuery, aircraftWanted, areaPath, binAlpha, binLabels, binOf, bucketsFor, cellFor, columnsOf, dropEchoes, durText, fieldText, gridImage, heatBins, kindsText, mercY, numericCols, onAir, rangeOf, runsOf, tickTimes } from '../../src/hackrf_mcp/web/static/js/summutil.js';
 
 test('summary periods: back from now, today since UTC midnight, or typed', () => {
   const now = Date.UTC(2026, 10, 3, 21, 14) / 1000;
@@ -718,4 +715,28 @@ test('the form ticks what was suggested until the user picks, and sends only wha
   assert.deepEqual(captureBody({ lo_hz: 1, hi_hz: 2, seconds: 10, chosen: ['x'], lna: '24', vga: 30, amp: true, origin: 'history' }), {
     from_hz: 1, to_hz: 2, seconds: 10, origin: 'history', decoders: ['x'], lna_gain_db: 24, vga_gain_db: 30, amp: true,
   });
+});
+
+test('Summaries asks the aircraft database about aircraft subjects only, with their callsigns', () => {
+  const profiles = { a: { subject_type: 'icao24' }, t: { subject_type: 'registration' }, s: { subject_type: null } };
+  const data = { profiles: {
+    a: { top: [{ subject: 'a1b2c3', labels: ['UAL12'] }, { subject: '~ad0001', labels: [] }, { subject: 'A1B2C3', labels: [] }] },
+    t: { top: [{ subject: 'N123AB', labels: ['X'] }] },
+    s: { top: [{ subject: '367000001', labels: [] }] },
+  } };
+  const w = aircraftWanted(profiles, data);
+  assert.deepEqual(w, { icao: [['A1B2C3', 'UAL12']], tails: ['N123AB'] });
+  assert.equal(aircraftQuery([['A1B2C3', 'UAL12'], ['D4E5F6', '']]), 'A1B2C3:UAL12,D4E5F6');
+});
+
+test('an aircraft is named by registration, make and model, and owner', () => {
+  const n = aircraftName({ class: 'private', why: 'registered to an individual', registration: 'N123AB', manufacturer: 'CESSNA', model: '172S', owner: 'DOE JOHN', registrant: 'Individual', kind: 'Fixed wing single engine' });
+  assert.equal(n.short, 'N123AB · CESSNA 172S · DOE JOHN (individual)');
+  assert.equal(n.cls, 'private');
+  assert.match(n.full, /owner DOE JOHN \(individual\)/);
+  assert.match(n.full, /registered to an individual/);
+  const m = aircraftName({ class: 'military', why: 'listed by plane-alert-db', type: 'C-17A', operator: 'USAF', category: 'Military', tags: ['Transport'] });
+  assert.equal(m.short, 'C-17A · USAF');
+  assert.match(m.full, /listed as Military · Transport/);
+  assert.equal(aircraftName(null), null);
 });

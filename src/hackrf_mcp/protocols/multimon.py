@@ -350,7 +350,9 @@ class MultimonPipeline(ChannelPipeline):
             self._emit_all(rows)
 
 
-def _offline(name: str, summary: str, recipe: str, default_freqs: tuple[int, ...] = (), help: str = "") -> None:
+def _offline(
+    name: str, summary: str, recipe: str, default_freqs: tuple[int, ...] = (), help: str = "", center: int | None = None
+) -> None:
     decoders.register(
         Decoder(
             name,
@@ -362,6 +364,9 @@ def _offline(name: str, summary: str, recipe: str, default_freqs: tuple[int, ...
             ),
             default_freqs,
             help=help,
+            usual_center_hz=center,
+            # The recipes' 25-50 kHz off the channel.
+            tune_offset_hz=40_000,
         )
     )
 
@@ -385,6 +390,7 @@ _offline(
     "144.35 MHz at 2 MS/s; 60 s. Stations beacon every few minutes.",
     (144_390_000,),
     help="  aprs  - packet radio, US 144.390 MHz; capture at 144.35 MHz.",
+    center=144_350_000,
 )
 _offline(
     "eas",
@@ -393,6 +399,7 @@ _offline(
     NOAA_CHANNELS,
     help="""  eas   - EAS/SAME headers (NOAA Weather Radio 162.400-162.550 MHz;
           capture at 162.475 MHz). Headers come only with alerts/tests.""",
+    center=162_475_000,
 )
 _offline(
     "dtmf",

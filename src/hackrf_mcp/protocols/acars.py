@@ -171,6 +171,9 @@ decoders.register(
         help="""  acars - aircraft datalink, 130.8 MHz at 2,000,000 S/s covers the
           US channels 130.025-131.550 MHz (4,000,000 S/s at 130.35 MHz
           adds 129.125).""",
+        rate_ok=lambda r: r % ACARS_RATE == 0,
+        usual_center_hz=130_800_000,
+        tune_offset_hz=40_000,
     )
 )
 

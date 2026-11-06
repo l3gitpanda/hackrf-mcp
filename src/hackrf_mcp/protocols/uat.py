@@ -51,5 +51,8 @@ decoders.register(
         lambda job: decode_uat(job.cap, job.program, job.timeout, job.workdir),
         (978_000_000,),
         help="  uat   - US general-aviation aircraft, 978 MHz at 2,083,333 S/s.",
+        capture_rate_hz=2_083_333,
+        rate_ok=lambda r: abs(r - 2_083_333) <= 1000,
+        pinned_center_hz=978_000_000,
     )
 )

@@ -188,6 +188,18 @@ class LiveSettings:
     occupancy_max_mb: float = 2048.0
     occupancy_max_age_days: float = 365.0
     occupancy_daily_days: float = 1826.0
+    # Captures from the web UI (captures.py): recorded by this service into
+    # the capture directory's web/ (HACKRF_MCP_DATA_DIR), each at most
+    # capture_max_s long (and within the MCP server's own limits), kept
+    # capture_keep_days or until they pass capture_keep_mb, oldest first. A
+    # capture waits up to capture_wait_s for a device tool or sweep that has
+    # the receiver. Each one stops decoding for its length, and is started
+    # only by someone holding the web UI's token.
+    captures: bool = True
+    capture_max_s: float = 60.0
+    capture_keep_days: float = 7.0
+    capture_keep_mb: float = 4096.0
+    capture_wait_s: float = 30.0
 
     def __post_init__(self) -> None:
         if not 0 < self.spectrum_duty <= 1:
@@ -199,6 +211,9 @@ class LiveSettings:
             "occupancy_max_mb",
             "occupancy_max_age_days",
             "occupancy_daily_days",
+            "capture_max_s",
+            "capture_keep_days",
+            "capture_keep_mb",
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be above 0, not {getattr(self, name):g}")
@@ -220,6 +235,8 @@ class LiveSettings:
             raise ValueError(f"HACKRF_LIVE_OCCUPANCY_LATE_MIN must be 0 or more and under the interval ({m}), not {self.occupancy_late_min:g}")
         if not 0 <= self.occupancy_alert_quiet_min <= 1440:
             raise ValueError(f"HACKRF_LIVE_OCCUPANCY_ALERT_QUIET_MIN must be 0-1440, not {self.occupancy_alert_quiet_min:g}")
+        if not 0 <= self.capture_wait_s <= 600:
+            raise ValueError(f"HACKRF_LIVE_CAPTURE_WAIT_S must be 0-600, not {self.capture_wait_s:g}")
 
     @property
     def db_path(self) -> Path:
@@ -291,9 +308,15 @@ class LiveSettings:
             ("occupancy_max_mb", "HACKRF_LIVE_OCCUPANCY_MAX_MB"),
             ("occupancy_max_age_days", "HACKRF_LIVE_OCCUPANCY_MAX_AGE_DAYS"),
             ("occupancy_daily_days", "HACKRF_LIVE_OCCUPANCY_DAILY_DAYS"),
+            ("capture_max_s", "HACKRF_LIVE_CAPTURE_MAX_S"),
+            ("capture_keep_days", "HACKRF_LIVE_CAPTURE_KEEP_DAYS"),
+            ("capture_keep_mb", "HACKRF_LIVE_CAPTURE_KEEP_MB"),
+            ("capture_wait_s", "HACKRF_LIVE_CAPTURE_WAIT_S"),
         ):
             if v := env.get(key):
                 kwargs[name] = float(v)
+        if v := env.get("HACKRF_LIVE_CAPTURES"):
+            kwargs["captures"] = parse_bool(v)
         if v := env.get("HACKRF_LIVE_OCCUPANCY"):
             kwargs["occupancy"] = parse_bool(v)
         for name, key in (

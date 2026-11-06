@@ -380,6 +380,49 @@ cell's level.
 | `HACKRF_LIVE_OCCUPANCY_MAX_AGE_DAYS` | `365` | slots older than this are deleted |
 | `HACKRF_LIVE_OCCUPANCY_DAILY_DAYS` | `1826` | daily roll-ups older than this are deleted |
 
+**Captures from the web UI.** The live service also records captures that
+the web UI asks for ([`captures.py`](src/hackrf_mcp/captures.py)): a range
+picked on a waterfall, recorded into `web/` in the capture directory
+(`HACKRF_MCP_DATA_DIR`) and decoded there, as `hackrf_transfer` and
+`hackrf_decode` would. hackrf-web never opens the HackRF or talks to the
+agent: it asks the live service over the control socket (`capture-plan`,
+`capture`, `capture-list`, `capture-decode`, `capture-delete`). A capture's
+rate and centre come from the decoders chosen for it, from their
+registrations (the `Decoder` fields below): the rate each records at, the
+centre its recipe gives when that holds the range, or a tuning below the
+range, off the HackRF's DC spike. Decoders whose usual channels are near
+the range are suggested. With no decoder, the narrowest of 2-20 MS/s that
+holds the range is used.
+
+A capture takes the receiver the way an occupancy sweep does, from
+whatever is running, a watch included (its time keeps running); it waits
+up to `HACKRF_LIVE_CAPTURE_WAIT_S` for a device tool or a sweep that has
+it, and while it records, a device tool's pause is refused with how long
+is left (the MCP tools say the HackRF is busy). The receiver is given back
+as soon as the recording ends, whatever happens. Only then are the
+decoders run, one capture at a time, in a child process at low priority,
+with a spectrogram picture. The results kept are each decoder's headline,
+table, messages and notes, never the decoder program's own output; pager
+text follows `HACKRF_MCP_PAGER_CONTENT` as everywhere else. Each capture
+logs `capture-start`, then `capture-done` (with how long the profile was
+paused) or `capture-error`, then `capture-decoded`; its pause shows in
+coverage like a device tool's (the stop reads "paused for web capture").
+
+Each capture is `<id>.cs8` (the samples), `<id>.json` (what was asked,
+what happened, the results) and `<id>.png` (the picture). The web UI
+serves the results and the picture, never the samples; `hackrf_decode` and
+`hackrf_list_captures` see them as `web/<id>.cs8`. Captures are limited by
+the MCP server's own settings as well (`HACKRF_MCP_MAX_RX_SECONDS`,
+`HACKRF_MCP_MAX_CAPTURE_MB`, `HACKRF_MCP_MIN_FREE_MB`).
+
+| Variable | Default | |
+|---|---|---|
+| `HACKRF_LIVE_CAPTURES` | `true` | record captures the web UI asks for (each stops decoding for its length) |
+| `HACKRF_LIVE_CAPTURE_MAX_S` | `60` | the longest capture, within `HACKRF_MCP_MAX_RX_SECONDS` |
+| `HACKRF_LIVE_CAPTURE_WAIT_S` | `30` | how long a capture waits for a device tool or sweep (0-600) |
+| `HACKRF_LIVE_CAPTURE_KEEP_DAYS` | `7` | captures older than this are deleted |
+| `HACKRF_LIVE_CAPTURE_KEEP_MB` | `4096` | the oldest captures beyond this are deleted |
+
 The unit limits the service to `MemoryMax=512M` and 1.5 cores
 (`CPUQuota=150%`), and gives way under contention (`CPUWeight=50`,
 `Nice=10`). The profile last started is saved and resumed after a restart
@@ -681,6 +724,8 @@ switches and stops profiles over the control socket, as the MCP tools do.
 | `GET /api/basemap.pmtiles` | the operator's base map, in byte ranges, or 404 when there is none |
 | `GET /api/spectrum/segments`, `/api/spectrum?segment=` | spectrum history, downsampled to the buckets asked for |
 | `POST /api/live/start`, `/api/live/stop` | the same requests as `hackrf_live_start` / `hackrf_live_stop` |
+| `POST /api/captures/plan`, `POST /api/captures` | what a capture of a range would be (rate, centre, size, decoders suggested, what it would stop), without taking anything; starting one (see [Live decoding](#live-decoding)) |
+| `GET /api/captures`, `POST /api/captures/<id>/decode`, `/delete`, `GET /api/captures/<id>/picture` | the captures with their results; more decoders on one; deleting it; its spectrogram. The samples are never served |
 | `WS /ws/live` | everything as it happens, and status every few seconds |
 
 **Access.** Every route but the sign-in page needs a token: an
@@ -839,6 +884,14 @@ decoders.register(
     )
 )
 ```
+
+A decoder that the web UI's captures should plan for says how to capture
+for it in numbers too (the defaults suit a decoder taking any rate around
+2 MS/s): `capture_rate_hz`, the rate to record at; `rate_ok`, which rates
+`run()` takes; `pinned_center_hz`, a centre `run()` requires exactly;
+`usual_center_hz`, the recipe's centre; and `tune_offset_hz`, how far
+below a picked signal to tune otherwise. A test plans a capture for every
+registered decoder and checks that its `run()` takes it.
 
 A decoder or live profile written in Python needs no program: give it no
 `programs` (`()`). It is then always available, `hackrf_server_status` and

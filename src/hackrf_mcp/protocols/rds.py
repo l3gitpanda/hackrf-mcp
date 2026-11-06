@@ -66,5 +66,7 @@ decoders.register(
         lambda job: decode_rds(job.cap, job.program, job.timeout, job.workdir, job.freqs),
         help="""  rds   - FM broadcast RDS; pass the station in frequencies_hz and
           capture 300-500 kHz off it at 2,000,000 S/s.""",
+        rate_ok=lambda r: 171_000 <= r // iq.pick_decimation(r, 171_000) <= 400_000,
+        tune_offset_hz=400_000,
     )
 )

@@ -831,6 +831,11 @@ class MeshtasticPipeline(Pipeline):
 
 SLOTS_HZ = tuple(sorted({slot_hz(p) for p in PRESETS}))
 
+
+def _lora_rate_ok(rate: int) -> bool:
+    return any(lora_phy.rate_fits(rate, bw) for bw in (125_000, 250_000, 500_000))
+
+
 decoders.register(
     Decoder(
         "meshtastic",
@@ -843,6 +848,9 @@ decoders.register(
           slots (LongFast 906.875 MHz) unless frequencies_hz says otherwise;
           capture at a multiple of 2,000,000 S/s, 60 s or more.
   lora  - any LoRa (SF 7-12, 125/250/500 kHz) on the frequencies_hz given.""",
+        rate_ok=_lora_rate_ok,
+        usual_center_hz=906_575_000,
+        tune_offset_hz=300_000,
     )
 )
 decoders.register(
@@ -852,6 +860,8 @@ decoders.register(
         "LoRa frames of any kind (SF 7-12 at 125, 250 or 500 kHz) on given frequencies, as hex",
         "Capture at a multiple of 2 MS/s with the channel inside the capture; pass it in frequencies_hz.",
         run_lora,
+        rate_ok=_lora_rate_ok,
+        tune_offset_hz=300_000,
     )
 )
 

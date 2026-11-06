@@ -189,6 +189,7 @@ installed.
 | `vdl2` | `dumpvdl2` | 136.8 MHz at 2.1 MS/s (a multiple of 105 kS/s) |
 | `pocsag`, `flex`, `aprs`, `eas`, `dtmf` | `multimon-ng` | the channel ± 25–50 kHz, 2 MS/s |
 | `rds` | `redsea` | the station ± 300–500 kHz, 2 MS/s |
+| `ism` | `rtl_433` | on or near 433.92, 315 or 915 MHz, 2 MS/s; a minute or more (the same as `hackrf_decode_ism`) |
 
 FLEX and POCSAG message text is not shown, or saved with `output_path`,
 unless the server operator sets `HACKRF_MCP_PAGER_CONTENT=true`: by default a
@@ -243,6 +244,22 @@ how an assistant moves the receiver to another band, and search the log.
 | `aprs` | `multimon-ng` | 144.390 MHz, 2.205 MS/s | one row per packet |
 | `eas` | `multimon-ng` | the seven NOAA Weather Radio channels, 162.400–162.550 MHz | one row per SAME header |
 | `meshtastic` | built in (`lora_phy`) | LongFast's US slot, 906.875 MHz (tuned 907.150), 2 MS/s; or the slots given | one row per packet: node info, position, telemetry, text sent to everyone, routes |
+| `ism` | `rtl_433` | 433.92 MHz, or the frequency given (315, 915 ...), 2 MS/s tuned about 375 kHz off it | one row per message, every field rtl_433 decodes (repeats within 3 s dropped); the device (model, id, channel) as subject |
+
+**ISM devices.** The `ism` profile cuts a channel out of the stream around
+the frequency given (433.92 MHz by default), 250 kHz wide, or 1 MHz in the
+902-928 MHz band where devices spread wider, and feeds it to `rtl_433` as
+16-bit I/Q on its stdin (`-r cs16:-`): the channel is far quieter than the
+2 MHz it came from, and 8 bits would round a weak device away (a test
+recording decoded at -20 dB in 16 bits, not in 8). Every message rtl_433
+decodes is a row with every field it gave, its `rssi` as the level and its
+`freq` as the frequency; most devices send each reading two or three times,
+and the same message from the same device within 3 s is one row. One
+frequency a run: a rotation can visit 315, 433.92 and 915 MHz in turn. The
+web UI offers the frequency box for it, and labels rotation steps with
+their frequency. It hears the neighbours' devices too (weather stations,
+tyre-pressure sensors on passing cars, meters); what is logged is the
+operator's choice to make before running it.
 
 The service reads `hackrf_transfer -r -` and streams the samples to the
 decoder: AIS-catcher takes them as they are (cs8, on its stdin since

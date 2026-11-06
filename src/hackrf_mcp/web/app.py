@@ -202,6 +202,7 @@ def registry_json(live: LiveSettings) -> dict:
                 "default_freqs_hz": list(p.default_freqs_hz),
                 "needs_freqs": p.needs_freqs,
                 "fixed_freqs": p.fixed_freqs,
+                "offer_freqs": p.offer_freqs,
                 "lna_gain_db": p.lna_gain_db,
                 "vga_gain_db": p.vga_gain_db,
                 "summary_kinds": list(p.summary_kinds),

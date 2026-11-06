@@ -11,9 +11,9 @@ from hackrf_mcp import decoders, live_profiles, protocols, server
 
 def test_builtin_order_is_stable():
     assert decoders.names() == (
-        "adsb", "uat", "ais", "acars", "vdl2", "pocsag", "flex", "aprs", "eas", "dtmf", "rds", "meshtastic", "lora"
+        "adsb", "uat", "ais", "acars", "vdl2", "pocsag", "flex", "aprs", "eas", "dtmf", "rds", "meshtastic", "lora", "ism"
     )
-    assert live_profiles.names() == ("adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas", "meshtastic")
+    assert live_profiles.names() == ("adsb", "ais", "acars", "vdl2", "flex", "pocsag", "aprs", "eas", "meshtastic", "ism")
 
 
 def test_every_profile_can_be_summarised_and_described():

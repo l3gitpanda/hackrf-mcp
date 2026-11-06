@@ -163,13 +163,63 @@ class LiveSettings:
     # The share of the samples the spectrum is computed from (0-1]; 1 is
     # every sample, so the peak catches every burst.
     spectrum_duty: float = 1.0
+    # Spectrum occupancy (occupancy.py): every occupancy_interval_min
+    # minutes, on the UTC clock, the live service lends the HackRF to
+    # hackrf_sweep for a few seconds and keeps the mean and peak of each bin
+    # in occupancy.db beside the log. Off unless HACKRF_LIVE_OCCUPANCY is
+    # set: each slot stops decoding for the length of the sweep.
+    occupancy: bool = False
+    occupancy_interval_min: int = 15
+    occupancy_range_mhz: tuple[int, int] = (24, 1700)
+    occupancy_bin_hz: int = 100_000
+    occupancy_passes: int = 20
+    # Fixed gains, so slots compare over time; the amplifier stays off.
+    occupancy_lna_gain_db: int = 24
+    occupancy_vga_gain_db: int = 40
+    # A slot that finds the HackRF lent to a device tool waits this long for
+    # it, then is skipped; one within occupancy_alert_quiet_min of an alert
+    # hit (web/alerts.py) is skipped, so a track that set off an alert isn't
+    # broken (0 turns that off). A watch always skips a slot.
+    occupancy_late_min: float = 10.0
+    occupancy_alert_quiet_min: float = 10.0
+    # Slots are kept occupancy_max_age_days, daily roll-ups
+    # occupancy_daily_days, and the oldest slots go first when the file
+    # passes occupancy_max_mb.
+    occupancy_max_mb: float = 2048.0
+    occupancy_max_age_days: float = 365.0
+    occupancy_daily_days: float = 1826.0
 
     def __post_init__(self) -> None:
         if not 0 < self.spectrum_duty <= 1:
             raise ValueError(f"HACKRF_LIVE_SPECTRUM_DUTY must be above 0 and at most 1, not {self.spectrum_duty:g}")
-        for name in ("spectrum_max_mb", "spectrum_max_age_days", "spectrum_minute_days"):
+        for name in (
+            "spectrum_max_mb",
+            "spectrum_max_age_days",
+            "spectrum_minute_days",
+            "occupancy_max_mb",
+            "occupancy_max_age_days",
+            "occupancy_daily_days",
+        ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be above 0, not {getattr(self, name):g}")
+        m = self.occupancy_interval_min
+        if not (1 <= m <= 1440 and 1440 % m == 0):
+            raise ValueError(f"HACKRF_LIVE_OCCUPANCY_INTERVAL_MIN must divide a day (5, 10, 15, 30, 60, ...), not {m}")
+        lo, hi = self.occupancy_range_mhz
+        if not 1 <= lo < hi <= 6000:
+            raise ValueError(f"HACKRF_LIVE_OCCUPANCY_RANGE_MHZ must be within 1-6000, low to high, not {lo}-{hi}")
+        if not 2445 <= self.occupancy_bin_hz <= 5_000_000:
+            raise ValueError(f"HACKRF_LIVE_OCCUPANCY_BIN_HZ must be 2445-5000000, not {self.occupancy_bin_hz}")
+        if not 1 <= self.occupancy_passes <= 200:
+            raise ValueError(f"HACKRF_LIVE_OCCUPANCY_PASSES must be 1-200, not {self.occupancy_passes}")
+        if not (0 <= self.occupancy_lna_gain_db <= 40 and self.occupancy_lna_gain_db % 8 == 0):
+            raise ValueError(f"HACKRF_LIVE_OCCUPANCY_LNA_GAIN must be 0-40 in steps of 8, not {self.occupancy_lna_gain_db}")
+        if not (0 <= self.occupancy_vga_gain_db <= 62 and self.occupancy_vga_gain_db % 2 == 0):
+            raise ValueError(f"HACKRF_LIVE_OCCUPANCY_VGA_GAIN must be 0-62 in steps of 2, not {self.occupancy_vga_gain_db}")
+        if not 0 <= self.occupancy_late_min < m:
+            raise ValueError(f"HACKRF_LIVE_OCCUPANCY_LATE_MIN must be 0 or more and under the interval ({m}), not {self.occupancy_late_min:g}")
+        if not 0 <= self.occupancy_alert_quiet_min <= 1440:
+            raise ValueError(f"HACKRF_LIVE_OCCUPANCY_ALERT_QUIET_MIN must be 0-1440, not {self.occupancy_alert_quiet_min:g}")
 
     @property
     def db_path(self) -> Path:
@@ -182,6 +232,10 @@ class LiveSettings:
     @property
     def spectrum_db_path(self) -> Path:
         return self.live_dir / "spectrum.db"
+
+    @property
+    def occupancy_db_path(self) -> Path:
+        return self.live_dir / "occupancy.db"
 
     @property
     def socket_path(self) -> Path:
@@ -232,9 +286,30 @@ class LiveSettings:
             ("spectrum_max_age_days", "HACKRF_LIVE_SPECTRUM_MAX_AGE_DAYS"),
             ("spectrum_minute_days", "HACKRF_LIVE_SPECTRUM_MINUTE_DAYS"),
             ("spectrum_duty", "HACKRF_LIVE_SPECTRUM_DUTY"),
+            ("occupancy_late_min", "HACKRF_LIVE_OCCUPANCY_LATE_MIN"),
+            ("occupancy_alert_quiet_min", "HACKRF_LIVE_OCCUPANCY_ALERT_QUIET_MIN"),
+            ("occupancy_max_mb", "HACKRF_LIVE_OCCUPANCY_MAX_MB"),
+            ("occupancy_max_age_days", "HACKRF_LIVE_OCCUPANCY_MAX_AGE_DAYS"),
+            ("occupancy_daily_days", "HACKRF_LIVE_OCCUPANCY_DAILY_DAYS"),
         ):
             if v := env.get(key):
                 kwargs[name] = float(v)
+        if v := env.get("HACKRF_LIVE_OCCUPANCY"):
+            kwargs["occupancy"] = parse_bool(v)
+        for name, key in (
+            ("occupancy_interval_min", "HACKRF_LIVE_OCCUPANCY_INTERVAL_MIN"),
+            ("occupancy_bin_hz", "HACKRF_LIVE_OCCUPANCY_BIN_HZ"),
+            ("occupancy_passes", "HACKRF_LIVE_OCCUPANCY_PASSES"),
+            ("occupancy_lna_gain_db", "HACKRF_LIVE_OCCUPANCY_LNA_GAIN"),
+            ("occupancy_vga_gain_db", "HACKRF_LIVE_OCCUPANCY_VGA_GAIN"),
+        ):
+            if v := env.get(key):
+                kwargs[name] = int(v)
+        if v := env.get("HACKRF_LIVE_OCCUPANCY_RANGE_MHZ"):
+            lo, sep, hi = v.partition("-")
+            if not sep:
+                raise ValueError(f"HACKRF_LIVE_OCCUPANCY_RANGE_MHZ {v!r} must look like LOW-HIGH in MHz, e.g. 24-1700")
+            kwargs["occupancy_range_mhz"] = (int(lo), int(hi))
         return cls(**kwargs)
 
 

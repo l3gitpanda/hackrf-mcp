@@ -39,6 +39,9 @@ services:
       # or it refuses to start, and web needs neither.
       HACKRF_LIVE_AGENT: ${HACKRF_LIVE_AGENT:?set HACKRF_LIVE_AGENT to the agent's host:port}
       HACKRF_LIVE_AGENT_TOKEN_FILE: /run/secrets/agent-token
+      # Spectrum occupancy: a few seconds of the HackRF every 15 min for a
+      # wide sweep (README "Spectrum occupancy").
+      # HACKRF_LIVE_OCCUPANCY: "on"
     # The decoders and the spectrum FFTs: the part that needed more CPU
     # than the box with the radio has.
     cpus: 4

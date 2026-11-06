@@ -26,6 +26,13 @@ and the static UI.
                                  web state directory (see web/basemap.py)
   GET  /api/spectrum/segments    spectrum history segments in a range
   GET  /api/spectrum             one segment's waterfall, downsampled
+  GET  /api/occupancy            the occupancy heat map over a range: time by
+                                 frequency buckets, mean and peak (occupancy.py)
+  GET  /api/occupancy/profile    the slots folded by UTC hour of day or day of week
+  GET  /api/occupancy/unusual    ranges well above their usual level at that hour
+  GET  /api/occupancy/cell       one slot's level over a frequency range, and the
+                                 range's usual level
+  GET  /api/occupancy/slots      the slots in a range, without their data
   POST /api/live/start           start or switch a profile, or a rotation
   POST /api/live/stop            stop live decoding
   POST /api/live/watch           lend the receiver to a watch of one range
@@ -80,7 +87,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum, procstats
+from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum, occupancy, procstats
 from hackrf_mcp.live_service import WATCH_DEFAULT_MIN, WATCH_MAX_MIN
 from hackrf_mcp.settings import LiveSettings, WebSettings
 from hackrf_mcp.web import aircraftdb, alerts, basemap, panels
@@ -123,6 +130,16 @@ PAGES = {
 
 def _when(request: Request, name: str, now: float) -> float | None:
     return live_log.parse_when(request.query_params.get(name), now)
+
+
+def _float(request: Request, name: str) -> float | None:
+    v = request.query_params.get(name)
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
 
 
 def _int(request: Request, name: str, default: int, lo: int, hi: int) -> int:
@@ -360,7 +377,7 @@ def create_app(
                 return fn(request)
             except ValueError as exc:
                 return error(400, str(exc))
-            except (live_log.LogNotFound, live_spectrum.SpectrumNotFound) as exc:
+            except (live_log.LogNotFound, live_spectrum.SpectrumNotFound, occupancy.OccupancyNotFound) as exc:
                 return error(404, str(exc))
 
         return wrapper
@@ -709,6 +726,89 @@ def create_app(
         out["peak"] = base64.b64encode(out["peak"]).decode()
         return JSONResponse(out)
 
+    # --- occupancy (occupancy.py)
+
+    def occupancy_reader():
+        return occupancy.open_reader(live.occupancy_db_path)
+
+    def occupancy_range(request: Request, default_s: float) -> tuple[float, float]:
+        now = time.time()
+        until = _when(request, "until", now) or now
+        since = _when(request, "since", now)
+        return (until - default_s if since is None else since), until
+
+    def b64(out: dict) -> dict:
+        for k in ("mean", "peak"):
+            if k in out:
+                out[k] = base64.b64encode(out[k]).decode()
+        return out
+
+    @guarded
+    def api_occupancy(request: Request) -> Response:
+        since, until = occupancy_range(request, 86400)
+        tier = request.query_params.get("tier") or None
+        with closing(occupancy_reader()) as conn:
+            out = occupancy.grid(
+                conn,
+                since,
+                until,
+                _float(request, "fmin_hz"),
+                _float(request, "fmax_hz"),
+                tbuckets=_int(request, "tbuckets", 600, 1, occupancy.MAX_TBUCKETS),
+                fbuckets=_int(request, "fbuckets", 1200, 1, occupancy.MAX_FBUCKETS),
+                tier=tier,
+            )
+        return JSONResponse(b64(out))
+
+    @guarded
+    def api_occupancy_profile(request: Request) -> Response:
+        since, until = occupancy_range(request, 30 * 86400)
+        with closing(occupancy_reader()) as conn:
+            out = occupancy.profile(
+                conn,
+                request.query_params.get("by") or "hour",
+                since,
+                until,
+                _float(request, "fmin_hz"),
+                _float(request, "fmax_hz"),
+                fbuckets=_int(request, "fbuckets", 1200, 1, occupancy.MAX_FBUCKETS),
+            )
+        return JSONResponse(b64(out))
+
+    @guarded
+    def api_occupancy_unusual(request: Request) -> Response:
+        since, until = occupancy_range(request, 86400)
+        threshold = _float(request, "threshold_db")
+        with closing(occupancy_reader()) as conn:
+            out = occupancy.unusual(
+                conn,
+                since,
+                until,
+                threshold_db=10.0 if threshold is None else threshold,
+                limit=_int(request, "limit", 300, 1, 2000),
+            )
+        return JSONResponse(out)
+
+    @guarded
+    def api_occupancy_cell(request: Request) -> Response:
+        now = time.time()
+        ts = _when(request, "ts", now)
+        fmin, fmax = _float(request, "fmin_hz"), _float(request, "fmax_hz")
+        if ts is None or fmin is None or fmax is None:
+            raise ValueError("ts, fmin_hz and fmax_hz are required")
+        with closing(occupancy_reader()) as conn:
+            out = occupancy.cell(conn, ts, fmin, fmax)
+        if out is None:
+            return error(404, "no occupancy slot within a day of that time")
+        return JSONResponse(out)
+
+    @guarded
+    def api_occupancy_slots(request: Request) -> Response:
+        since, until = occupancy_range(request, 86400)
+        with closing(occupancy_reader()) as conn:
+            rows = occupancy.slot_list(conn, since, until, limit=_int(request, "limit", 5000, 1, 50_000))
+        return JSONResponse({"slots": rows})
+
     async def api_start(request: Request) -> Response:
         try:
             body = await request.json()
@@ -1020,6 +1120,11 @@ def create_app(
         Route("/api/basemap.pmtiles", api_basemap),
         Route("/api/spectrum/segments", api_segments),
         Route("/api/spectrum", api_spectrum),
+        Route("/api/occupancy", api_occupancy),
+        Route("/api/occupancy/profile", api_occupancy_profile),
+        Route("/api/occupancy/unusual", api_occupancy_unusual),
+        Route("/api/occupancy/cell", api_occupancy_cell),
+        Route("/api/occupancy/slots", api_occupancy_slots),
         Route("/api/live/start", api_start, methods=["POST"]),
         Route("/api/live/stop", api_stop, methods=["POST"]),
         Route("/api/live/watch", api_watch, methods=["POST"]),

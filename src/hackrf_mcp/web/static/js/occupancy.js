@@ -30,6 +30,7 @@ import {
   zoomRange,
 } from './occutil.js';
 import { ago, assignColors, clear, fmtUtc, h, mhz, utc } from './util.js';
+import { captureHref } from './captureutil.js';
 import { makeLut } from './waterfall.js';
 
 const $ = (id) => document.getElementById(id);
@@ -479,6 +480,9 @@ async function select(c) {
   const wh = watchHref(c.f0, c.f1, S.watch);
   $('c-watch').hidden = !wh;
   if (wh) $('c-watch').href = wh;
+  const ch = S.watch ? captureHref(c.f0, c.f1, 'occupancy', S.watch) : null;
+  $('c-capture').hidden = !ch;
+  if (ch) $('c-capture').href = ch;
   $('c-watchnote').hidden = !wh;
   $('c-log').href = logHref(c.f0, c.f1, c.t0, c.t1);
   try {

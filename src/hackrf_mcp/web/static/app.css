@@ -40,6 +40,32 @@ body{margin:0;background:#0a0e13}
 .wfp .wfcl{position:absolute;transform:translateY(-50%);padding:2px 6px;border-radius:3px;background:rgba(5,8,15,.88);border:1px solid #2a3647;color:#e6edf3;font-size:11.5px;white-space:nowrap;pointer-events:none;z-index:4}
 .wfp .wfcur[hidden],.wfp .wfcl[hidden]{display:none}
 .wfp .plot{cursor:crosshair}
+.wfp .wfsel{position:absolute;top:0;bottom:0;background:rgba(159,208,255,.16);border-left:1px solid #9fd0ff;border-right:1px solid #9fd0ff;pointer-events:none;z-index:2}
+.wfp .wfsel[hidden]{display:none}
+.selecting .plot{touch-action:none;cursor:cell}
+.selecting .hmark{pointer-events:none}
+.selecting .hwbox{touch-action:none;cursor:cell}
+.hwbox .wfsel{position:absolute;top:0;bottom:0;background:rgba(159,208,255,.16);border-left:1px solid #9fd0ff;border-right:1px solid #9fd0ff;pointer-events:none;z-index:2}
+.capbar{padding:8px 14px;border-top:1px solid var(--line)}
+.capf{border-top:1px solid var(--line);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+.capf .decs{display:flex;flex-wrap:wrap;gap:2px 14px}
+.capf .decs .check b{font-weight:600;color:var(--text)}
+.capf .secs{width:5.5em}
+.capf select.inp{width:6.5em}
+.capf label{color:var(--muted);font-size:12px}
+.capi select.inp{width:auto}
+.capf .kv{max-width:640px}
+.capf ul,.capi ul{margin:0;padding-left:18px;font-size:12.5px}
+.capf .eff li{color:var(--warn)}
+.capnote{font-size:12.5px;color:var(--text2)}
+.caps .capl{display:flex;flex-direction:column}
+.capi{padding:10px 14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:6px;min-width:0}
+.capi:first-child{border-top:0}
+.capi details summary{cursor:pointer;font-size:12.5px}
+.capi details summary b{font-weight:600}
+.capi ol{margin:4px 0 0;padding-left:22px;font-size:12px;max-height:280px;overflow:auto;overflow-wrap:anywhere}
+.capi img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:4px;background:#fff}
+.capi .err{color:var(--bad);font-size:12.5px}
 .unreach{display:flex;flex-direction:column;align-items:center;gap:12px;padding:72px 24px;text-align:center}
 .unreach .why{max-width:560px}
 .unreach .ico{color:var(--muted)}

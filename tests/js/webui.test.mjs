@@ -10,6 +10,7 @@ import { parseQuery, search } from '../../src/hackrf_mcp/web/static/js/bandsearc
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
 import { compass, destination, fmtKm, levelChart, outline } from '../../src/hackrf_mcp/web/static/js/rangeutil.js';
 import { RANGES, bytesOf, cellAt, cellLevel, freqTicks, groupUnusual, levels, logHref, paint, rowMap, scheduleText, spanOf, watchHref, zoomRange } from '../../src/hackrf_mcp/web/static/js/occutil.js';
+import { captureBody, captureHref, captureQuery, pickRange, rangeLabel, rangePct, rateText, sizeText, stateText, stateTone, ticked } from '../../src/hackrf_mcp/web/static/js/captureutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
   const c = assignColors([{ name: 'adsb' }, { name: 'ais', color: PALETTE[0] }, { name: 'acars' }]);
@@ -664,4 +665,57 @@ test('occupancy: the unusual items of many slots, one entry per signal', () => {
   assert.equal(g[1].lo_hz, 460e6);
   assert.equal(g[2].last, 1200);
   assert.equal(groupUnusual([it(1, 1, 1e6, 2e6, 10), it(1, 1, 2.2e6, 3e6, 10)]).length, 2);
+});
+
+test('a tap on a waterfall picks one frequency, a drag a range, either way round', () => {
+  const band = { center_hz: 152_000_000, sample_rate_hz: 2_000_000 };
+  assert.deepEqual(pickRange(band, 0.5, 0.502), { lo_hz: 152_002_000, hi_hz: 152_002_000 });
+  assert.deepEqual(pickRange(band, 0.75, 0.25), { lo_hz: 151_500_000, hi_hz: 152_500_000 });
+  assert.deepEqual(pickRange(band, -0.2, 0.25), { lo_hz: 151_000_000, hi_hz: 151_500_000 });
+});
+
+test('a picked range is drawn where it sits, never thinner than a sliver', () => {
+  const band = { center_hz: 100_000_000, sample_rate_hz: 10_000_000 };
+  assert.deepEqual(rangePct(band, 97_500_000, 100_000_000), { left: 25, width: 25 });
+  const tap = rangePct(band, 100_000_000, 100_000_000);
+  assert.ok(Math.abs(tap.left - 49.75) < 1e-9 && Math.abs(tap.width - 0.5) < 1e-9);
+  assert.equal(rangePct(band, 80_000_000, 90_000_000), null);
+  assert.deepEqual(rangePct(band, 90_000_000, 96_000_000), { left: 0, width: 10 });
+});
+
+test('the capture link fills in Live and comes back out of the address', () => {
+  const href = captureHref(152_007_500, 152_007_500, 'history', { min_hz: 1e6, max_hz: 6e9 });
+  assert.equal(href, '/?capture_from=152.0075&capture_to=152.0075&origin=history');
+  assert.deepEqual(captureQuery(href.slice(1)), { lo_hz: 152_007_500, hi_hz: 152_007_500, origin: 'history' });
+  assert.deepEqual(captureQuery('?capture_from=98&capture_to=88&origin=elsewhere'), { lo_hz: 88_000_000, hi_hz: 98_000_000, origin: 'live' });
+  assert.deepEqual(captureQuery('?capture_from=433.92'), { lo_hz: 433_920_000, hi_hz: 433_920_000, origin: 'live' });
+  assert.equal(captureQuery('?watch_from=98'), null);
+  assert.equal(captureHref(7e9, 8e9, 'occupancy', { min_hz: 1e6, max_hz: 6e9 }), null);
+  assert.equal(captureHref(5.9e9, 6.1e9, 'occupancy', { min_hz: 1e6, max_hz: 6e9 }), '/?capture_from=5900&capture_to=6000&origin=occupancy');
+});
+
+test('capture words: ranges, sizes, rates and states', () => {
+  assert.equal(rangeLabel(152_007_500, 152_007_500), '152.0075 MHz');
+  assert.equal(rangeLabel(88_100_000, 91_300_000), '88.1000–91.3000 MHz');
+  assert.equal(sizeText(120_000_000), '120 MB');
+  assert.equal(sizeText(1_200_000_000), '1.2 GB');
+  assert.equal(sizeText(4_000), '4 kB');
+  assert.equal(rateText(2_400_000), '2.4 MS/s');
+  assert.equal(rateText(2_083_333), '2,083,333 S/s');
+  const rec = { id: 'a', state: 'decoding', decodes: [{ decoder: 'x', state: 'done' }, { decoder: 'y', state: 'queued' }] };
+  assert.equal(stateText(rec, null), 'Decoding (1 to go)');
+  assert.equal(stateText({ id: 'a', state: 'waiting' }, { id: 'a', state: 'recording', left_s: 12.2 }), 'Recording, 13 s left');
+  assert.equal(stateText({ id: 'a', state: 'done' }, { id: 'b', state: 'recording' }), 'Done');
+  assert.equal(stateTone({ state: 'done', decodes: [{ state: 'failed' }] }), 'warn');
+  assert.equal(stateTone({ state: 'failed' }), 'bad');
+  assert.equal(stateTone({ state: 'done', decodes: [] }), 'ok');
+});
+
+test('the form ticks what was suggested until the user picks, and sends only what was set', () => {
+  assert.deepEqual(ticked(null, ['x']), ['x']);
+  assert.deepEqual(ticked([], ['x']), []);
+  assert.deepEqual(captureBody({ lo_hz: 1, hi_hz: 2, seconds: 30, chosen: null, lna: '', vga: null, amp: false }), { from_hz: 1, to_hz: 2, seconds: 30, origin: 'live' });
+  assert.deepEqual(captureBody({ lo_hz: 1, hi_hz: 2, seconds: 10, chosen: ['x'], lna: '24', vga: 30, amp: true, origin: 'history' }), {
+    from_hz: 1, to_hz: 2, seconds: 10, origin: 'history', decoders: ['x'], lna_gain_db: 24, vga_gain_db: 30, amp: true,
+  });
 });

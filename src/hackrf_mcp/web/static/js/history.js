@@ -12,6 +12,7 @@ import { assignColors, clear, h, mhz, utc } from './util.js';
 import { AutoLevel, makeLut, resample, ticks } from './waterfall.js';
 import { BandStrip } from './bandstrip.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from './historyutil.js';
+import { captureHref, pickRange, rangeLabel, rangePct } from './captureutil.js';
 
 const $ = (id) => document.getElementById(id);
 const NOW = () => Date.now() / 1000;
@@ -34,6 +35,8 @@ const S = {
   layout: 'side',
   want: null, // a time to open at, from the address
   token: 0, // drops answers for a step no longer shown
+  selecting: false, // Select on: a tap or drag on the waterfall picks a range to capture
+  pickSel: null, // {lo_hz, hi_hz} picked
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
@@ -59,6 +62,7 @@ async function init() {
 }
 
 function wire() {
+  wireCapture();
   $('d-prev').addEventListener('click', () => shiftDay(-1));
   $('d-next').addEventListener('click', () => shiftDay(1));
   $('d-date').addEventListener('change', () => {
@@ -268,7 +272,7 @@ function renderEmpty() {
 function drawWaterfall() {
   const box = $('w-box');
   const canvas = $('w-canvas');
-  for (const el of box.querySelectorAll('.hmark, .hgap, .hfm')) el.remove();
+  for (const el of box.querySelectorAll('.hmark, .hgap, .hfm, .wfsel')) el.remove();
   clear($('w-times'));
   clear($('w-freqs'));
   const W = Math.max(8, box.clientWidth);
@@ -351,6 +355,13 @@ function drawWaterfall() {
     el.style.top = `${(yOf(r.ts) / H) * 100}%`;
     el.style.setProperty('--pc', color(r.profile));
     el.addEventListener('click', () => select(r.id));
+    box.append(el);
+  }
+  const pr = S.pickSel ? rangePct(seg, S.pickSel.lo_hz, S.pickSel.hi_hz) : null;
+  if (pr) {
+    const el = h('span', { class: 'wfsel' });
+    el.style.left = `${pr.left}%`;
+    el.style.width = `${pr.width}%`;
     box.append(el);
   }
   const res = S.wf.tier === 60 ? 'minute averages (second rows are kept for 7 days)' : `${Math.round(rowS)} s each`;
@@ -510,3 +521,59 @@ function drawRate() {
 
 applyViews();
 init().catch((e) => showError(`Could not load: ${e.message}`));
+
+// --- Capturing a range now ---------------------------------------------------------------
+// History keeps power only, so a range picked here (Select on: tap a signal
+// or drag across a range) is recorded now, on the Live screen, where the
+// capture is planned and confirmed.
+
+function wireCapture() {
+  const box = $('w-box');
+  $('w-select').addEventListener('click', () => setSelecting(!S.selecting));
+  $('w-cap-close').addEventListener('click', () => {
+    S.pickSel = null;
+    $('w-cap').hidden = true;
+    setSelecting(false);
+    drawWaterfall();
+  });
+  let start = null;
+  const fxOf = (e) => {
+    const r = box.getBoundingClientRect();
+    return (e.clientX - r.left) / r.width;
+  };
+  const band = () => (S.wf && S.wf.seg ? { center_hz: S.wf.seg.center_hz, sample_rate_hz: S.wf.seg.sample_rate_hz } : null);
+  box.addEventListener('pointerdown', (e) => {
+    const b = band();
+    if (!S.selecting || !b) return;
+    start = { fx: fxOf(e), band: b };
+    if (box.setPointerCapture) box.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  box.addEventListener('pointermove', (e) => {
+    if (!start) return;
+    S.pickSel = pickRange(start.band, start.fx, fxOf(e));
+    drawWaterfall();
+  });
+  box.addEventListener('pointerup', (e) => {
+    if (!start) return;
+    S.pickSel = pickRange(start.band, start.fx, fxOf(e));
+    start = null;
+    drawWaterfall();
+    const href = captureHref(S.pickSel.lo_hz, S.pickSel.hi_hz, 'history', S.registry.watch);
+    $('w-cap').hidden = !href;
+    if (href) {
+      $('w-cap-range').textContent = rangeLabel(S.pickSel.lo_hz, S.pickSel.hi_hz);
+      $('w-cap-go').href = href;
+    }
+  });
+  box.addEventListener('pointercancel', () => {
+    start = null;
+  });
+}
+
+function setSelecting(on) {
+  S.selecting = on;
+  $('w-select').setAttribute('aria-pressed', String(on));
+  $('hwf').classList.toggle('selecting', on);
+}
+

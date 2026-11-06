@@ -579,8 +579,10 @@ Dragging across it, or typing a range in MHz, zooms in to single 98 kHz
 bins. Pointing at a cell gives its time, range and level; clicking it gives
 the bands there, the nearest slot's level against the same range's usual
 level at that UTC hour, a **Watch this range** link (it fills in the Live
-screen's Watch a range; taking the receiver is still a click there) and
-the Log's rows within the range around that time. Below, the same
+screen's Watch a range; taking the receiver is still a click there), a
+**Capture this range** link (it opens the Live screen's capture form with
+the range filled in; nothing is recorded until Capture is pressed there)
+and the Log's rows within the range around that time. Below, the same
 frequencies folded by UTC hour of day and by weekday over the last 7, 30
 or 90 days, and **New or unusual**: ranges whose mean was 10 dB or more
 over their median at the same UTC hour on the 7 days before, in the last
@@ -596,6 +598,25 @@ half the width. The receiver is lent, not given: after the chosen time
 goes back to the rotation by itself, page open or not, and a restart does
 the same. Device tools pause a watch as they pause decoding. What was
 watched is recorded in the spectrum history as profile `watch`.
+
+**Capturing from the waterfall.** With **Select** on above the Live
+screen's waterfall, a tap picks a signal and a drag picks a range (it no
+longer scrolls a watch while Select is on); the same works with a mouse
+and on a phone. The form below the waterfall asks the live service to plan
+the capture (see [Live decoding](#live-decoding)) and shows where it would
+tune and at what rate, what it holds, its size, the decoders suggested for
+the range (ticked; any other installed one can be ticked), and what it
+would stop: the profile or the watch it pauses, a device tool it would
+wait for, an occupancy sweep due meanwhile. Length (1-60 s, 30 by
+default), gains (those of the band on the waterfall, by default) and the
+RF amp can be changed. Nothing is recorded until **Capture** is pressed.
+While it records, the banner and the waterfall say so. The **Captures**
+list below shows each capture's state, each decoder's headline with its
+table and messages, the spectrogram the live service drew, **Run another
+decoder** (only those the capture's rate and centre suit) and **Delete**;
+the samples themselves are never sent to the browser. History's waterfall
+has a **Select** too: History keeps power, not samples, so a range picked
+there opens the Live screen's form to record it now, and says so.
 
 **Summaries.** The **Summaries** screen (`/summaries`) totals a period
 (the last hour, 6 or 24 hours, today, 7 days, or from-to in UTC) from the

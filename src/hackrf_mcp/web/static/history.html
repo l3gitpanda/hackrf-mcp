@@ -80,6 +80,7 @@
           <span class="mono" id="w-title">—</span>
           <span class="sp"></span>
           <span class="muted" id="w-sub">newest at top · markers are decoded rows</span>
+          <button type="button" class="btn sm" id="w-select" aria-pressed="false" title="Pick a signal (tap) or a range (drag) to capture it now on the Live screen">Select</button>
         </div>
         <div class="hwf" id="hwf">
           <div class="hbands" id="w-bands"></div>
@@ -90,6 +91,14 @@
           </div>
         </div>
         <p class="mapnote2" id="w-note"></p>
+        <div class="row wr capbar" id="w-cap" hidden>
+          <span class="cap">Capture</span>
+          <span class="mono" id="w-cap-range">—</span>
+          <span class="t2 sm">History keeps power only, no samples, so this records the range now, not at the time shown.</span>
+          <span class="sp"></span>
+          <a class="btn sm primary" id="w-cap-go" href="/">Capture it on Live</a>
+          <button type="button" class="btn sm ghost" id="w-cap-close" aria-label="Close">×</button>
+        </div>
       </section>
       <aside class="col" aria-label="Decoded">
         <section class="panel" id="p-list">

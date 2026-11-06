@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from starlette.testclient import TestClient
 
-from hackrf_mcp import agent, cli, occupancy, server, settings
+from hackrf_mcp import agent, cli, live_log, occupancy, server, settings
 from hackrf_mcp.live_service import LiveService, start_occupancy
 from hackrf_mcp.live_spectrum import DB_MIN, DB_STEP
 from hackrf_mcp.occupancy import DAY, HOUR, OccupancyWriter, Plan
@@ -305,6 +305,9 @@ def test_a_slot_lends_the_receiver_stores_the_sweep_and_gives_it_back(svc, write
     assert svc.status()["state"] == "running" and len(svc.pipes) == 2
     names = [e[0] for e in svc.events]
     assert "occupancy-done" in names and "pause" not in names and "resume" not in names
+    # The stop around the slot is what History and the Log's coverage show as a paused gap.
+    stop = next(e for e in svc.events if e[0] == "stop")
+    assert stop[2] == "paused for occupancy sweep" and live_log._after(*stop, "running")[0] == "paused"
     done = next(e for e in svc.events if e[0] == "occupancy-done")[2]
     assert "2 passes" in done and "adsb paused" in done and "24-64 MHz" in done
     st = svc.status()["occupancy"]
@@ -518,6 +521,12 @@ def test_start_occupancy_opens_the_database_and_reads_alerts_from_the_web_state(
     finally:
         assert sched.stop()
         sched.writer.close()
+    # A setting hackrf-web would refuse doesn't stop the live service.
+    monkeypatch.setenv("HACKRF_WEB_PORT", "99999")
+    sched = start_occupancy(s, live, run_sweep=good_sweep(SMALL))
+    assert sched.alerts_db == tmp_path / "data" / "web" / "alerts.db"
+    assert sched.stop()
+    sched.writer.close()
 
 
 # --- settings -------------------------------------------------------------------

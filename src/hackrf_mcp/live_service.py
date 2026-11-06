@@ -941,7 +941,13 @@ def start_occupancy(service: LiveService, live: settings.LiveSettings, run_sweep
         int(live.min_free_mb * MIB),
     )
     writer.prune()
-    alerts_db = settings.WebSettings.from_env().state_path(live) / "alerts.db"
+    try:
+        web_state = settings.WebSettings.from_env().state_path(live)
+    except ValueError:
+        # hackrf-web's own settings are its business: one it would refuse
+        # must not stop decoding here. Its default place, then.
+        web_state = settings.WebSettings().state_path(live)
+    alerts_db = web_state / "alerts.db"
     sched = occupancy.Scheduler(
         service,
         occupancy.Plan.from_live(live),

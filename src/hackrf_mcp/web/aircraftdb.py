@@ -33,7 +33,11 @@ Classes, first match wins:
   4. plane-alert Gov, an FAA government      government (the Civil Air Patrol
      registrant, the Civil Air Patrol        is the US Air Force's auxiliary)
   5. an airline-style callsign               commercial (3 letters, then a
-                                             flight number)
+     or an airline flight number             flight number, as ADS-B gives;
+                                             or 2 characters, then a flight
+                                             number, as ACARS and VDL2 give,
+                                             never a US N-number or the
+                                             aircraft's own registration)
   6. any other FAA registration or a         private
      plane-alert Civ entry
   7. nothing known                           unknown
@@ -122,6 +126,12 @@ LAW_ENFORCEMENT = re.compile(
 )
 CIVIL_AIR_PATROL = re.compile(r"\bCIVIL AIR PATROL\b")
 AIRLINE_CALLSIGN = re.compile(r"^([A-Z]{3})(\d{1,4}[A-Z]{0,2})$")
+# An IATA flight number, as ACARS and VDL2 give: the airline's two-character
+# designator (two letters, or a letter and a digit either way round: WN, B6,
+# 9E) and 1-4 digits, maybe a letter. A US registration has the same shape
+# (N1234 is N1 flight 234), so anything that reads as an N-number is not one.
+AIRLINE_FLIGHT = re.compile(r"^([A-Z]{2}|[A-Z]\d|\d[A-Z])(\d{1,4}[A-Z]?)$")
+N_NUMBER = re.compile(r"^N[1-9](\d{0,4}|\d{0,3}[A-HJ-NP-Z]|\d{0,2}[A-HJ-NP-Z]{2})$")
 HEX6 = re.compile(r"^[0-9A-F]{6}$")
 
 SCHEMA = """
@@ -149,6 +159,13 @@ REGISTRATION = re.compile(r"^[A-Z0-9-]{2,10}$")
 def normalise_icao(text: str) -> str | None:
     v = (text or "").strip().upper()
     return v if HEX6.match(v) else None
+
+
+def _is_registration(callsign: str, rec: dict) -> bool:
+    """Whether a "callsign" is only the aircraft's own registration, as
+    VDL2 gives when there is no flight (dots and dashes aside)."""
+    reg = re.sub(r"[^A-Z0-9]", "", (rec.get("registration") or "").upper())
+    return bool(reg) and reg == re.sub(r"[^A-Z0-9]", "", callsign)
 
 
 def classify(icao: str, callsign: str | None, rec: dict | None) -> tuple[str, str]:
@@ -180,6 +197,8 @@ def classify(icao: str, callsign: str | None, rec: dict | None) -> tuple[str, st
         return "government", "Civil Air Patrol (the US Air Force's auxiliary)"
     if m := AIRLINE_CALLSIGN.match(cs):
         return "commercial", f"airline-style callsign ({m.group(1)})"
+    if (m := AIRLINE_FLIGHT.match(cs)) and not N_NUMBER.match(cs) and not _is_registration(cs, rec):
+        return "commercial", f"airline flight number ({m.group(1)})"
     if rec.get("faa"):
         kind = REGISTRANT.get(rec.get("registrant_type") or "")
         return "private", f"FAA: {kind.lower()} registrant" if kind else "FAA registration"

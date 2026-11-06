@@ -787,6 +787,8 @@ in ADF7C8-AFFFFF (the US block above every civil N-number); an FAA
 government registrant named for an armed force (military) or for police
 work (law enforcement); plane-alert's government tag, any other government
 registrant or the Civil Air Patrol (government); an airline-style callsign
+(`SWA1733`, as ADS-B gives) or airline flight number (`WN1733`, as ACARS and
+VDL2 give; never a US N-number or the aircraft's own registration)
 (commercial); any other FAA registration or plane-alert civil entry
 (private); else unknown. Without the database only the address range and
 the callsign rules apply. A city's or county's aircraft whose owner name

@@ -735,7 +735,7 @@ switches and stops profiles over the control socket, as the MCP tools do.
 | `GET /api/registry` | profiles and decoders from the registries, with each profile's views (map, table, timeline), the receiver's position if set, and the base map's zooms and bounds, if there is one |
 | `GET /api/status` | the live service's status, and the memory and CPU of `hackrf-live` and `hackrf-web` |
 | `GET /api/log`, `/api/summary`, `/api/events` | the log, as `hackrf_live_search` and `hackrf_live_summary` read it; `/api/log` takes several `profiles` and pages with `before_id` |
-| `GET /api/log/histogram`, `/api/coverage` | matching rows per time bucket and profile; what the receiver was doing (running which profile, paused, error, stopped, down), rebuilt from the events |
+| `GET /api/log/histogram`, `/api/coverage` | matching rows per time bucket and profile; what the receiver was doing (running which profile, paused, error, stopped, down), rebuilt from the events. On a split station the events imported from the agent's machine are followed on their own: the station counts as running while either decodes, and a stretch only the fallback covered is marked `fallback` |
 | `GET /api/summaries` | for a range, per profile: decoded messages per bucket, subjects heard (per kind) and the busiest of them, with the coverage, from one reading of the log |
 | `GET /api/positions` | map-track points; when a range holds more than `limit`, one fix per target per `step` seconds (the response gives `step`) |
 | `GET /api/alerts`, `POST /api/alerts/rules`, `PUT`/`DELETE /api/alerts/rules/<id>` | alert rules (with hits in the last 24 h), the fields each profile's rules may test, and the values of those with a fixed set (the aircraft classes) |

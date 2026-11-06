@@ -27,7 +27,7 @@ import threading
 import time
 from pathlib import Path
 
-from hackrf_mcp import agent, live_profiles
+from hackrf_mcp import agent, live_log, live_profiles
 from hackrf_mcp.live_log import Position, Row
 
 HEARTBEAT_S = 30.0
@@ -35,7 +35,8 @@ MAX_RETRY_S = 60.0
 PAGES_PER_ROUND = 20
 TABLES = agent.EXPORT_TABLES
 IMPORT_EVENTS = frozenset({"start", "stop", "error", "service-start", "service-stop"})
-FALLBACK_NOTE = "fallback on the agent's machine"
+# Marks the imported events, so coverage can follow them on a lane of their own.
+FALLBACK_NOTE = live_log.FALLBACK_NOTE
 
 
 def redactor(pager_content: bool):

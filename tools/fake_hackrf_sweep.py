@@ -17,6 +17,8 @@ RATE = 20_000_000
 STEP = 20_000_000
 LINE = 5_000_000
 
+# The noise floor at 0 Hz, in hackrf_sweep's dB (rising 6 dB to 6 GHz).
+FLOOR_DB = -90.0
 # (centre MHz, width kHz, level dB): always on.
 STEADY = [(88.5 + 0.8 * i, 180, -20 - 3 * (i % 5)) for i in range(24)] + [
     (162.4, 25, -45),
@@ -42,7 +44,7 @@ def line_db(lo_hz: int, n: int, rng, hour: int) -> np.ndarray:
     per = n // 4
     bw = RATE / n
     f = lo_hz + (np.arange(per) + 0.5) * bw
-    noise = -78 + 6 * (f / 6e9) + rng.normal(0, 2.5, per)
+    noise = FLOOR_DB + 6 * (f / 6e9) + rng.normal(0, 2.5, per)
     p = np.power(10, noise / 10)
     on = [(c, w, lv) for c, w, lv in STEADY]
     on += [(c, w, lv) for c, w, lv, chance in BURSTY if rng.random() < chance]

@@ -526,6 +526,24 @@ range (88-108), with chips for the kinds of service. The search is kept in
 the address. Each band's **Watch** fills in the Live screen's Watch a range
 (taking the receiver is still a click there).
 
+**Occupancy.** The **Occupancy** screen (`/occupancy`) shows what the
+occupancy sweeps (`HACKRF_LIVE_OCCUPANCY`, see
+[Live decoding](#live-decoding)) stored: a heat map of frequency across and
+time down (newest at the top, UTC) over the last 24 hours or 7 days (a row
+a slot), 30 days (a row an hour) or a year (the daily roll-ups), the mean
+of each slot's passes or their peak, with the band plan strip above it.
+Dragging across it, or typing a range in MHz, zooms in to single 98 kHz
+bins. Pointing at a cell gives its time, range and level; clicking it gives
+the bands there, the nearest slot's level against the same range's usual
+level at that UTC hour, a **Watch this range** link (it fills in the Live
+screen's Watch a range; taking the receiver is still a click there) and
+the Log's rows within the range around that time. Below, the same
+frequencies folded by UTC hour of day and by weekday over the last 7, 30
+or 90 days, and **New or unusual**: ranges whose mean was 10 dB or more
+over their median at the same UTC hour on the 7 days before, in the last
+24 hours, one entry per signal with when it was first and last seen. The
+view is kept in the address.
+
 **Watching a range.** The Live screen's **Watch a range** takes any range
 the HackRF receives (1 MHz-6 GHz), up to 10 MHz at once: type from and to
 in MHz, and it tunes there with the waterfall only, nothing decoded.

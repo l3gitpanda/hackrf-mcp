@@ -9,6 +9,10 @@ the sample source replays generated noise with bursts on each profile's
 channels, and the pipelines emit made-up rows (subjects start with DEMO) in
 place of decoders. Every profile counts as installed. Its data lives in --dir (default
 /tmp/hackrf-webui-demo), emptied at each start. Prints a sign-in token.
+
+Occupancy sweeps run every --occupancy-min minutes through
+tools/fake_hackrf_sweep.py (through the agent with --agent), over
+--occupancy-days of made-up earlier slots.
 """
 
 from __future__ import annotations
@@ -21,14 +25,15 @@ import shutil
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
-from hackrf_mcp import decoders, live_feed, live_profiles, settings
+from hackrf_mcp import cli, decoders, live_feed, live_profiles, occupancy, settings
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import FileSource, Pipeline
-from hackrf_mcp.live_service import ControlServer, LiveService, LogPump
+from hackrf_mcp.live_service import ControlServer, LiveService, LogPump, start_occupancy
 from hackrf_mcp.live_spectrum import SpectrumRecorder, SpectrumWriter
 
 HOME = (33.86, -118.28)
@@ -317,6 +322,51 @@ def start_catcher() -> int:
     return srv.server_address[1]
 
 
+def demo_occupancy(path: Path, days: float, now: float) -> int:
+    """Made-up occupancy slots every 15 minutes for `days` before now, from
+    the air tools/fake_hackrf_sweep.py makes (so the demo's own sweeps look
+    the same): its floor, steady carriers, bursts that come and go from pass
+    to pass, the carrier on from 13:00 to 22:00 UTC, and one more that is
+    new in the last six hours (for "new or unusual")."""
+    import fake_hackrf_sweep as fake  # beside this file
+
+    plan = occupancy.Plan()
+    f = plan.lo_hz + (np.arange(plan.bins) + 0.5) * plan.bin_hz
+    gain = occupancy.window_gain_db(plan.fft)
+
+    def lin(carriers) -> np.ndarray:
+        out = np.zeros(plan.bins)
+        for c, w, lv in carriers:
+            half = max(w * 500.0, plan.bin_hz / 2)
+            out[np.abs(f - c * 1e6) <= half] += 10 ** ((lv + gain) / 10)
+        return out
+
+    floor = fake.FLOOR_DB + 6 * (f / 6e9) + gain
+    steady = lin(fake.STEADY)
+    daytime = lin(fake.DAYTIME)
+    bursts = [(lin([(c, w, lv)]), chance) for c, w, lv, chance in fake.BURSTY]
+    new = lin([(155.31, 25, -52)])
+    rng = np.random.default_rng(7)
+    w = occupancy.OccupancyWriter(path, 365 * 86400, 1826 * 86400, 1 << 31, 0)
+    n = 0
+    for t in np.arange(occupancy.next_slot(now - days * 86400, 900), now, 900.0):
+        base = 10 ** ((floor + rng.normal(0, 1.0, plan.bins)) / 10) + steady
+        if 13 <= occupancy.utc_hour(t) < 22:
+            base = base + daytime
+        if now - t < 6 * 3600:
+            base = base + new
+        mean, peak = base.copy(), base * 10 ** (np.abs(rng.normal(0, 2.5, plan.bins)) / 10)
+        for carrier, chance in bursts:
+            on = rng.binomial(20, chance)  # passes it was on in
+            mean += carrier * on / 20
+            peak += carrier if on else 0
+        w.add(float(t), float(t) + 2, 4.2, plan, occupancy.Measured(20, 0, 0, (10 * np.log10(mean)).astype(np.float32), (10 * np.log10(peak)).astype(np.float32)))
+        n += 1
+    w.prune(now)
+    w.close()
+    return n
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--port", type=int, default=18766)
@@ -333,6 +383,8 @@ def main() -> None:
         "--agent", action="store_true",
         help="take samples from a hackrf-agent (run here, over loopback TCP) as a split station would",
     )
+    parser.add_argument("--occupancy-days", type=float, default=8, help="days of made-up occupancy slots before now")
+    parser.add_argument("--occupancy-min", type=int, default=2, help="minutes between the demo's own occupancy sweeps")
     args = parser.parse_args()
 
     found = lambda _: "/bin/true"  # noqa: E731
@@ -343,6 +395,11 @@ def main() -> None:
     tmp = Path(args.dir)
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
+    # hackrf_sweep for the occupancy sweeps: the stand-in, here or at the agent.
+    tools = tmp / "tools"
+    tools.mkdir()
+    (tools / "hackrf_sweep").write_text(f"#!{sys.executable}\n" + (Path(__file__).parent / "fake_hackrf_sweep.py").read_text())
+    (tools / "hackrf_sweep").chmod(0o755)
     # The demo's receiver sits at HOME, for range rings and the receiver range.
     live = settings.LiveSettings(live_dir=tmp / "live", min_free_mb=0, receiver=HOME)
     agent_server = None
@@ -357,7 +414,9 @@ def main() -> None:
         fake.chmod(0o755)
         token = secrets.token_urlsafe(32)
         (tmp / "agent-token").write_text(token)
-        a = agent.AgentSettings(host="127.0.0.1", port=args.port + 1, token_file=tmp / "agent-token", binary=str(fake))
+        a = agent.AgentSettings(
+            host="127.0.0.1", port=args.port + 1, token_file=tmp / "agent-token", binary=str(fake), tools_dir=str(tools)
+        )
         a.digests = a.load_digests()
         agent_server = agent.AgentServer(a)
         threading.Thread(target=agent_server.serve_forever, daemon=True).start()
@@ -407,6 +466,16 @@ def main() -> None:
     threading.Thread(target=control.serve_forever, daemon=True).start()
     threading.Thread(target=svc.serve_forever, daemon=True).start()
     svc.handle({"cmd": "start", "schedule": [{"profile": "adsb", "minutes": 2}, {"profile": "ais", "minutes": 1}]})
+    if args.occupancy_days > 0:
+        n = demo_occupancy(live.occupancy_db_path, args.occupancy_days, time.time())
+        print(f"occupancy: {n} made-up slots", file=sys.stderr, flush=True)
+    if not args.agent:
+        cli.set_bin_dir(tools)
+    start_occupancy(
+        svc,
+        replace(live, occupancy=True, occupancy_interval_min=args.occupancy_min, occupancy_late_min=1, occupancy_passes=5,
+                occupancy_alert_quiet_min=0),
+    )
 
     if args.basemap:
         state = settings.WebSettings().state_path(live)

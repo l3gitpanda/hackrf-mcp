@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Occupancy · hackrf-live</title>
+<link rel="stylesheet" href="/static/hl.css">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/js/occupancy.js"></script>
+</head>
+<body>
+<div class="hl page">
+  <div class="abwrap">
+    <header class="appbar">
+      <a class="brand" href="/">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="0.5" y="0.5" width="21" height="21" rx="5" fill="#0c1626" stroke="#2e3a4a"></rect><rect x="4" y="13" width="14" height="2" fill="#12508a"></rect><rect x="4" y="16" width="14" height="2" fill="#0a1530"></rect><path d="M4 11 L7 8.5 L9 10 L11 4.5 L13 9.5 L15 7.5 L18 11" fill="none" stroke="#9fd0ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <span>hackrf-live</span>
+        <small>home station</small>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/">Live</a>
+        <a href="/map">Map</a>
+        <a href="/log">Log</a>
+        <a href="/history">History</a>
+        <a href="/occupancy" aria-current="page">Occupancy</a>
+        <a href="/bands">Bands</a>
+        <a href="/summaries">Summaries</a>
+        <a href="/alerts">Alerts</a>
+        <a href="/plugins">Plugins</a>
+      </nav>
+      <div class="ab-r">
+        <span class="chip st st-idle" id="ab-state" role="status"><span class="dot"></span><span id="ab-state-text">Connecting…</span></span>
+        <span class="chip" id="ab-prof" hidden><span class="sw"></span><span class="mono" id="ab-prof-text"></span></span>
+        <span class="chip mono" id="ab-clock" aria-label="Station clock, UTC">--:--:-- UTC</span>
+        <form method="post" action="/auth/logout"><button type="submit" class="btn sm ghost">Sign out</button></form>
+      </div>
+    </header>
+  </div>
+  <main class="main" id="omain">
+    <section class="panel" aria-label="What to show">
+      <div class="htool">
+        <div class="row">
+          <label class="muted" for="o-range">Period</label>
+          <select id="o-range" class="inp"></select>
+        </div>
+        <div class="row">
+          <span class="muted">Show</span>
+          <span class="seg" role="group" aria-label="Value">
+            <button type="button" data-view="mean" aria-pressed="true" title="The mean of each slot's passes: how busy a stretch is">Mean</button>
+            <button type="button" data-view="peak" aria-pressed="false" title="The strongest pass: catches more of the short bursts">Peak</button>
+          </span>
+        </div>
+        <form class="row" id="o-zoom">
+          <label class="muted" for="o-fmin">MHz</label>
+          <input id="o-fmin" class="inp mono ofreq" inputmode="decimal" aria-label="From, MHz">
+          <span class="muted">to</span>
+          <input id="o-fmax" class="inp mono ofreq" inputmode="decimal" aria-label="To, MHz">
+          <button type="submit" class="btn sm">Zoom</button>
+          <button type="button" class="btn sm ghost" id="o-whole">Whole range</button>
+        </form>
+      </div>
+      <p class="mapnote2" id="o-sched">Loading…</p>
+    </section>
+    <p class="ctl-err" id="o-err" role="alert" hidden></p>
+    <div class="ogrid">
+      <section class="panel" aria-label="Heat map">
+        <div class="ph">
+          <h2>Heat map</h2>
+          <span class="mono" id="o-title">—</span>
+          <span class="sp"></span>
+          <span class="legend"><canvas class="obar" id="o-bar" width="160" height="10" aria-hidden="true"></canvas><span class="mono" id="o-lv"></span><span><i class="oempty"></i>no slot</span></span>
+        </div>
+        <div class="hwf">
+          <div class="hbands" id="o-bands"></div>
+          <div class="fscale mono" id="o-freqs"></div>
+          <div class="hwbox ohm" id="o-box">
+            <canvas id="o-canvas"></canvas>
+            <div class="tscale mono" id="o-times"></div>
+            <div class="osel" id="o-drag" hidden></div>
+            <div class="ocell" id="o-cell" hidden></div>
+            <div class="otip mono" id="o-tip" hidden></div>
+          </div>
+        </div>
+        <p class="mapnote2" id="o-note">Newest at the top, UTC. Point at a cell for its level, click it for details; drag across to zoom in.</p>
+      </section>
+      <aside class="col" aria-label="Details">
+        <section class="panel" aria-label="The cell clicked">
+          <div class="ph"><h2>Cell</h2><span class="sp"></span><button type="button" class="btn sm ghost" id="c-close" aria-label="Close" hidden>×</button></div>
+          <div class="hsel" id="c-box">
+            <p class="muted" id="c-empty">Click a cell of the heat map, or a range in the list below.</p>
+            <dl class="kv" id="c-kv" hidden></dl>
+            <div class="row wr" id="c-acts" hidden>
+              <a class="btn sm" id="c-watch" href="/">Watch this range</a>
+              <a class="btn sm" id="c-log" href="/log">Log rows near here</a>
+            </div>
+            <p class="muted sm" id="c-watchnote" hidden>Watch opens the Live screen with the range filled in; decoding stops only when you press Watch there, for up to 15 min.</p>
+          </div>
+        </section>
+        <section class="panel" aria-label="New or unusual">
+          <div class="ph"><h2>New or unusual</h2><span class="muted" id="u-sub">last 24 hours</span></div>
+          <div class="ulist" id="u-list" role="list"></div>
+          <p class="mapnote2" id="u-note">A range whose mean is 10 dB or more over its median at the same UTC hour on the 7 days before.</p>
+        </section>
+      </aside>
+    </div>
+    <section class="panel" aria-label="By hour of day and day of week">
+      <div class="ph">
+        <h2>By hour and weekday</h2>
+        <span class="muted" id="p-sub">UTC</span>
+        <span class="sp"></span>
+        <label class="muted" for="p-days">Over</label>
+        <select id="p-days" class="inp oselsm"></select>
+      </div>
+      <div class="oprof">
+        <div class="hwf">
+          <div class="fscale mono" id="ph-freqs"></div>
+          <div class="hwbox ohour" id="ph-box"><canvas id="ph-canvas"></canvas><div class="tscale mono" id="ph-rows"></div><div class="otip mono" id="ph-tip" hidden></div></div>
+        </div>
+        <div class="hwf">
+          <div class="hwbox oweek" id="pw-box"><canvas id="pw-canvas"></canvas><div class="tscale mono" id="pw-rows"></div><div class="otip mono" id="pw-tip" hidden></div></div>
+        </div>
+      </div>
+      <p class="mapnote2" id="p-note">Each row is the mean of every slot at that hour (or on that weekday), the same frequencies as the heat map.</p>
+    </section>
+  </main>
+</div>
+</body>
+</html>

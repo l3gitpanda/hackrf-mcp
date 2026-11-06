@@ -9,6 +9,7 @@ import { bandList, bandsInView, clampCenter, leftText, parseMhz, scrolled, watch
 import { parseQuery, search } from '../../src/hackrf_mcp/web/static/js/bandsearch.js';
 import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeTicks } from '../../src/hackrf_mcp/web/static/js/historyutil.js';
 import { compass, destination, fmtKm, levelChart, outline } from '../../src/hackrf_mcp/web/static/js/rangeutil.js';
+import { RANGES, bytesOf, cellAt, cellLevel, freqTicks, groupUnusual, levels, logHref, paint, rowMap, scheduleText, spanOf, watchHref, zoomRange } from '../../src/hackrf_mcp/web/static/js/occutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
   const c = assignColors([{ name: 'adsb' }, { name: 'ais', color: PALETTE[0] }, { name: 'acars' }]);
@@ -582,4 +583,85 @@ test('reported fixes go in time order, are drawn dashed, and say what they were'
   // A summary's fields don't say which fix: the newest one reported is it.
   assert.equal(reportSource({ ts: 100 }, { pos_source: 'CPDLC' }, true), 'CPDLC');
   assert.equal(reportSource({ ts: 100 }, { pos_source: 'CPDLC' }, false), 'datalink');
+});
+
+// --- Occupancy (occutil.js) ---------------------------------------------------
+
+// A grid answer as /api/occupancy gives it: 4 buckets of 15 min, the second
+// empty, 5 frequency buckets of 1 MHz from 24 MHz.
+const OGRID = {
+  since: 1000, until: 4600, bucket_s: 900, ts: [1000, 2800, 3700],
+  f_lo_hz: 24e6, bucket_hz: 1e6, fbuckets: 5, grid: { lo_hz: 24e6, bin_hz: 1e6, bins: 40, hi_hz: 64e6 },
+  db_min: -130, db_step: 0.5,
+};
+
+test('occupancy: buckets, levels and the picture, newest at the top', () => {
+  const rows = rowMap(OGRID, 4);
+  assert.deepEqual([...rows], [0, -1, 1, 2]);
+  // Bytes: 3 rows x 5 buckets; 100 = -80 dBFS, 160 = -50.
+  const bytes = Uint8Array.from([100, 100, 160, 100, 0, 100, 100, 100, 100, 100, 100, 160, 100, 100, 100]);
+  const lv = levels(bytes, -130, 0.5);
+  assert.equal(lv.lo, -86);
+  assert.equal(lv.hi, -36);
+  assert.deepEqual(levels(new Uint8Array(4), -130, 0.5), { lo: -100, hi: -50 });
+  const lut = new Uint8ClampedArray(256 * 3).map((_, i) => Math.floor(i / 3));
+  const px = paint(bytes, 5, rows, 4, lut, -86, -36, -130, 0.5);
+  const at = (x, y) => [...px.slice((y * 5 + x) * 4, (y * 5 + x) * 4 + 4)];
+  // Top row (y 0) is the newest bucket (data row 2): its carrier at x 1.
+  assert.ok(at(1, 0)[0] > at(0, 0)[0]);
+  // The empty bucket (bucket 1) is grey, at y 2; an unmeasured cell too.
+  assert.deepEqual(at(0, 2), [26, 31, 39, 255]);
+  assert.deepEqual(at(4, 3), [26, 31, 39, 255]);
+  assert.equal(at(2, 3)[0], Math.round(((-50 + 86) / 50) * 255));
+});
+
+test('occupancy: cells, zoom and frequency labels', () => {
+  const rows = rowMap(OGRID, 4);
+  const c = cellAt(OGRID, 4, 0.5, 0.01);
+  assert.deepEqual(c, { ti: 3, fi: 2, t0: 3700, t1: 4600, f0: 26e6, f1: 27e6 });
+  const bytes = Uint8Array.from([100, 100, 160, 100, 0, 100, 100, 100, 100, 100, 100, 160, 100, 100, 100]);
+  assert.equal(cellLevel(bytes, rows, c, 5, -130, 0.5), -80);
+  assert.equal(cellLevel(bytes, rows, { ...c, ti: 1 }, 5, -130, 0.5), null);
+  assert.equal(cellLevel(bytes, rows, { ...c, ti: 3, fi: 1 }, 5, -130, 0.5), -50);
+  assert.deepEqual(zoomRange(OGRID, 0.21, 0.79), { fmin: 25e6, fmax: 28e6 });
+  assert.equal(zoomRange(OGRID, 0.41, 0.45), null);
+  assert.deepEqual(spanOf(OGRID), { lo: 24e6, hi: 29e6 });
+  const t = freqTicks(24e6, 1704e6, 10);
+  assert.deepEqual(t.map((x) => x.label), ['200', '400', '600', '800', '1000', '1200', '1400', '1600']);
+  assert.equal(freqTicks(162e6, 163e6, 10)[1].label, '162.1');
+  assert.equal(RANGES[0].tb, 96);
+  assert.deepEqual([...bytesOf('AAH/')], [0, 1, 255]);
+});
+
+test('occupancy: links to watch a range and to the log, and the schedule line', () => {
+  const watch = { min_hz: 1e6, max_hz: 6e9, rates_hz: [2e6, 10e6] };
+  assert.equal(watchHref(162.35e6, 162.45e6, watch), '/?watch_from=162.35&watch_to=162.45');
+  assert.equal(watchHref(7e9, 8e9, watch), null);
+  assert.equal(watchHref(1e6, 2e6, null), null);
+  const log = new URL(logHref(162.35e6, 162.45e6, 3700, 4600), 'http://x');
+  assert.equal(log.pathname, '/log');
+  assert.equal(log.searchParams.get('freq'), '162.4000');
+  assert.equal(log.searchParams.get('tol'), '50000');
+  assert.equal(log.searchParams.get('since'), '2800');
+  assert.equal(log.searchParams.get('until'), '5500');
+  assert.equal(new URL(logHref(162.4e6, 162.41e6, 0, 900), 'http://x').searchParams.get('tol'), '12500');
+  const oc = { enabled: true, interval_min: 15, range_mhz: [24, 1704], passes: 20, bin_hz: 98039.2, lna_gain_db: 24, vga_gain_db: 40 };
+  assert.equal(scheduleText(oc), 'Every 15 min on the UTC clock · 24–1704 MHz · 20 passes at 98.0 kHz · LNA 24 dB, VGA 40 dB, amp off');
+  assert.equal(scheduleText({ enabled: false }), null);
+});
+
+test('occupancy: the unusual items of many slots, one entry per signal', () => {
+  const it = (slot, ts, lo, hi, ex) => ({ slot, ts, lo_hz: lo, hi_hz: hi, freq_hz: (lo + hi) / 2, excess_db: ex, level_db: -50, usual_db: -80 });
+  const g = groupUnusual([
+    it(3, 3000, 155.27e6, 155.37e6, 38),
+    it(3, 3000, 460e6, 460.2e6, 12),
+    it(2, 2100, 155.27e6, 155.33e6, 40),
+    it(1, 1200, 155.37e6, 155.47e6, 20), // touches the first within one bin
+    it(1, 1200, 931.8e6, 932e6, 25),
+  ], 100e3);
+  assert.equal(g.length, 3);
+  assert.deepEqual([g[0].lo_hz, g[0].hi_hz, g[0].first, g[0].last, g[0].slots, g[0].best.excess_db, g[0].latest.slot], [155.27e6, 155.47e6, 1200, 3000, 3, 40, 3]);
+  assert.equal(g[1].lo_hz, 460e6);
+  assert.equal(g[2].last, 1200);
+  assert.equal(groupUnusual([it(1, 1, 1e6, 2e6, 10), it(1, 1, 2.2e6, 3e6, 10)]).length, 2);
 });

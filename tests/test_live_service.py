@@ -353,3 +353,178 @@ def test_parse_when():
     assert server.parse_when("1970-01-01T01:00:00Z", now) == 3600.0
     assert server.parse_when("1970-01-01T01:00:00", now) == 3600.0
     assert server.parse_when(None, now) is None
+
+
+# --- day plans (live_day.py) -------------------------------------------------
+
+from datetime import datetime  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+DAY_ZONE = "America/Chicago"
+
+
+def _local(*args) -> float:
+    return datetime(*args, tzinfo=ZoneInfo(DAY_ZONE)).timestamp()
+
+
+def _day_req(zone=DAY_ZONE):
+    return {
+        "cmd": "start",
+        "day": {
+            "zone": zone,
+            "parts": [
+                {"name": "day", "start": "06:00", "schedule": [{"profile": "ais", "minutes": 15}, {"profile": "adsb", "minutes": 45}]},
+                {"name": "night", "start": "23:00", "schedule": [{"profile": "aprs", "minutes": 30}, {"profile": "adsb", "minutes": 30}]},
+            ],
+        },
+    }
+
+
+def test_a_day_plan_switches_parts_on_the_local_clock(svc):
+    events = []
+    svc._event = lambda e, p=None, d=None: events.append((e, p, d))
+    svc.test_clock.t = _local(2026, 11, 6, 22, 50)
+    r = svc.handle(_day_req())
+    assert r["ok"], r
+    # 22:50 is in the day part's adsb step, which the part cuts at 23:00.
+    assert r["profile"] == "adsb" and r["next_switch"] == pytest.approx(_local(2026, 11, 6, 23, 0))
+    assert r["day"]["part"]["name"] == "day" and r["day"]["next_part"] == {
+        "index": 1, "name": "night", "start": "23:00", "at": pytest.approx(_local(2026, 11, 6, 23, 0)),
+    }
+    assert r["desired"]["day"]["zone"] == DAY_ZONE and [p["start"] for p in r["desired"]["day"]["parts"]] == ["06:00", "23:00"]
+    assert ("part", None, f"day: 06:00-23:00 {DAY_ZONE}") in events
+    # At 23:00 the night starts at its first step.
+    svc.test_clock.t = _local(2026, 11, 6, 23, 0)
+    svc.supervise()
+    st = svc.status()
+    assert st["profile"] == "aprs" and st["day"]["part"]["name"] == "night"
+    assert st["next_switch"] == pytest.approx(_local(2026, 11, 6, 23, 30))
+    assert ("part", None, f"night: 23:00-06:00 {DAY_ZONE}") in events
+    assert [e for e in events if e[0] == "part"] == [("part", None, f"day: 06:00-23:00 {DAY_ZONE}"), ("part", None, f"night: 23:00-06:00 {DAY_ZONE}")]
+    # The strip covers the local day; the night part shows at both ends.
+    today = st["day"]["today"]
+    assert today["from"] == pytest.approx(_local(2026, 11, 6, 0, 0))
+    assert [s["name"] for s in today["segments"]] == ["night", "day", "night"]
+    assert today["share"]["adsb"] == pytest.approx((17 * 45 / 60 + 7 * 0.5) / 24)
+    # Past midnight it is still the night until 06:00, then the day at its first step.
+    svc.test_clock.t = _local(2026, 11, 7, 5, 59)
+    svc.supervise()
+    assert svc.running_spec.profile == "adsb"
+    svc.test_clock.t = _local(2026, 11, 7, 6, 0)
+    svc.supervise()
+    assert svc.running_spec.profile == "ais" and svc.status()["day"]["part"]["name"] == "day"
+
+
+def test_a_hold_across_a_part_change_finishes_then_the_new_part_runs(svc):
+    svc.test_clock.t = _local(2026, 11, 6, 22, 59)
+    svc.handle(_day_req())
+    r = svc.handle({"cmd": "pause", "owner": "hackrf_transfer", "lease_s": 120})
+    svc.test_clock.t = _local(2026, 11, 6, 23, 0, 30)
+    svc.supervise()
+    assert svc.pipeline is None and svc.status()["state"] == "paused"
+    assert svc.status()["day"]["part"]["name"] == "night"
+    svc.handle({"cmd": "resume", "token": r["token"]})
+    svc.supervise()
+    assert svc.running_spec.profile == "aprs"
+
+
+def test_a_watch_across_a_part_change_runs_to_its_own_end(svc):
+    svc.test_clock.t = _local(2026, 11, 6, 22, 58)
+    svc.handle(_day_req())
+    svc.handle({"cmd": "watch", "center_hz": 98_000_000, "sample_rate_hz": 10_000_000, "minutes": 5})
+    svc.test_clock.t = _local(2026, 11, 6, 23, 1)
+    svc.supervise()
+    st = svc.status()
+    assert st["profile"] == "watch" and st["day"]["part"]["name"] == "night"
+    assert st["next_switch"] == pytest.approx(_local(2026, 11, 6, 23, 3))
+    svc.test_clock.t = _local(2026, 11, 6, 23, 3)
+    svc.supervise()
+    assert svc.running_spec.profile == "aprs"
+
+
+def test_a_day_plan_survives_a_restart_and_the_old_forms_still_load(svc, tmp_path):
+    svc.test_clock.t = _local(2026, 11, 6, 23, 10)
+    svc.handle(_day_req())
+    again = LiveService(svc.live, None, make_pipeline=FakePipeline, program_finder=lambda p: "/bin/true", clock=svc.test_clock)
+    again.load()
+    again.supervise()
+    assert again.running_spec.profile == "aprs" and again.status()["day"]["part"]["name"] == "night"
+    # A rotation saved before day plans existed keeps its anchor and phase.
+    import json
+    svc.live.state_path.write_text(json.dumps({"desired": {
+        "schedule": [{"spec": {"profile": "adsb"}, "minutes": 10}, {"spec": {"profile": "ais"}, "minutes": 10}],
+        "anchor": svc.test_clock.t - 15 * 60,
+    }}))
+    old = LiveService(svc.live, None, make_pipeline=FakePipeline, program_finder=lambda p: "/bin/true", clock=svc.test_clock)
+    old.load()
+    old.supervise()
+    st = old.status()
+    assert st["profile"] == "ais" and st["day"] is None and st["desired"]["anchor"] == svc.test_clock.t - 15 * 60
+    assert st["next_switch"] == pytest.approx(svc.test_clock.t + 5 * 60)
+
+
+def test_a_saved_plan_whose_zone_is_gone_says_which(svc):
+    import json
+    events = []
+    svc.handle(_day_req())
+    state = json.loads(svc.live.state_path.read_text())
+    state["desired"]["day"]["zone"] = "Gone/Away"
+    svc.live.state_path.write_text(json.dumps(state))
+    again = LiveService(svc.live, None, make_pipeline=FakePipeline, program_finder=lambda p: "/bin/true")
+    again._event = lambda e, p=None, d=None: events.append((e, d))
+    again.load()
+    assert again.desired is None
+    assert any(e == "error" and "Gone/Away" in d for e, d in events)
+
+
+def test_bad_day_plans_are_refused_with_a_reason(svc):
+    def refused(req):
+        r = svc.handle(req)
+        assert not r["ok"], r
+        return r["error"]
+
+    assert "unknown time zone" in refused(_day_req(zone="Nowhere/Land"))
+    bad = _day_req()
+    bad["day"]["parts"][1]["start"] = "25:00"
+    assert "like 23:00" in refused(bad)
+    bad = _day_req()
+    bad["day"]["parts"][1]["schedule"][0]["minutes"] = 0
+    assert "1-1440" in refused(bad)
+    bad = _day_req()
+    bad["day"]["parts"][1]["schedule"] = [{"profile": "flex", "minutes": 10}]
+    assert "frequencies_hz" in refused(bad)
+    bad = _day_req()
+    bad["day"]["parts"] = bad["day"]["parts"][:1]
+    assert "at least two parts" in refused(bad)
+    bad = _day_req()
+    bad["profile"] = "adsb"
+    assert "one of profile, schedule or day" in refused(bad)
+    assert svc.desired is None and svc.pipeline is None
+
+
+def test_a_single_profile_part_runs_all_part_long(svc):
+    req = _day_req()
+    req["day"]["parts"][1]["schedule"] = [{"profile": "aprs", "minutes": 60}]
+    svc.test_clock.t = _local(2026, 11, 6, 23, 0)
+    r = svc.handle(req)
+    assert r["profile"] == "aprs" and r["next_switch"] == pytest.approx(_local(2026, 11, 7, 6, 0))
+
+
+def test_a_day_plan_through_the_mcp_tool(served):
+    served.test_clock.t = _local(2026, 11, 6, 23, 5)
+    E = server.LiveScheduleEntry
+    day = server.LiveDay(
+        zone=DAY_ZONE,
+        parts=[
+            server.LiveDayPart(name="day", start="06:00", schedule=[E(profile="ais", minutes=15), E(profile="adsb", minutes=45)]),
+            server.LiveDayPart(name="night", start="23:00", schedule=[E(profile="aprs", minutes=30, frequencies_hz=[144_390_000]), E(profile="adsb", minutes=30)]),
+        ],
+    )
+    out = server.hackrf_live_start(day=day)
+    assert "RUNNING aprs" in out
+    assert f"Day plan ({DAY_ZONE} time, every day): day from 06:00 (ais 15 min -> adsb 45 min, repeating); night from 23:00 (aprs 144.39 30 min -> adsb 30 min, repeating)." in out
+    assert "Now: night until " in out and "(06:00 local), then day" in out
+    assert "Today by the plan: adsb 68%, ais 18%, aprs 15% of the day." in out
+    assert "Give one of profile, schedule or day" in server.hackrf_live_start(profile="adsb", day=day)
+    bad = day.model_copy(update={"zone": "Nowhere/Land"})
+    assert "Not started" in server.hackrf_live_start(day=bad) and "unknown time zone" in server.hackrf_live_start(day=bad)

@@ -62,7 +62,9 @@ export function inSeconds(ts, now) {
   if (ts == null) return '';
   const s = Math.max(0, ts - now);
   if (s < 90) return `${Math.round(s)} s`;
-  return `${Math.round(s / 60)} min`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m} min`;
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
 export function mib(bytes) {

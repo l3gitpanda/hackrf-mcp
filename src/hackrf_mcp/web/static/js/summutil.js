@@ -220,3 +220,50 @@ export function gridImage(cells, cell, maxPx = 2048) {
   };
   return { west, east, south, north, width, height, rect };
 }
+
+// --- Aircraft names (the offline aircraft database, /api/aircraft) ---------------------------
+// Profiles whose subjects are aircraft say how in the registry: subject_type
+// 'icao24' (an ICAO address) or 'registration' (a tail number).
+
+// The busiest subjects worth asking about: {icao: [[address, callsign]], tails: [tail]}.
+// A callsign (the entry's first label) lets the database tell an airline flight
+// apart. Non-ICAO addresses (dump1090's "~" ones) are left out.
+export function aircraftWanted(profiles, data) {
+  const icao = new Map();
+  const tails = new Set();
+  for (const [name, st] of Object.entries((data && data.profiles) || {})) {
+    const kind = profiles[name] && profiles[name].subject_type;
+    for (const e of (st && st.top) || []) {
+      const s = String(e.subject || '').trim().toUpperCase();
+      if (kind === 'icao24' && /^[0-9A-F]{6}$/.test(s)) {
+        if (!icao.has(s) || (!icao.get(s) && e.labels && e.labels[0])) icao.set(s, String((e.labels && e.labels[0]) || '').trim());
+      } else if (kind === 'registration' && s) {
+        tails.add(s);
+      }
+    }
+  }
+  return { icao: [...icao.entries()], tails: [...tails] };
+}
+
+// /api/aircraft's a= list: "ABC123:CALLSIGN,DEF456".
+export function aircraftQuery(pairs) {
+  return pairs.map(([i, c]) => (c ? `${i}:${c}` : i)).join(',');
+}
+
+// What a summary table shows for one aircraft: a short line (registration,
+// make and model, owner or operator) and the whole record for its tooltip.
+export function aircraftName(info) {
+  if (!info) return null;
+  const craft = [info.manufacturer, info.model].filter(Boolean).join(' ') || info.type || '';
+  const owner = info.owner ? `${info.owner}${info.registrant ? ` (${String(info.registrant).toLowerCase()})` : ''}` : '';
+  const short = [info.registration, craft, owner || info.operator].filter(Boolean).join(' · ');
+  const full = [
+    info.registration && `registration ${info.registration}`,
+    craft && `aircraft ${craft}${info.type && info.type !== craft ? ` ${info.type}` : ''}${info.kind ? ` (${info.kind})` : ''}`,
+    owner && `owner ${owner}`,
+    info.operator && `operator ${info.operator}`,
+    [info.category, ...(info.tags || [])].filter(Boolean).join(' · ') && `listed as ${[info.category, ...(info.tags || [])].filter(Boolean).join(' · ')}`,
+    info.why,
+  ].filter(Boolean).join('\n');
+  return { short, full, cls: info.class || 'unknown' };
+}

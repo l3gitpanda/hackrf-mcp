@@ -12,8 +12,8 @@ import { timeTicks } from './historyutil.js';
 import { ago, assignColors, clear, fmtUtc, h, mhzShort, utc } from './util.js';
 import { keyHeading, panelColumns, panelQueryText, windowText } from './panelutil.js';
 import {
-  areaPath, binAlpha, binLabels, binOf, bucketsFor, cellFor, columnsOf, dropEchoes, durText, fieldText,
-  gridImage, heatBins, kindsText, numericCols, onAir, rangeOf, runsOf, tickTimes,
+  aircraftName, aircraftQuery, aircraftWanted, areaPath, binAlpha, binLabels, binOf, bucketsFor, cellFor, columnsOf,
+  dropEchoes, durText, fieldText, gridImage, heatBins, kindsText, numericCols, onAir, rangeOf, runsOf, tickTimes,
 } from './summutil.js';
 
 const $ = (id) => document.getElementById(id);
@@ -35,6 +35,9 @@ const S = {
   status: null,
   statusAt: 0,
   heat: { profile: null, weight: 'targets', grid: null, cell: null, box: null, overlay: null, seq: 0, fitted: false },
+  // The aircraft database's answers, kept across periods: per ICAO address
+  // (with the callsign it was asked with), and the address of each tail.
+  ac: { info: new Map(), asked: new Map(), tails: new Map(), seq: 0, failed: false, built: false },
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
@@ -161,6 +164,7 @@ async function load() {
   S.air = onAir(S.data.coverage, since, until);
   renderCoverage();
   renderCards();
+  loadAircraftNames();
   renderRates();
   S.heat.fitted = false;
   S.heat.grid = null;
@@ -328,10 +332,74 @@ function logHref(extra) {
   return `/log?${u}`;
 }
 
+// --- Aircraft names -------------------------------------------------------------------------
+// For profiles whose subjects are aircraft (registry subject_type), the
+// busiest subjects get a name from the offline aircraft database, as the
+// Map does: registration, make and model, owner. Tails are first turned
+// into ICAO addresses. The cards are drawn again once the answers are in.
+
+// Shown once the database has answered and has been built (its weekly
+// refresh may be off while a database built earlier is still there).
+const acEnabled = () => !!S.registry.aircraft && S.ac.built;
+const isAircraftProfile = (p) => p.subject_type === 'icao24' || p.subject_type === 'registration';
+
+async function loadAircraftNames() {
+  if (!S.registry.aircraft || !S.data) return;
+  const seq = ++S.ac.seq;
+  S.ac.failed = false;
+  const want = aircraftWanted(S.profiles, S.data);
+  try {
+    const tails = want.tails.filter((t) => !S.ac.tails.has(t)).slice(0, 500);
+    if (tails.length) {
+      const r = await api(`/api/aircraft?r=${encodeURIComponent(tails.join(','))}`);
+      S.ac.built = !!(r.db && r.db.built_at);
+      const found = r.registrations || {};
+      for (const t of tails) S.ac.tails.set(t, found[t] || null);
+    }
+    const pairs = want.icao.slice();
+    for (const t of want.tails) {
+      const i = S.ac.tails.get(t);
+      if (i && !pairs.some(([x]) => x === i)) pairs.push([i, '']);
+    }
+    const ask = pairs.filter(([i, c]) => !S.ac.asked.has(i) || (c && S.ac.asked.get(i) !== c)).slice(0, 500);
+    if (ask.length) {
+      const r = await api(`/api/aircraft?a=${encodeURIComponent(aircraftQuery(ask))}`);
+      S.ac.built = !!(r.db && r.db.built_at);
+      for (const [i, c] of ask) S.ac.asked.set(i, c);
+      for (const [i, info] of Object.entries(r.aircraft || {})) S.ac.info.set(i, info);
+    }
+  } catch (e) {
+    S.ac.failed = true; // the cards stand without names
+  }
+  if (seq === S.ac.seq) renderCards();
+}
+
+function aircraftCell(p, subject) {
+  const s = String(subject || '').trim().toUpperCase();
+  const icao = p.subject_type === 'registration' ? S.ac.tails.get(s) : s;
+  const info = icao ? S.ac.info.get(icao) : null;
+  if (!info) {
+    // "…" while the database hasn't answered yet; "—" when it knows nothing.
+    const pending =
+      !S.ac.failed &&
+      (p.subject_type === 'registration' ? !S.ac.tails.has(s) || (icao && !S.ac.asked.has(icao)) : /^[0-9A-F]{6}$/.test(s) && !S.ac.asked.has(s));
+    return h('td', { class: 'acname muted' }, pending ? '…' : '—');
+  }
+  const n = aircraftName(info);
+  const c = (S.registry.aircraft.classes || []).find((x) => x.name === n.cls);
+  return h(
+    'td',
+    { class: 'acname', title: n.full },
+    c && n.cls !== 'unknown' ? h('span', { class: 'actag', '--cc': c.color }, c.short) : null,
+    n.short || h('span', { class: 'muted' }, c ? c.label : n.cls),
+  );
+}
+
 function card(p, st) {
   // A field that only repeats the label (a callsign, a ship's name) is
   // left out: the label is shown with the subject.
   const cols = dropEchoes(columnsOf(p), st.top);
+  const named = acEnabled() && isAircraftProfile(p);
   const numeric = numericCols(cols, st.top);
   const kinds = Object.keys(st.by_kind);
   const air = S.air.profiles[p.name] || 0;
@@ -355,6 +423,7 @@ function card(p, st) {
     'tr',
     {},
     h('th', {}, 'Subject'),
+    named ? h('th', {}, 'Aircraft') : null,
     h('th', { class: 'r' }, 'Msgs'),
     h('th', {}, 'Last'),
     cols.map((f) => h('th', { class: numeric.has(f) ? 'r' : null }, f.replace(/_/g, ' '))),
@@ -371,6 +440,7 @@ function card(p, st) {
         h('a', { href: logHref({ subject: e.subject, profiles: p.name }), title: `Open ${e.subject} in the log` }, e.subject),
         e.labels.length ? h('span', { class: 'lbl' }, e.labels[0]) : null,
       ),
+      named ? aircraftCell(p, e.subject) : null,
       h('td', { class: 'mono r' }, nf(e.messages)),
       h('td', { class: 'mono' }, long ? fmtUtc(e.last).slice(5) : utc(e.last)),
       cols.map((f) => h('td', { class: numeric.has(f) ? 'mono r' : 'mono' }, fieldText(e.fields[f]))),

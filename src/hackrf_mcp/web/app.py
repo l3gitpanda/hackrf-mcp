@@ -848,23 +848,32 @@ def create_app(
             body = await request.json()
             if not isinstance(body, dict):
                 raise ValueError("send a JSON object")
-            if body.get("schedule"):
-                if body.get("profile"):
-                    raise ValueError("give either profile or schedule, not both")
+            def entry(e: dict) -> dict:
+                return {
+                    "profile": str(e["profile"]),
+                    "minutes": float(e["minutes"]),
+                    "freqs_hz": [int(f) for f in e.get("frequencies_hz") or []],
+                    "lna_gain_db": e.get("lna_gain_db"),
+                    "vga_gain_db": e.get("vga_gain_db"),
+                    "amp": bool(e.get("amp_enable", False)),
+                }
+
+            if sum(1 for k in ("profile", "schedule", "day") if body.get(k)) > 1:
+                raise ValueError("give one of profile, schedule or day")
+            if body.get("day"):
+                day = body["day"]
                 req = {
                     "cmd": "start",
-                    "schedule": [
-                        {
-                            "profile": str(e["profile"]),
-                            "minutes": float(e["minutes"]),
-                            "freqs_hz": [int(f) for f in e.get("frequencies_hz") or []],
-                            "lna_gain_db": e.get("lna_gain_db"),
-                            "vga_gain_db": e.get("vga_gain_db"),
-                            "amp": bool(e.get("amp_enable", False)),
-                        }
-                        for e in body["schedule"]
-                    ],
+                    "day": {
+                        "zone": str(day["zone"]),
+                        "parts": [
+                            {"name": str(p.get("name") or ""), "start": str(p["start"]), "schedule": [entry(e) for e in p["schedule"]]}
+                            for p in day["parts"]
+                        ],
+                    },
                 }
+            elif body.get("schedule"):
+                req = {"cmd": "start", "schedule": [entry(e) for e in body["schedule"]]}
             elif body.get("profile"):
                 req = {
                     "cmd": "start",
@@ -875,7 +884,7 @@ def create_app(
                     "amp": bool(body.get("amp_enable", False)),
                 }
             else:
-                raise ValueError("give a profile to start, or a schedule")
+                raise ValueError("give a profile to start, a schedule or a day plan")
         except (ValueError, KeyError, TypeError) as exc:
             return error(400, f"bad request: {exc}")
         return await _control(req)

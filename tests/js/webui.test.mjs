@@ -2,7 +2,7 @@
 // `node --test` when node is installed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, stepName, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
+import { PALETTE, assignColors, decodeRow, fmtUtc, inSeconds, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, stepName, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
 import { AutoLevel, binAt, freqAt, freqText, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
 import { bandsAt, layoutBands, officialAt, rangeText, serviceText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
 import { bandList, bandsInView, clampCenter, leftText, parseMhz, scrolled, watchTuning } from '../../src/hackrf_mcp/web/static/js/watchutil.js';
@@ -15,6 +15,7 @@ import {
   AUDIO, DROPPED, FLAG_OPEN, HEADER_BYTES, LISTEN, METER, Resampler, ULAW, channelBody, channelName, defaultMode, isClip, meterPct, nextStart, parseFrame, parseWav,
   planText, sameChannels, snapHz, squelchText, ulawDecode, withChannel, withListen, withoutChannel,
 } from '../../src/hackrf_mcp/web/static/js/listenutil.js';
+import { checkParts, dayShare, fmtStart, freeStart, localTime, mainProfile, parseStart, partAt, partMinutes, sortParts, spaced, strip, zoneAbbr } from '../../src/hackrf_mcp/web/static/js/dayutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
   const c = assignColors([{ name: 'adsb' }, { name: 'ais', color: PALETTE[0] }, { name: 'acars' }]);
@@ -891,4 +892,99 @@ test('rotation steps of one profile on different bands read apart', () => {
   assert.equal(stepName({ profile: 'p', freqs_hz: [433920000] }), 'p 433.92');
   assert.equal(stepName({ profile: 'p', freqs_hz: [315000000] }), 'p 315');
   assert.equal(stepName({ profile: 'p', freqs_hz: [931750000, 929612500] }), 'p 931.75…');
+});
+
+// --- Day plans (dayutil.js) ---------------------------------------------------
+
+const DAY = [{ profile: 'p1', minutes: 5 }, { profile: 'p1', minutes: 5 }, { profile: 'p1', minutes: 5 }, { profile: 'p2', minutes: 45 }];
+const NIGHT = [{ profile: 'p1', minutes: 10 }, { profile: 'p1', minutes: 10 }, { profile: 'p1', minutes: 10 }, { profile: 'p2', minutes: 30 }];
+
+test('part start times parse and print on a 24-hour clock', () => {
+  assert.equal(parseStart('23:00'), 1380);
+  assert.equal(parseStart(' 6:05 '), 365);
+  assert.equal(parseStart('00:00'), 0);
+  for (const bad of ['24:00', '12:60', '12', '', null, 'noon', '1:5']) assert.ok(Number.isNaN(parseStart(bad)), String(bad));
+  assert.equal(fmtStart(365), '06:05');
+  assert.equal(fmtStart(1440), '00:00');
+});
+
+test('parts sort by start and each lasts until the next, the last past midnight', () => {
+  const parts = sortParts([{ name: 'night', start: '23:00' }, { name: 'day', start: '06:00' }]);
+  assert.deepEqual(parts.map((p) => p.name), ['day', 'night']);
+  assert.deepEqual(partMinutes(parts), [17 * 60, 7 * 60]);
+  assert.deepEqual(partMinutes([{ start: '00:00' }]), [1440]);
+});
+
+test("a day's share: each part from its first step, its last cycle cut short", () => {
+  const share = dayShare([{ start: '23:00', steps: NIGHT }, { start: '06:00', steps: DAY }]);
+  assert.deepEqual(Object.keys(share), ['p2', 'p1']);
+  assert.ok(Math.abs(share.p2 - 16.25 / 24) < 1e-9);
+  assert.ok(Math.abs(share.p1 - 7.75 / 24) < 1e-9);
+  // Today's single rotation, for comparison: 45 of every 60 minutes.
+  assert.ok(Math.abs(dayShare([{ start: '00:00', steps: DAY }]).p2 - 0.75) < 1e-9);
+  // 06:00-06:10 runs 7 min of a and 3 of b; then one profile all part long.
+  const odd = dayShare([{ start: '06:00', steps: [{ profile: 'a', minutes: 7 }, { profile: 'b', minutes: 7 }] }, { start: '06:10', steps: [{ profile: 'c', minutes: 1 }] }]);
+  assert.ok(Math.abs(odd.a - 7 / 1440) < 1e-9 && Math.abs(odd.b - 3 / 1440) < 1e-9 && Math.abs(odd.c - 1430 / 1440) < 1e-9);
+  // Zero-minute steps can't spin it forever.
+  assert.deepEqual(Object.keys(dayShare([{ start: '00:00', steps: [{ profile: 'a', minutes: 0 }, { profile: 'b', minutes: 0 }] }, { start: '12:00', steps: DAY }])), ['p2', 'p1', 'a', 'b']);
+});
+
+test('a draft day plan is checked before it is sent', () => {
+  const ok = [{ name: 'day', start: '06:00', steps: DAY }, { name: 'night', start: '23:00', steps: NIGHT }];
+  assert.equal(checkParts(ok), null);
+  assert.match(checkParts(ok.slice(0, 1)), /at least two parts/);
+  assert.match(checkParts([ok[0], { ...ok[1], start: '06:00' }]), /day and night both start at 06:00/);
+  assert.match(checkParts([ok[0], { ...ok[1], start: '25:00' }]), /night needs a start time/);
+  assert.match(checkParts([ok[0], { ...ok[1], name: ' ' }]), /part at 23:00 needs a name/);
+  assert.match(checkParts([ok[0], { ...ok[1], name: 'day' }]), /Two parts are called day/);
+  assert.match(checkParts([ok[0], { ...ok[1], steps: [] }]), /night needs at least one step/);
+});
+
+test('a new part takes twelve hours on, or the next free hour', () => {
+  assert.equal(freeStart([{ start: '06:00' }], '06:00'), '18:00');
+  assert.equal(freeStart([{ start: '06:00' }, { start: '18:00' }], '06:00'), '19:00');
+  assert.equal(freeStart([{ start: '06:30' }], '06:30'), '18:00');
+});
+
+test("today's strip: offsets, the current part and now", () => {
+  const today = { from: 0, to: 86400, segments: [{ index: 1, name: 'night', from: 0, to: 21600 }, { index: 0, name: 'day', from: 21600, to: 82800 }, { index: 1, name: 'night', from: 82800, to: 86400 }] };
+  const g = strip(today, 43200);
+  assert.deepEqual(g.segs.map((s) => [s.name, s.left, s.width, s.cur, s.past]), [
+    ['night', 0, 0.25, false, true],
+    ['day', 0.25, 61200 / 86400, true, false],
+    ['night', 82800 / 86400, 3600 / 86400, false, false],
+  ]);
+  assert.equal(g.fraction, 0.5);
+  assert.equal(partAt(today.segments, 21600).name, 'day');
+  assert.equal(partAt(today.segments, 90000), null);
+  assert.deepEqual(strip({ from: 5, to: 5, segments: [] }, 5), { segs: [], fraction: 0 });
+});
+
+test("the plan's clock: local times and the zone's short name", () => {
+  const ts = Date.UTC(2026, 5, 10, 21, 0) / 1000; // 23:00 in Berlin (CEST)
+  assert.equal(localTime(ts, 'Europe/Berlin'), '23:00');
+  assert.equal(localTime(Date.UTC(2026, 11, 10, 23, 0) / 1000, 'Europe/Berlin'), '00:00');
+  assert.equal(localTime(ts, 'UTC'), '21:00');
+  assert.ok(zoneAbbr(ts, 'Europe/Berlin').length > 0);
+  assert.equal(zoneAbbr(ts, 'Not/AZone'), 'Not/AZone');
+});
+
+test("a part's colour is the profile it spends most time on, the first on a tie", () => {
+  assert.equal(mainProfile(DAY), 'p2');
+  assert.equal(mainProfile(NIGHT), 'p1');
+  assert.equal(mainProfile([]), null);
+});
+
+test('countdowns read in hours past an hour and a half', () => {
+  assert.equal(inSeconds(1045, 1000), '45 s');
+  assert.equal(inSeconds(1000 + 89 * 60, 1000), '89 min');
+  assert.equal(inSeconds(1000 + 321 * 60, 1000), '5 h 21 min');
+  assert.equal(inSeconds(1000 + 359.8 * 60, 1000), '6 h 0 min');
+  assert.equal(inSeconds(null, 1000), '');
+});
+
+test('tick labels too close to the last one kept are left out', () => {
+  assert.deepEqual(spaced([0, 0.25, 0.958], 0.1), [true, true, true]);
+  assert.deepEqual(spaced([0, 0.25, 0.27, 0.3, 0.36], 0.1), [true, true, false, false, true]);
+  assert.deepEqual(spaced([], 0.1), []);
 });

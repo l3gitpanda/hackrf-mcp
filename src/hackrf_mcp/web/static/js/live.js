@@ -12,6 +12,7 @@ import { ago, assignColors, clear, fmtUtc, h, inSeconds, mhz, mhzShort, mib, par
 import { captureBody, captureQuery, pickRange, rangeLabel, rateText, sizeText, stateText, stateTone, ticked } from './captureutil.js';
 import { FLAG_OPEN, FLAG_RECORDING, LISTEN, METER, AUDIO, channelBody, channelName, defaultMode, isClip, meterPct, planText, sameChannels, snapHz, squelchText, withChannel, withoutChannel } from './listenutil.js';
 import { AudioSocket, Player, clipActions } from './listenplayer.js';
+import { checkParts, dayShare, fmtStart, freeStart, localTime, mainProfile, parseStart, partMinutes, sortParts, spaced, strip, zoneAbbr } from './dayutil.js';
 
 const $ = (id) => document.getElementById(id);
 const FEED_MAX = 300;
@@ -37,6 +38,9 @@ const S = {
   // How long a live waterfall row is (its "seconds"): history rows of a
   // second are drawn as tall as that many live rows.
   liveRowS: 0.1,
+  // The rotation editor: the parts of the day being edited (one part, all
+  // day, is a plain rotation), which one is shown, and its steps (draft).
+  plan: null,
   draft: null,
   // Captures: Select on the waterfall, the form being filled in, the list.
   selecting: false,
@@ -156,6 +160,22 @@ function wire() {
     renderDraft();
   });
   $('rot-save').addEventListener('click', saveRotation);
+  $('rot-part-add').addEventListener('click', addPart);
+  $('part-remove').addEventListener('click', removePart);
+  $('part-name').addEventListener('input', (e) => {
+    curPart().name = e.target.value;
+    renderParts();
+    renderDraftPreview();
+  });
+  $('part-start').addEventListener('change', (e) => {
+    if (Number.isNaN(parseStart(e.target.value))) return;
+    curPart().start = e.target.value;
+    renderParts();
+    renderDraftPreview();
+  });
+  $('rot-zone').addEventListener('change', (e) => {
+    S.plan.zone = e.target.value.trim();
+  });
   $('btn-hold').addEventListener('click', () => {
     S.hold = !S.hold;
     if (!S.hold) {
@@ -363,7 +383,14 @@ function renderRotation() {
   const ticks = $('rotx');
   clear(rot);
   clear(ticks);
-  $('rot-note').hidden = !(d && d.schedule);
+  $('rot-note').hidden = !(d && (d.schedule || d.day));
+  $('rot-note').textContent = `Starting a single profile replaces the ${d && d.day ? 'day plan' : 'rotation'}.`;
+  $('rot-cap').textContent = d && d.day ? 'Day plan' : 'Rotation';
+  $('day').hidden = !(d && d.day && l.day);
+  if (d && d.day) {
+    if (l.day) renderDay(l, d.day);
+    return;
+  }
   if (!d) {
     $('rot-text').textContent = 'Nothing scheduled. Start a profile, or set up a rotation.';
     return;
@@ -393,6 +420,69 @@ function renderRotation() {
   const mark = h('span', { class: 'now' });
   mark.style.left = `${r.fraction * 100}%`;
   rot.append(mark);
+}
+
+// A day plan: today's parts on the plan's clock above the running part's
+// rotation, cut at the part's end.
+function renderDay(l, plan) {
+  const t = now();
+  const day = l.day;
+  const zone = plan.zone;
+  const abbr = zoneAbbr(t, zone);
+  const stripEl = $('day-strip');
+  const dx = $('day-x');
+  clear(stripEl);
+  clear(dx);
+  const g = strip(day.today, t);
+  const label = spaced(g.segs.map((s) => s.left), 44 / Math.max(1, stripEl.clientWidth));
+  g.segs.forEach((s, i) => {
+    const part = plan.parts[s.index] || {};
+    const cls = s.cur ? 'rs cur' : s.past ? 'rs past' : 'rs';
+    const seg = h('span', { class: cls, '--pc': profileColor(mainProfile(part.schedule)), title: `${s.name}: ${localTime(s.from, zone)}–${localTime(s.to, zone)} ${abbr}` }, s.name);
+    seg.style.width = `${s.width * 100}%`;
+    stripEl.append(seg);
+    if (!label[i]) return;
+    const tk = h('span', { class: i === 0 ? 'first' : '' }, localTime(s.from, zone));
+    tk.style.left = `${s.left * 100}%`;
+    dx.append(tk);
+  });
+  const mark = h('span', { class: 'now' });
+  mark.style.left = `${g.fraction * 100}%`;
+  stripEl.append(mark);
+
+  const part = plan.parts[day.part.index];
+  const rot = $('rot');
+  const ticks = $('rotx');
+  const nextPart = `${day.next_part.name} from ${day.next_part.start} (in ${inSeconds(day.part.until, t)})`;
+  if (!part) return;
+  if (part.schedule.length === 1) {
+    const e = part.schedule[0];
+    const seg = h('span', { class: 'rs cur', '--pc': profileColor(e.profile) }, stepName(e));
+    seg.style.width = '100%';
+    rot.append(seg);
+    $('rot-text').textContent = `${part.name}: ${stepName(e)} until ${localTime(day.part.until, zone)} ${abbr}${watching() ? '; on hold while watching' : ''} · then ${nextPart}`;
+    return;
+  }
+  const r = rotation(part.schedule, day.part.since, t);
+  if (!r) return;
+  const steps = part.schedule.map((e) => `${stepName(e)} ${e.minutes} min`);
+  const nx = l.next_switch;
+  // The day plan's panel keeps to the plan's clock, named once.
+  const when = watching() ? 'on hold while watching' : nx ? `next switch ${localTime(nx, zone)} ${abbr} (in ${inSeconds(nx, t)})` : '';
+  $('rot-text').textContent = `${part.name}: ${steps.join(' → ')}, repeating · ${when} · then ${nextPart}`;
+  for (const s of r.steps) {
+    const cut = s.from >= day.part.until;
+    const cls = s.index === r.current.index ? 'rs cur' : s.to <= t || cut ? 'rs past' : 'rs';
+    const seg = h('span', { class: cls, '--pc': profileColor(s.profile), title: `${stepName(s)}: ${localTime(s.from, zone)}–${localTime(Math.min(s.to, day.part.until), zone)}${cut ? ` (${day.next_part.name} by then)` : ''}` }, `${stepName(s)} ${s.minutes}m`);
+    seg.style.width = `${s.share * 100}%`;
+    rot.append(seg);
+    const tk = h('span', {}, localTime(s.from, zone));
+    tk.style.left = `${((s.from - r.start) / r.total) * 100}%`;
+    ticks.append(tk);
+  }
+  const m2 = h('span', { class: 'now' });
+  m2.style.left = `${r.fraction * 100}%`;
+  rot.append(m2);
 }
 
 function renderBanner() {
@@ -616,18 +706,98 @@ async function stopLive() {
 
 // --- Rotation editor -------------------------------------------------------------------
 
-function openEditor() {
-  const d = live().desired;
-  if (d && d.schedule) {
-    S.draft = d.schedule.map((e) => ({ profile: e.profile, minutes: e.minutes, freqs: (e.freqs_hz || []).map((f) => f / 1e6).join(', ') }));
-  } else {
-    const cur = d && d.profile ? d.profile.profile : firstInstalled();
-    S.draft = [{ profile: cur, minutes: 10, freqs: '' }];
+const ALL_DAY = 'All day';
+
+function browserZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
   }
+}
+
+function fillZones() {
+  const list = $('rot-zones');
+  if (list.childElementCount || typeof Intl.supportedValuesOf !== 'function') return;
+  for (const z of ['UTC', ...Intl.supportedValuesOf('timeZone')]) list.append(h('option', { value: z }));
+}
+
+function openEditor() {
+  const l = live();
+  const d = l.desired;
+  const toSteps = (schedule) => schedule.map((e) => ({ profile: e.profile, minutes: e.minutes, freqs: (e.freqs_hz || []).map((f) => f / 1e6).join(', ') }));
+  let parts;
+  let cur = 0;
+  if (d && d.day) {
+    parts = d.day.parts.map((p) => ({ name: p.name, start: p.start, steps: toSteps(p.schedule) }));
+    cur = l.day && l.day.part ? l.day.part.index : 0;
+  } else if (d && d.schedule) {
+    parts = [{ name: ALL_DAY, start: '00:00', steps: toSteps(d.schedule) }];
+  } else {
+    const p = d && d.profile ? d.profile.profile : firstInstalled();
+    parts = [{ name: ALL_DAY, start: '00:00', steps: [{ profile: p, minutes: 10, freqs: '' }] }];
+  }
+  S.plan = { zone: (d && d.day && d.day.zone) || browserZone(), parts, cur: Math.min(cur, parts.length - 1) };
+  S.draft = curPart().steps;
+  fillZones();
   $('rot-err').hidden = true;
+  renderParts();
   renderDraft();
   $('rot-backdrop').hidden = false;
   $('rot-drawer').hidden = false;
+}
+
+function curPart() {
+  return S.plan.parts[S.plan.cur];
+}
+
+function showPart(i) {
+  S.plan.cur = i;
+  S.draft = curPart().steps;
+  renderParts();
+  renderDraft();
+}
+
+// The part tabs, the shown part's name and start, and the zone: the last
+// two only once the day has more than one part.
+function renderParts() {
+  const many = S.plan.parts.length > 1;
+  const shown = curPart();
+  S.plan.parts = sortParts(S.plan.parts);
+  S.plan.cur = S.plan.parts.indexOf(shown);
+  const tabs = $('rot-parts');
+  clear(tabs);
+  S.plan.parts.forEach((p, i) => {
+    const label = many ? [p.name || '—', ' ', h('span', { class: 'mono' }, p.start)] : [p.name];
+    tabs.append(h('button', { type: 'button', 'aria-pressed': String(i === S.plan.cur), onClick: () => showPart(i) }, ...label));
+  });
+  $('rot-part').hidden = !many;
+  $('rot-zone-row').hidden = !many;
+  if (many) {
+    if (document.activeElement !== $('part-name')) $('part-name').value = shown.name;
+    $('part-start').value = shown.start;
+    $('rot-zone').value = S.plan.zone;
+  }
+  $('rot-save').textContent = many ? 'Save day plan' : 'Save rotation';
+  $('rot-part-add').disabled = S.plan.parts.length >= 24;
+}
+
+function addPart() {
+  const shown = curPart();
+  if (S.plan.parts.length === 1 && shown.name === ALL_DAY) shown.name = 'Part 1';
+  const start = freeStart(S.plan.parts, shown.start);
+  if (start === null) return;
+  const p = { name: `Part ${S.plan.parts.length + 1}`, start, steps: shown.steps.map((s) => ({ ...s })) };
+  S.plan.parts.push(p);
+  S.plan.parts = sortParts(S.plan.parts);
+  showPart(S.plan.parts.indexOf(p));
+}
+
+function removePart() {
+  if (S.plan.parts.length < 2) return;
+  S.plan.parts.splice(S.plan.cur, 1);
+  if (S.plan.parts.length === 1) S.plan.parts[0].name = ALL_DAY;
+  showPart(Math.min(S.plan.cur, S.plan.parts.length - 1));
 }
 
 function closeEditor() {
@@ -682,7 +852,10 @@ function renderDraft() {
 
 function renderDraftPreview() {
   const total = S.draft.reduce((a, s) => a + s.minutes, 0);
-  $('rot-total').textContent = `Preview · one cycle = ${total} min`;
+  const many = S.plan && S.plan.parts.length > 1;
+  const who = many ? `${curPart().name || 'This part'} · ` : '';
+  $('rot-total').textContent = S.draft.length === 1 && many ? `Preview · ${who}one profile all part long` : `Preview · ${who}one cycle = ${total} min`;
+  renderDayPreview();
   const bar = $('rot-preview');
   const share = $('rot-share');
   clear(bar);
@@ -697,15 +870,63 @@ function renderDraftPreview() {
   for (const [name, m] of Object.entries(by)) share.append(h('span', { '--pc': profileColor(name) }, h('span', { class: 'sw' }), `${name} ${Math.round((m / total) * 100)}%`));
 }
 
+// The whole day's parts and each profile's share of it, once there are two.
+function renderDayPreview() {
+  const box = $('rot-day-box');
+  const many = S.plan && S.plan.parts.length > 1;
+  box.hidden = !many;
+  if (!many) return;
+  const bar = $('rot-day-preview');
+  const dx = $('rot-day-x');
+  const share = $('rot-day-share');
+  clear(bar);
+  clear(dx);
+  clear(share);
+  const parts = sortParts(S.plan.parts);
+  const lengths = partMinutes(parts);
+  // Midnight to midnight: the part running at 00:00 (the last one) shows at both ends.
+  const first = parseStart(parts[0].start);
+  const pieces = [];
+  if (first > 0) pieces.push({ p: parts[parts.length - 1], from: 0, to: first, last: parts.length - 1 });
+  parts.forEach((p, i) => {
+    const from = parseStart(p.start);
+    pieces.push({ p, from, to: Math.min(1440, from + lengths[i]), last: i });
+  });
+  const label = spaced(pieces.map((x) => x.from / 1440), 44 / Math.max(1, bar.clientWidth));
+  pieces.forEach((x, k) => {
+    const seg = h('span', { class: x.p === curPart() ? 'rs cur' : 'rs', '--pc': profileColor(mainProfile(x.p.steps)), title: `${x.p.name}: ${fmtStart(x.from)}–${fmtStart(x.to)}` }, x.p.name);
+    seg.style.width = `${((x.to - x.from) / 1440) * 100}%`;
+    bar.append(seg);
+    if (!label[k]) return;
+    const tk = h('span', { class: k === 0 ? 'first' : '' }, fmtStart(x.from));
+    tk.style.left = `${(x.from / 1440) * 100}%`;
+    dx.append(tk);
+  });
+  for (const [name, f] of Object.entries(dayShare(parts))) {
+    share.append(h('span', { '--pc': profileColor(name) }, h('span', { class: 'sw' }), `${name} ${Math.round(f * 100)}% · ${(f * 24).toFixed(2).replace(/\.?0+$/, '')} h`));
+  }
+}
+
 async function saveRotation() {
   $('rot-err').hidden = true;
   try {
-    const steps = S.draft.map((s) => {
-      const freqs = parseFreqs(s.freqs);
-      if (S.profiles[s.profile].needs_freqs && !freqs.length) throw new Error(`${s.profile} needs its channels (MHz).`);
-      return { profile: s.profile, minutes: s.minutes, frequencies_hz: freqs.length ? freqs : undefined };
-    });
-    const body = steps.length >= 2 ? { schedule: steps } : { profile: steps[0].profile, frequencies_hz: steps[0].frequencies_hz };
+    const many = S.plan.parts.length > 1;
+    const entries = (part) =>
+      part.steps.map((s) => {
+        const freqs = parseFreqs(s.freqs);
+        if (S.profiles[s.profile].needs_freqs && !freqs.length) throw new Error(`${many ? `${part.name}: ` : ''}${s.profile} needs its channels (MHz).`);
+        return { profile: s.profile, minutes: s.minutes, frequencies_hz: freqs.length ? freqs : undefined };
+      });
+    let body;
+    if (many) {
+      const err = checkParts(S.plan.parts);
+      if (err) throw new Error(err);
+      if (!S.plan.zone) throw new Error('Give the time zone the start times are in.');
+      body = { day: { zone: S.plan.zone, parts: sortParts(S.plan.parts).map((p) => ({ name: p.name.trim(), start: fmtStart(parseStart(p.start)), schedule: entries(p) })) } };
+    } else {
+      const steps = entries(curPart());
+      body = steps.length >= 2 ? { schedule: steps } : { profile: steps[0].profile, frequencies_hz: steps[0].frequencies_hz };
+    }
     const st = await post('/api/live/start', body);
     closeEditor();
     renderStatus({ ...S.status, live: st, now: st.now || now() });

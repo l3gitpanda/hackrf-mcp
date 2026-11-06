@@ -1511,6 +1511,21 @@ def _live_one_line() -> str:
     return st["state"] + (f", {st['profile']}" if st.get("profile") else "") + " (see hackrf_live_status)"
 
 
+def _step_name(e: dict) -> str:
+    """A rotation step: its profile, and its first channel when it has one
+    (steps of one profile on different bands must read apart)."""
+    freqs = e.get("freqs_hz") or []
+    if not freqs:
+        return e["profile"]
+    return f"{e['profile']} {freqs[0] / 1e6:.3f}".rstrip("0").rstrip(".") + ("..." if len(freqs) > 1 else "")
+
+
+def _steps_text(schedule: list[dict]) -> str:
+    if len(schedule) == 1:
+        return _step_name(schedule[0])
+    return " -> ".join(f"{_step_name(e)} {e['minutes']:g} min" for e in schedule) + ", repeating"
+
+
 def _format_live_status(st: dict) -> str:
     now = st.get("now") or time.time()
     lines = []
@@ -1539,9 +1554,26 @@ def _format_live_status(st: dict) -> str:
         )
     d = st.get("desired")
     if d and "schedule" in d:
-        parts = [f"{e['profile']} {e['minutes']:g} min" for e in d["schedule"]]
         nxt = "decoding resumes" if w else "next switch"
-        lines.append(f"  Rotation: {' -> '.join(parts)}, repeating; {nxt} {_utc(st.get('next_switch'))}.")
+        lines.append(f"  Rotation: {_steps_text(d['schedule'])}; {nxt} {_utc(st.get('next_switch'))}.")
+    if d and "day" in d:
+        plan = d["day"]
+        lines.append(
+            f"  Day plan ({plan['zone']} time, every day): "
+            + "; ".join(f"{p['name']} from {p['start']} ({_steps_text(p['schedule'])})" for p in plan["parts"])
+            + "."
+        )
+        day = st.get("day") or {}
+        part, after = day.get("part") or {}, day.get("next_part") or {}
+        if part:
+            nxt = "decoding resumes" if w else "next switch"
+            lines.append(
+                f"  Now: {part['name']} until {_utc(part['until'])} ({after.get('start')} local), then {after.get('name')}; "
+                f"{nxt} {_utc(st.get('next_switch'))}."
+            )
+        share = (day.get("today") or {}).get("share") or {}
+        if share:
+            lines.append("  Today by the plan: " + ", ".join(f"{k} {v:.0%}" for k, v in share.items()) + " of the day.")
     if state != "idle" or st.get("decoded_total"):
         lines.append(
             f"  Decoded messages: {st['decoded_1m']} in the last minute, {st['decoded_10m']} in 10 min, "
@@ -1668,14 +1700,30 @@ class LiveScheduleEntry(BaseModel):
     amp_enable: bool = False
 
 
+class LiveDayPart(BaseModel):
+    name: str = Field(description="What to call this part of the day, e.g. night.")
+    start: str = Field(description="Local time it starts, HH:MM on a 24-hour clock; it runs until the next part starts.")
+    schedule: list[LiveScheduleEntry] = Field(
+        description="What it runs: one entry for a single profile all part long, or two or more to rotate, "
+        "starting at the first entry at the part's start time."
+    )
+
+
+class LiveDay(BaseModel):
+    zone: str = Field(description="The IANA time zone the start times are in, e.g. Europe/Berlin or UTC; daylight saving is followed.")
+    parts: list[LiveDayPart] = Field(description="Two or more parts, at different start times.")
+
+
 @mcp.tool(annotations=READ_ONLY)
 def hackrf_live_status() -> str:
     """Show what the live decoder service is doing: running, paused, idle or
     waiting to retry after an error; the profile and its tuning and since
     when; decoded-message and log-row rates; whether samples are arriving
-    at the full rate; the last error; a rotation schedule if one is set;
-    the size and limits of the log and of the spectrum history (one row of
-    mean and peak power per bin per second of the band being decoded);
+    at the full rate; the last error; a rotation schedule or day plan if
+    one is set (for a day plan, the part running now and each profile's
+    share of today); the size and limits of the log and of the spectrum
+    history (one row of mean and peak power per bin per second of the band
+    being decoded);
     occupancy sweeps, if the operator has turned them on (a short wide
     sweep every few minutes, which pauses decoding for a few seconds); and
     recent events (starts, stops, pauses, errors) from the log.
@@ -1715,6 +1763,7 @@ def hackrf_live_start(
     vga_gain_db: int | None = None,
     amp_enable: bool = False,
     schedule: list[LiveScheduleEntry] | None = None,
+    day: LiveDay | None = None,
 ) -> str:
     """Start live decoding, or switch it to another profile: this is how to
     move the receiver to another band. The live service decodes the profile
@@ -1726,6 +1775,14 @@ def hackrf_live_start(
     schedule rotates through two or more profiles instead, e.g.
     [{"profile": "adsb", "minutes": 10}, {"profile": "ais", "minutes": 10}],
     repeating until stopped; leave profile out when giving one.
+
+    day splits the day into parts on a local clock, each with its own
+    schedule, e.g. {"zone": "Europe/Berlin", "parts": [{"name": "day",
+    "start": "06:00", "schedule": [...]}, {"name": "night", "start":
+    "23:00", "schedule": [...]}]}: every day each part starts at its first
+    entry at its start time and runs until the next part starts. A watch,
+    listen, capture or device tool that has the receiver at a part change
+    finishes first. Give one of profile, schedule or day.
 
     NOTE: while a profile runs, the live service holds the HackRF. The other
     device tools (hackrf_transfer, hackrf_sweep, hackrf_info, ...) still
@@ -1745,24 +1802,31 @@ def hackrf_live_start(
         vga_gain_db: RX VGA gain, 0-62 dB in 2 dB steps (default per profile).
         amp_enable: Turn on the HackRF's RF amplifier.
         schedule: A rotation, instead of profile.
+        day: Parts of the day, each with its own schedule, instead of profile or schedule.
     """
-    if schedule:
-        if profile is not None:
-            return "Give either profile or schedule, not both."
+
+    def entry(e: LiveScheduleEntry) -> dict:
+        return {
+            "profile": e.profile,
+            "minutes": e.minutes,
+            "freqs_hz": e.frequencies_hz or [],
+            "lna_gain_db": e.lna_gain_db,
+            "vga_gain_db": e.vga_gain_db,
+            "amp": e.amp_enable,
+        }
+
+    if sum(1 for x in (profile, schedule, day) if x) > 1:
+        return "Give one of profile, schedule or day."
+    if day:
         req = {
             "cmd": "start",
-            "schedule": [
-                {
-                    "profile": e.profile,
-                    "minutes": e.minutes,
-                    "freqs_hz": e.frequencies_hz or [],
-                    "lna_gain_db": e.lna_gain_db,
-                    "vga_gain_db": e.vga_gain_db,
-                    "amp": e.amp_enable,
-                }
-                for e in schedule
-            ],
+            "day": {
+                "zone": day.zone,
+                "parts": [{"name": p.name, "start": p.start, "schedule": [entry(e) for e in p.schedule]} for p in day.parts],
+            },
         }
+    elif schedule:
+        req = {"cmd": "start", "schedule": [entry(e) for e in schedule]}
     elif profile is not None:
         req = {
             "cmd": "start",
@@ -1773,7 +1837,7 @@ def hackrf_live_start(
             "amp": amp_enable,
         }
     else:
-        return "Give a profile to start (or a schedule)."
+        return "Give a profile to start (or a schedule, or a day plan)."
     try:
         st = live_client.request(req, timeout=30)
     except live_client.Unavailable:

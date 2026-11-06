@@ -12,6 +12,8 @@ per connection, answered with one JSON line:
   {"cmd": "status"}
   {"cmd": "start", "profile": "adsb", "freqs_hz": [...], "lna_gain_db": 32, ...}
   {"cmd": "start", "schedule": [{"profile": "adsb", "minutes": 10}, ...]}
+  {"cmd": "start", "day": {"zone": "Europe/Berlin", "parts": [{"name": "night", "start": "23:00",
+                            "schedule": [{"profile": ..., "minutes": 10}, ...]}, ...]}}
   {"cmd": "stop"}
   {"cmd": "pause", "owner": "hackrf_transfer", "lease_s": 90}
   {"cmd": "resume", "token": "..."}
@@ -55,7 +57,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hackrf_mcp import captures, cli, listen, live_feed, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
+from hackrf_mcp import captures, cli, listen, live_day, live_feed, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
 from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
@@ -247,7 +249,10 @@ class LiveService:
         self.clips_skipped = 0
         self.audio_threaded = True  # False: the tap works in the source's thread (tests)
 
-        self.desired: dict | None = None  # {"spec": Spec} or {"schedule": [(Spec, minutes)], "anchor": t}
+        # {"spec": Spec}, {"schedule": [(Spec, minutes)], "anchor": t} or
+        # {"day": live_day.Day} (parts of the day on a local clock).
+        self.desired: dict | None = None
+        self._part_seen: tuple[int, float] | None = None  # the day plan's part last logged
         self.hold: dict | None = None  # {"owner", "until", "token", "since", "stopped"}
         # A watch in progress: {"spec", "until", "since"}. Not saved: after a
         # restart the rotation is back, so the receiver is never left parked.
@@ -626,6 +631,9 @@ class LiveService:
             return None, None
         if "spec" in self.desired:
             return self.desired["spec"], None
+        if "day" in self.desired:
+            spec, until, _ = live_day.target(self.desired["day"], now)
+            return spec, until
         entries = self.desired["schedule"]
         cycle = sum(m for _, m in entries) * 60
         pos = (now - self.desired["anchor"]) % cycle
@@ -642,6 +650,8 @@ class LiveService:
         if self.desired is not None:
             if "spec" in self.desired:
                 state["desired"] = {"spec": self.desired["spec"].to_json()}
+            elif "day" in self.desired:
+                state["desired"] = {"day": live_day.to_json(self.desired["day"])}
             else:
                 state["desired"] = {
                     "schedule": [{"spec": s.to_json(), "minutes": m} for s, m in self.desired["schedule"]],
@@ -662,6 +672,8 @@ class LiveService:
         try:
             if d and "spec" in d:
                 self.desired = {"spec": Spec.from_json(d["spec"])}
+            elif d and "day" in d:
+                self.desired = {"day": live_day.from_json(d["day"])}
             elif d and "schedule" in d:
                 self.desired = {
                     "schedule": [(Spec.from_json(e["spec"]), float(e["minutes"])) for e in d["schedule"]],
@@ -715,6 +727,7 @@ class LiveService:
             if self.watch is not None and now >= self.watch["until"]:
                 self._event("watch-end", self.watch["spec"].profile, "time limit reached")
                 self.watch = None
+            self._log_part(now)
             target, _ = (None, None) if self.hold else self._target(now)
             p = self.pipeline
             if p is not None:
@@ -741,6 +754,18 @@ class LiveService:
             if self.listen is not None and self.pipeline is not None and t is not None:
                 if not listen.fits(t.center_hz, t.sample_rate_hz, self.listen["channels"]):
                     self._end_listen(f"the receiver moved to {t.profile.name}")
+
+    def _log_part(self, now: float) -> None:
+        """A "part" event when a day plan's part begins (or the plan is
+        set or loaded), whatever has the receiver at that moment."""
+        day = self.desired.get("day") if self.desired else None
+        if day is None:
+            self._part_seen = None
+            return
+        span = live_day.span_at(day, now)
+        if self._part_seen != (span.index, span.since):
+            self._part_seen = (span.index, span.since)
+            self._event("part", None, live_day.describe(day, span))
 
     def _check_stall(self, now: float) -> str | None:
         src = self.pipeline.source if self.pipeline else None
@@ -899,17 +924,30 @@ class LiveService:
         self.supervise()
         return {"ok": True, **self.status()}
 
+    def _entries(self, schedule: list) -> list[tuple[Spec, float]]:
+        entries = []
+        for e in schedule:
+            minutes = float(e["minutes"])
+            if not 1 <= minutes <= 24 * 60:
+                raise SpecError(f"each schedule entry needs 1-1440 minutes, not {minutes:g}")
+            spec = self._decoder_spec(e)
+            self.resolve(spec)  # refuse a bad entry now, not when its turn comes
+            entries.append((spec, minutes))
+        return entries
+
     def _cmd_start(self, req: dict) -> dict:
         now = self.clock()
-        if req.get("schedule"):
-            entries = []
-            for e in req["schedule"]:
-                minutes = float(e["minutes"])
-                if not 1 <= minutes <= 24 * 60:
-                    raise SpecError(f"each schedule entry needs 1-1440 minutes, not {minutes:g}")
-                spec = self._decoder_spec(e)
-                self.resolve(spec)  # refuse a bad entry now, not when its turn comes
-                entries.append((spec, minutes))
+        if sum(1 for k in ("profile", "schedule", "day") if req.get(k)) > 1:
+            raise SpecError("give one of profile, schedule or day")
+        if req.get("day"):
+            d = req["day"]
+            parts = []
+            for p in d["parts"]:
+                start = live_day.parse_start(p["start"])
+                parts.append((p.get("name"), start, self._entries(p.get("schedule") or [])))
+            desired = {"day": live_day.make(d["zone"], parts)}
+        elif req.get("schedule"):
+            entries = self._entries(req["schedule"])
             if len(entries) < 2:
                 raise SpecError("a schedule needs at least two entries; start a single profile instead")
             desired = {"schedule": entries, "anchor": now}
@@ -920,6 +958,7 @@ class LiveService:
         with self.lock:
             self._end_watch("a profile was started")
             self.desired = desired
+            self._part_seen = None
             self.failures = 0
             self.retry_at = 0.0
             self.last_error = None
@@ -1089,9 +1128,21 @@ class LiveService:
             else:
                 state = "idle"
             desired = None
+            day = None
             if self.desired is not None:
                 if "spec" in self.desired:
                     desired = {"profile": self.desired["spec"].to_json()}
+                elif "day" in self.desired:
+                    plan = self.desired["day"]
+                    desired = {"day": live_day.status_json(plan)}
+                    span = live_day.span_at(plan, now)
+                    nxt = (span.index + 1) % len(plan.parts)
+                    day = {
+                        "zone": plan.zone,
+                        "part": {"index": span.index, "name": plan.parts[span.index].name, "start": plan.parts[span.index].start, "since": span.since, "until": span.until},
+                        "next_part": {"index": nxt, "name": plan.parts[nxt].name, "start": plan.parts[nxt].start, "at": span.until},
+                        "today": live_day.today(plan, now),
+                    }
                 else:
                     desired = {
                         "schedule": [{**s.to_json(), "minutes": m} for s, m in self.desired["schedule"]],
@@ -1127,6 +1178,7 @@ class LiveService:
                 },
                 "running_since": self.running_since,
                 "desired": desired,
+                "day": day,
                 "target": target.profile if target else None,
                 "next_switch": next_switch,
                 "hold": None

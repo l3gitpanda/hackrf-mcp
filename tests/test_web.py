@@ -376,6 +376,22 @@ def test_start_builds_the_same_requests_as_the_mcp_tool(env):
     c.post("/api/live/start", headers=BEARER, json={"schedule": [{"profile": "adsb", "minutes": 10}, {"profile": "ais", "minutes": 10}]})
     assert [e["profile"] for e in control.requests[-1]["schedule"]] == ["adsb", "ais"]
     assert control.requests[-1]["schedule"][0]["minutes"] == 10.0
+    day = {"zone": "Europe/Berlin", "parts": [
+        {"name": "day", "start": "06:00", "schedule": [{"profile": "adsb", "minutes": 45}, {"profile": "flex", "minutes": 15, "frequencies_hz": [931750000]}]},
+        {"start": "23:00", "schedule": [{"profile": "ais", "minutes": 60, "amp_enable": True}]},
+    ]}
+    assert c.post("/api/live/start", headers=BEARER, json={"day": day}).status_code == 200
+    assert control.requests[-1] == {"cmd": "start", "day": {"zone": "Europe/Berlin", "parts": [
+        {"name": "day", "start": "06:00", "schedule": [
+            {"profile": "adsb", "minutes": 45.0, "freqs_hz": [], "lna_gain_db": None, "vga_gain_db": None, "amp": False},
+            {"profile": "flex", "minutes": 15.0, "freqs_hz": [931750000], "lna_gain_db": None, "vga_gain_db": None, "amp": False},
+        ]},
+        {"name": "", "start": "23:00", "schedule": [
+            {"profile": "ais", "minutes": 60.0, "freqs_hz": [], "lna_gain_db": None, "vga_gain_db": None, "amp": True},
+        ]},
+    ]}}
+    assert c.post("/api/live/start", headers=BEARER, json={"day": day, "profile": "adsb"}).status_code == 400
+    assert c.post("/api/live/start", headers=BEARER, json={"day": {"zone": "UTC"}}).status_code == 400
     assert c.post("/api/live/start", headers=BEARER, json={}).status_code == 400
     assert c.post("/api/live/start", headers=BEARER, json={"profile": "adsb", "schedule": [{"profile": "ais", "minutes": 1}]}).status_code == 400
     control.fail = live_client.LiveError("flex needs frequencies_hz")

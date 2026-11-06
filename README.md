@@ -274,12 +274,27 @@ before the spectrum history, whose FFTs add about 8% of a core, and while
 AIS-catcher still opened the HackRF itself). `hackrf_live_status` warns
 when samples arrive below the sample rate, which means some are being lost.
 
-**Tools.** `hackrf_live_start` (a profile, or a `schedule` that rotates
-through several, e.g. 10 min ADS-B then 10 min AIS), `hackrf_live_stop`,
+**Tools.** `hackrf_live_start` (a profile, a `schedule` that rotates
+through several, e.g. 10 min ADS-B then 10 min AIS, or a `day` plan, below),
+`hackrf_live_stop`,
 `hackrf_live_status`, `hackrf_live_search` (time range, profile, an exact
 ICAO address / MMSI / capcode / callsign / registration, free text, or
 frequency) and `hackrf_live_summary` (e.g. aircraft in the last hour, ships
 today, active capcodes).
+
+**Day plans.** A `day` plan splits the day into parts on a local clock, each
+with its own schedule (or a single profile): for example more ISM at night
+and more ADS-B by day. A part starts at a local time (`HH:MM` in the plan's
+IANA time zone, daylight saving followed) and runs until the next part
+starts, every day; at its start it begins at its first step, so the same
+steps run at the same clock times each day, and its last cycle is cut short
+by the next part. On the days the clocks change, the part spanning the
+change runs an hour shorter or longer. A watch, listen, capture or device
+tool that has the receiver at a part change finishes first, as at any step
+change. The service logs a `part` event as each part begins, and its status
+(and the web UI's Live screen) shows the part running now, the next switch
+and each profile's share of today. `live_day.py` has the rules; the image
+needs `tzdata` for the zones.
 
 **Device sharing.** While a profile runs, the live service holds the HackRF.
 Every device tool still works: the MCP server asks the service to release
@@ -519,8 +534,9 @@ serves a browser UI for live decoding; the screens are being built
 milestone by milestone ([TODO.md](TODO.md)). The **Live** screen shows the
 running profile and its tuning, a waterfall and spectrum of its band
 (levelled to the noise floor, with peak hold, prefilled from the spectrum
-history), the decoded feed with per-profile filters, the rotation and an
-editor for it, start, switch and stop, and a health strip (input rate and
+history), the decoded feed with per-profile filters, the rotation (with
+today's parts above it when a day plan is set) and an editor for it, with a
+tab per part of the day, start, switch and stop, and a health strip (input rate and
 power, channel levels, messages a minute, CPU and memory of both services,
 log and spectrum sizes). The **Log** screen (`/log`) searches the log by
 time range, subject, free text, frequency and profiles (the search lives in

@@ -272,6 +272,12 @@ against `homelab`, deployed only with the owner's approval:
   profile, and `ism` for captures too. The owner's choices (2026-11-06):
   everything rtl_433 decodes is logged and shown, on 315, 433.92 and
   915 MHz, in a rotation of ADS-B 45 minutes and each ISM band 5.
+- **Rotation by time of day:** built (see the README's day plans). The
+  owner's choices (2026-11-06): local time with daylight saving; night
+  23:00-06:00 runs each ISM band 10 minutes then ADS-B 30, the rest of the
+  day the rotation above; the same every day; each part starts at its first
+  step; whatever has the receiver at a part change finishes first; Live
+  shows today's parts above the rotation, and the editor has a tab per part.
 - **Listening in the browser:** live audio demodulated on the worker
   (airband AM 118-137 MHz, NOAA Weather Radio, FM) streamed to the page,
   and voice clips recorded with squelch into the Log. Audio only: the

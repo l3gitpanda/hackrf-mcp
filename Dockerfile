@@ -69,7 +69,7 @@ FROM ubuntu:${UBUNTU}
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates tini python3 \
+      ca-certificates tini python3 tzdata \
       dump1090-mutability multimon-ng rtl-433 \
       libglib2.0-0t64 libxml2 zlib1g libjansson4 libsndfile1 \
       libliquid1 libsoapysdr0.8 \

@@ -146,13 +146,17 @@
       </div>
       <div class="ctl-rot">
         <div class="row wr">
-          <span class="cap">Rotation</span>
+          <span class="cap" id="rot-cap">Rotation</span>
           <span class="t2" id="rot-text">—</span>
           <span class="ctl-note" id="rot-note" hidden>Starting a single profile replaces the rotation.</span>
           <span class="sp"></span>
           <button type="button" class="btn sm" id="btn-rot">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20 h4 L19 9 l-4 -4 L4 16 Z"></path></svg>Edit rotation
           </button>
+        </div>
+        <div class="dayplan" id="day" hidden>
+          <div class="rot day" id="day-strip" role="img" aria-label="Today's parts"></div>
+          <div class="rotx" id="day-x" aria-hidden="true"></div>
         </div>
         <div class="rot" id="rot" role="img" aria-label="Rotation"></div>
         <div class="rotx" id="rotx" aria-hidden="true"></div>
@@ -240,12 +244,32 @@
     </div>
     <div class="db">
       <p class="t2">Profiles run in this order and repeat. A capture from any hackrf_* tool pauses the current step; the rotation clock keeps running. Saving starts the new rotation at its first step.</p>
+      <p class="t2">To give the day parts of its own, add a part. Every day each part starts at its first step at its start time, on the clock of the time zone below, and runs until the next part starts. Whatever has the receiver at a part change (a watch, a listen, a capture) finishes first.</p>
+      <div class="col">
+        <div class="row wr">
+          <div class="seg" id="rot-parts" role="group" aria-label="Parts of the day"></div>
+          <button type="button" class="btn sm" id="rot-part-add">+ Add part</button>
+        </div>
+        <div class="partrow" id="rot-part" hidden>
+          <label class="col"><span class="cap">Name</span><input class="inp" id="part-name" maxlength="24" autocomplete="off"></label>
+          <label class="col"><span class="cap">Starts</span><input class="inp mono" id="part-start" type="time" step="60"></label>
+          <button type="button" class="btn sm ghost" id="part-remove">Remove part</button>
+        </div>
+        <label class="col" id="rot-zone-row" hidden><span class="cap">Time zone of the start times</span><input class="inp mono" id="rot-zone" list="rot-zones" autocomplete="off" spellcheck="false"></label>
+        <datalist id="rot-zones"></datalist>
+      </div>
       <div class="col" id="rot-steps"></div>
       <button type="button" class="btn sm" id="rot-add">+ Add step</button>
       <div class="col">
         <span class="cap" id="rot-total">Preview</span>
         <div class="rot" id="rot-preview"></div>
         <div class="legend" id="rot-share"></div>
+      </div>
+      <div class="col" id="rot-day-box" hidden>
+        <span class="cap">The whole day</span>
+        <div class="rot day" id="rot-day-preview"></div>
+        <div class="rotx" id="rot-day-x" aria-hidden="true"></div>
+        <div class="legend" id="rot-day-share"></div>
       </div>
       <div class="ctl-err" id="rot-err" role="alert" hidden></div>
     </div>

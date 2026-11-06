@@ -6,6 +6,7 @@
 
 import { clear, decodeRow, h, mhz, mhzShort, quantile, utc } from './util.js';
 import { BandStrip } from './bandstrip.js';
+import { rangePct } from './captureutil.js';
 
 // Dark at the floor so a quiet band stays calm (the mockup's palette).
 const STOPS = [[0, '#05080f'], [0.15, '#0a1530'], [0.3, '#102a5c'], [0.45, '#12508a'], [0.58, '#11809a'], [0.7, '#27a88f'], [0.8, '#8cc46a'], [0.9, '#f0d264'], [1, '#fff4d6']];
@@ -142,8 +143,12 @@ export class Waterfall {
     this.curWf = h('span', { class: 'wfcur', hidden: true });
     this.curLabel = h('span', { class: 'wfcl mono', hidden: true });
     this.lastRow = null;
-    this.specPlot = h('div', { class: 'plot' }, this.specCanvas, this.chanGuides, this.curSpec);
-    this.wfPlot = h('div', { class: 'plot' }, this.wfCanvas, this.overlay, this.curWf);
+    // A range picked for a capture, shaded across both plots.
+    this.selection = null;
+    this.selSpec = h('span', { class: 'wfsel', hidden: true });
+    this.selWf = h('span', { class: 'wfsel', hidden: true });
+    this.specPlot = h('div', { class: 'plot' }, this.specCanvas, this.chanGuides, this.curSpec, this.selSpec);
+    this.wfPlot = h('div', { class: 'plot' }, this.wfCanvas, this.overlay, this.curWf, this.selWf);
     root.append(
       h(
         'div',
@@ -201,6 +206,25 @@ export class Waterfall {
       this.resize();
     } else {
       this.drawAxis();
+    }
+    this.drawSelection();
+  }
+
+  // {lo_hz, hi_hz} picked for a capture, or null; drawn while it is in the band.
+  setSelection(sel) {
+    this.selection = sel ? { lo_hz: sel.lo_hz, hi_hz: sel.hi_hz } : null;
+    this.drawSelection();
+  }
+
+  drawSelection() {
+    const s = this.selection;
+    const r = s ? rangePct(this.band, s.lo_hz, s.hi_hz) : null;
+    for (const el of [this.selSpec, this.selWf]) {
+      el.hidden = !r;
+      if (r) {
+        el.style.left = `${r.left}%`;
+        el.style.width = `${r.width}%`;
+      }
     }
   }
 

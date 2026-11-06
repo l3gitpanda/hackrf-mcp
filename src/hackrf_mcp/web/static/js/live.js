@@ -8,7 +8,8 @@ import { bandList, bandsInView, leftText, parseMhz, scrolled, watchTuning } from
 import { loadPlan } from './bandstrip.js';
 import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { Waterfall } from './waterfall.js';
-import { ago, assignColors, clear, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
+import { ago, assignColors, clear, fmtUtc, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
+import { captureBody, captureQuery, pickRange, rangeLabel, rateText, sizeText, stateText, stateTone, ticked } from './captureutil.js';
 
 const $ = (id) => document.getElementById(id);
 const FEED_MAX = 300;
@@ -35,6 +36,14 @@ const S = {
   // second are drawn as tall as that many live rows.
   liveRowS: 0.1,
   draft: null,
+  // Captures: Select on the waterfall, the form being filled in, the list.
+  selecting: false,
+  cap: null,
+  caps: [],
+  capStatus: null,
+  capKey: null,
+  capOpen: new Set(),
+  capPics: new Set(),
 };
 
 function profileColor(name) {
@@ -65,6 +74,7 @@ async function init() {
   });
   buildControls();
   buildWatch();
+  buildCapture();
   buildBandList().catch(() => {});
   buildChips();
   wire();
@@ -253,6 +263,7 @@ function renderStatus(st) {
   renderOverlay();
   renderHealth();
   renderWatch();
+  renderCaptureStatus();
   $('feed-rate').textContent = `${l.decoded_1m ?? '—'} msg/min`;
 }
 
@@ -352,8 +363,18 @@ function renderBanner() {
   const l = live();
   const n = now();
   let b = null;
+  const cc = (l.captures || {}).current;
   if (S.socket === 'closed' || !l.state || l.state === 'unreachable') b = null;
-  else if (l.state === 'paused' && l.hold) {
+  else if (cc && cc.state === 'recording' && cc.until) {
+    b = {
+      cls: 'warn',
+      title: 'Recording a capture',
+      sub: `${mhz(cc.center_hz, 3)} MHz at ${rateText(cc.sample_rate_hz)} for ${cc.seconds} s; ${(l.hold && l.hold.stopped) || 'decoding'} resumes when it ends, in ${inSeconds(cc.until, n)}.`,
+      bar: Math.min(100, Math.max(0, ((n - (cc.until - cc.seconds)) / cc.seconds) * 100)),
+    };
+  } else if (cc) {
+    b = { cls: 'warn', title: 'A capture is waiting for the receiver', sub: l.hold ? `It is lent to ${l.hold.owner}; the capture waits up to ${(l.captures || {}).wait_s} s for it.` : 'It starts in a moment.' };
+  } else if (l.state === 'paused' && l.hold) {
     const total = l.hold.until - l.hold.since;
     b = {
       cls: 'warn',
@@ -382,6 +403,7 @@ function renderBanner() {
 function renderOverlay() {
   const l = live();
   if (l.state === 'idle') S.wf.setOverlay('Nothing is decoding', 'Start a profile or a rotation to see its band here.');
+  else if (l.state === 'paused' && (l.captures || {}).current) S.wf.setOverlay('Recording a capture', 'The waterfall resumes when it ends; its results appear under Captures.');
   else if (l.state === 'paused') S.wf.setOverlay(`Paused for ${l.hold ? l.hold.owner : 'a device tool'}`, 'The waterfall resumes with the profile.');
   else if (l.state === 'waiting') S.wf.setOverlay('Waiting to retry after an error', l.last_error || '');
   else if (l.state === 'running' && NOW() - S.lastFftAt > 5) S.wf.setOverlay('Waiting for samples…', 'The spectrum appears within a second or two of a start.');
@@ -886,7 +908,7 @@ function buildWatch() {
   const plot = S.wf.wfPlot;
   let x0 = null;
   plot.addEventListener('pointerdown', (e) => {
-    x0 = watching() ? e.clientX : null;
+    x0 = watching() && !S.selecting ? e.clientX : null;
   });
   plot.addEventListener('pointerup', (e) => {
     const cur = watching();
@@ -997,6 +1019,359 @@ function renderWatch() {
   const w = S.registry.watch;
   $('watch-down').disabled = lo <= w.min_hz;
   $('watch-up').disabled = hi >= w.max_hz;
+}
+
+// --- Captures ------------------------------------------------------------------------------
+// With Select on, a tap on the waterfall picks a signal and a drag a range.
+// The form under the waterfall asks the live service to plan the capture
+// (rate, centre, size, what it would stop) and records it only when Capture
+// is pressed. History and Occupancy open this form with a range filled in.
+// The browser gets the results and a picture, never the samples.
+
+function buildCapture() {
+  const lna = $('cap-lna');
+  const vga = $('cap-vga');
+  lna.append(h('option', { value: '' }, 'default'));
+  vga.append(h('option', { value: '' }, 'default'));
+  for (let g = 0; g <= 40; g += 8) lna.append(h('option', { value: g }, `${g} dB`));
+  for (let g = 0; g <= 62; g += 2) vga.append(h('option', { value: g }, `${g} dB`));
+  $('btn-select').addEventListener('click', () => setSelecting(!S.selecting));
+  $('cap-close').addEventListener('click', closeCapture);
+  $('cap-cancel').addEventListener('click', closeCapture);
+  $('cap-go').addEventListener('click', startCapture);
+  $('caps-refresh').addEventListener('click', loadCaptures);
+  for (const id of ['cap-sec', 'cap-lna', 'cap-vga', 'cap-amp']) {
+    $(id).addEventListener('change', () => {
+      readCaptureForm();
+      planCaptureSoon();
+    });
+  }
+  for (const plot of [S.wf.wfPlot, S.wf.specPlot]) wireSelect(plot);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && S.selecting && !S.cap) setSelecting(false);
+  });
+  const q = captureQuery(location.search);
+  if (q) openCapture({ ...q, fromAddress: true });
+}
+
+function setSelecting(on) {
+  S.selecting = on;
+  $('btn-select').setAttribute('aria-pressed', String(on));
+  $('wf').classList.toggle('selecting', on);
+  $('sel-hint').hidden = !on || !!S.cap;
+}
+
+function wireSelect(plot) {
+  let start = null;
+  const fxOf = (e) => {
+    const r = plot.getBoundingClientRect();
+    return (e.clientX - r.left) / r.width;
+  };
+  plot.addEventListener('pointerdown', (e) => {
+    const band = S.wf.band;
+    if (!S.selecting || !band || !band.sample_rate_hz) return;
+    start = { fx: fxOf(e), band: { center_hz: band.center_hz, sample_rate_hz: band.sample_rate_hz } };
+    if (plot.setPointerCapture) plot.setPointerCapture(e.pointerId);
+    S.wf.setSelection(pickRange(start.band, start.fx, start.fx));
+    e.preventDefault();
+  });
+  plot.addEventListener('pointermove', (e) => {
+    if (start) S.wf.setSelection(pickRange(start.band, start.fx, fxOf(e)));
+  });
+  plot.addEventListener('pointerup', (e) => {
+    if (!start) return;
+    const sel = pickRange(start.band, start.fx, fxOf(e));
+    start = null;
+    openCapture({ ...sel, origin: 'live', withGains: true });
+  });
+  plot.addEventListener('pointercancel', () => {
+    start = null;
+    S.wf.setSelection(S.cap);
+  });
+}
+
+const ORIGIN_NOTE = {
+  history: 'From History: this records the range now, not at the time shown there (History keeps only power, no samples).',
+  occupancy: 'From Occupancy: this records the range now.',
+};
+
+function openCapture(sel) {
+  const td = live().tuning_detail;
+  const prev = S.cap;
+  const gains = sel.withGains && td;
+  S.cap = {
+    lo_hz: sel.lo_hz,
+    hi_hz: sel.hi_hz,
+    origin: sel.origin || 'live',
+    // The suggestions stay ticked until a box is changed.
+    chosen: null,
+    seconds: prev ? prev.seconds : 30,
+    lna: gains ? td.lna_gain_db : prev ? prev.lna : '',
+    vga: gains ? td.vga_gain_db : prev ? prev.vga : '',
+    amp: gains ? !!td.amp : false,
+    plan: null,
+    seq: 0,
+  };
+  $('cap-sec').value = S.cap.seconds;
+  $('cap-lna').value = S.cap.lna ?? '';
+  $('cap-vga').value = S.cap.vga ?? '';
+  $('cap-amp').checked = S.cap.amp;
+  $('cap-range').textContent = rangeLabel(S.cap.lo_hz, S.cap.hi_hz);
+  $('cap-origin').hidden = !ORIGIN_NOTE[S.cap.origin];
+  $('cap-origin').textContent = ORIGIN_NOTE[S.cap.origin] || '';
+  $('cap-form').hidden = false;
+  $('sel-hint').hidden = true;
+  S.wf.setSelection(S.cap);
+  if (sel.fromAddress) $('cap-form').scrollIntoView({ block: 'center' });
+  planCapture();
+}
+
+function closeCapture() {
+  S.cap = null;
+  $('cap-form').hidden = true;
+  S.wf.setSelection(null);
+  setSelecting(false);
+  if (captureQuery(location.search)) history.replaceState(null, '', location.pathname);
+}
+
+function readCaptureForm() {
+  const f = S.cap;
+  if (!f) return;
+  f.seconds = Number($('cap-sec').value) || 30;
+  f.lna = $('cap-lna').value;
+  f.vga = $('cap-vga').value;
+  f.amp = $('cap-amp').checked;
+}
+
+let planTimer = null;
+function planCaptureSoon() {
+  clearTimeout(planTimer);
+  planTimer = setTimeout(planCapture, 250);
+}
+
+async function planCapture() {
+  const f = S.cap;
+  if (!f) return;
+  const seq = ++f.seq;
+  $('cap-go').disabled = true;
+  try {
+    const r = await post('/api/captures/plan', captureBody(f));
+    if (S.cap !== f || seq !== f.seq) return;
+    f.plan = r;
+    renderCaptureForm();
+  } catch (e) {
+    if (S.cap !== f) return;
+    f.plan = null;
+    renderCaptureForm(e.message);
+  }
+}
+
+function renderCaptureForm(failure = null) {
+  const f = S.cap;
+  if (!f) return;
+  const r = f.plan || {};
+  const on = new Set(ticked(f.chosen, r.suggested));
+  const suggested = new Set(r.suggested || []);
+  const decs = (r.decoders || []).slice().sort((a, b) => Number(suggested.has(b.name)) - Number(suggested.has(a.name)));
+  const box = clear($('cap-decs'));
+  for (const d of decs) {
+    const input = h('input', { type: 'checkbox', checked: on.has(d.name), disabled: !d.installed });
+    input.addEventListener('change', () => {
+      const now = new Set(ticked(f.chosen, r.suggested));
+      if (input.checked) now.add(d.name);
+      else now.delete(d.name);
+      f.chosen = decs.map((x) => x.name).filter((n) => now.has(n));
+      planCaptureSoon();
+    });
+    box.append(
+      h('label', { class: 'check', title: d.installed ? d.summary : `${d.summary} (not installed)` }, input, h('b', {}, d.name), suggested.has(d.name) ? h('span', { class: 'tag ok' }, 'suggested') : null),
+    );
+  }
+  if (!decs.length && !failure) box.append(h('span', { class: 'muted' }, 'Loading…'));
+  const lim = r.limits || {};
+  if (lim.max_seconds) $('cap-sec').max = lim.max_seconds;
+  const kv = clear($('cap-plan'));
+  const p = r.plan;
+  if (p) {
+    const add = (k, v) => kv.append(h('dt', {}, k), h('dd', {}, v));
+    add('Tuned', `${mhz(p.center_hz)} MHz at ${rateText(p.sample_rate_hz)}`);
+    add('Holds', `${mhz(p.covers_hz[0], 3)}–${mhz(p.covers_hz[1], 3)} MHz`);
+    add('Length', `${p.seconds} s, ${sizeText(p.bytes)}`);
+    add('Gains', `LNA ${p.lna_gain_db} dB, VGA ${p.vga_gain_db} dB${p.amp ? ', RF amp on' : ''}`);
+    add(
+      'Decoders',
+      p.decoders.length
+        ? p.decoders.map((d) => (d.freqs_hz ? `${d.name} (${d.freqs_hz.map((x) => mhz(x)).join(', ')} MHz)` : d.name)).join(' · ')
+        : 'none: the recording and its picture only',
+    );
+  }
+  const notes = clear($('cap-notes'));
+  for (const n of (p && p.notes) || []) notes.append(h('li', {}, n));
+  const eff = clear($('cap-eff'));
+  for (const e of r.effects || []) eff.append(h('li', {}, e));
+  const err = failure || r.error;
+  $('cap-err').hidden = !err;
+  $('cap-err').textContent = err || '';
+  $('cap-go').disabled = !p || !!r.error;
+}
+
+async function startCapture() {
+  const f = S.cap;
+  if (!f || !f.plan || !f.plan.plan) return;
+  $('cap-go').disabled = true;
+  try {
+    const r = await post('/api/captures', { ...captureBody(f), decoders: ticked(f.chosen, f.plan.suggested) });
+    closeCapture();
+    S.caps = [r.capture, ...S.caps.filter((c) => c.id !== r.capture.id)];
+    renderCaptures();
+    $('caps').scrollIntoView({ block: 'nearest' });
+  } catch (e) {
+    $('cap-err').hidden = false;
+    $('cap-err').textContent = e.message;
+    $('cap-go').disabled = false;
+  }
+}
+
+// The list follows the live service's capture counters: a change (a
+// capture started, recorded, decoded or deleted) reloads it.
+function renderCaptureStatus() {
+  const cs = live().captures;
+  if (!cs) return;
+  if (!cs.enabled) {
+    $('btn-select').hidden = true;
+    $('caps').hidden = true;
+    return;
+  }
+  $('btn-select').hidden = false;
+  $('caps').hidden = false;
+  const cur = cs.current;
+  const key = [cs.count, cs.recorded, cs.failed, cs.decoded, cur ? `${cur.id}:${cur.state}` : '', cs.decoding || '', cs.queued].join('|');
+  if (key !== S.capKey) {
+    S.capKey = key;
+    loadCaptures();
+  } else if (cur) {
+    renderCaptures();
+  }
+}
+
+async function loadCaptures() {
+  try {
+    const r = await api('/api/captures');
+    S.caps = r.captures || [];
+    S.capStatus = r.status || null;
+    renderCaptures();
+  } catch (e) {
+    clear($('cap-list')).append(h('p', { class: 'capi muted' }, `Could not load the captures: ${e.message}`));
+  }
+}
+
+function renderCaptures() {
+  const cs = S.capStatus || live().captures || {};
+  // In the station's own units: its limits are set in MB of 2^20 bytes.
+  $('caps-sum').textContent = cs.enabled
+    ? `${S.caps.length} kept · ${Math.round(cs.used_mb || 0)} MB used of ${+((cs.keep_mb || 0) / 1024).toFixed(1)} GB, for ${cs.keep_days} days`
+    : '';
+  const box = clear($('cap-list'));
+  if (!S.caps.length) {
+    box.append(h('p', { class: 'capi muted' }, 'No captures yet. Turn on Select above the waterfall, tap a signal or drag across a range, then press Capture.'));
+    return;
+  }
+  const cur = (live().captures || {}).current;
+  for (const rec of S.caps) box.append(captureEl(rec, cur));
+}
+
+function captureEl(rec, cur) {
+  const p = rec.plan;
+  const del = h('button', { type: 'button', class: 'btn sm danger', disabled: rec.state === 'waiting' || rec.state === 'recording' || rec.state === 'decoding' }, 'Delete');
+  del.addEventListener('click', () => deleteCapture(rec));
+  const el = h(
+    'div',
+    { class: 'capi', role: 'listitem' },
+    h(
+      'div',
+      { class: 'row wr' },
+      h('span', { class: `tag ${stateTone(rec)}` }, stateText(rec, cur)),
+      h('b', { class: 'mono' }, rangeLabel(p.lo_hz, p.hi_hz)),
+      h('span', { class: 't2' }, `${fmtUtc(rec.created)} UTC · ${p.seconds} s at ${rateText(p.sample_rate_hz)} on ${mhz(p.center_hz)} MHz · ${sizeText(rec.state === 'waiting' || rec.state === 'recording' ? p.bytes : rec.bytes || p.bytes)}`),
+      rec.origin && rec.origin !== 'live' ? h('span', { class: 'tag' }, `from ${rec.origin}`) : null,
+      h('span', { class: 'sp' }),
+      del,
+    ),
+  );
+  if (rec.error) el.append(h('span', { class: 'err' }, rec.error));
+  const bits = [];
+  if (rec.paused) bits.push(rec.held_s != null ? `${rec.paused} paused ${rec.held_s} s` : `${rec.paused} paused`);
+  if (rec.note) bits.push(rec.note);
+  if (bits.length) el.append(h('span', { class: 't2' }, bits.join(' · ')));
+  for (const d of rec.decodes || []) el.append(decodeEl(rec, d));
+  if (rec.picture) el.append(pictureEl(rec));
+  else if (rec.picture_error) el.append(h('span', { class: 't2' }, `No picture: ${rec.picture_error}`));
+  // The live service lists the decoders this capture's rate and centre suit.
+  const more = rec.more || [];
+  if (more.length) {
+    const sel = h('select', { class: 'inp', 'aria-label': 'Another decoder' }, more.map((n) => h('option', { value: n }, n)));
+    const run = h('button', { type: 'button', class: 'btn sm' }, 'Run');
+    const msg = h('span', { class: 'err', hidden: true });
+    run.addEventListener('click', async () => {
+      run.disabled = true;
+      try {
+        await post(`/api/captures/${encodeURIComponent(rec.id)}/decode`, { decoders: [sel.value] });
+        loadCaptures();
+      } catch (e) {
+        msg.hidden = false;
+        msg.textContent = e.message;
+        run.disabled = false;
+      }
+    });
+    el.append(h('div', { class: 'row wr' }, h('span', { class: 't2' }, 'Run another decoder on it'), sel, run, msg));
+  }
+  return el;
+}
+
+function decodeEl(rec, d) {
+  const key = `${rec.id}|${d.decoder}`;
+  const words = { queued: 'queued', running: 'running…' };
+  const head = d.headline || d.error || words[d.state] || d.state;
+  const det = h('details', { open: S.capOpen.has(key) }, h('summary', {}, h('b', {}, d.decoder), ` ${head}`));
+  det.addEventListener('toggle', () => (det.open ? S.capOpen.add(key) : S.capOpen.delete(key)));
+  for (const n of d.notes || []) det.append(h('div', { class: 't2' }, n));
+  const lines = (title, list, more) => {
+    if (!list || !list.length) return;
+    det.append(h('div', { class: 'cap' }, title), h('ol', { class: 'mono' }, list.map((x) => h('li', {}, x))));
+    if (more) det.append(h('div', { class: 't2' }, `… ${more} more not kept`));
+  };
+  lines('Table', d.table, d.table_more);
+  lines('Messages', d.messages, d.messages_more);
+  if (d.seconds != null) det.append(h('div', { class: 'muted' }, `Ran ${d.seconds} s.`));
+  return det;
+}
+
+function pictureEl(rec) {
+  const det = h('details', { open: S.capPics.has(rec.id) }, h('summary', {}, 'Spectrogram'));
+  const show = () => {
+    if (det.querySelector('img')) return;
+    det.append(h('img', { src: `/api/captures/${encodeURIComponent(rec.id)}/picture`, alt: `Spectrogram of the capture of ${rangeLabel(rec.plan.lo_hz, rec.plan.hi_hz)}`, loading: 'lazy' }));
+  };
+  if (det.open) show();
+  det.addEventListener('toggle', () => {
+    if (det.open) {
+      S.capPics.add(rec.id);
+      show();
+    } else S.capPics.delete(rec.id);
+  });
+  return det;
+}
+
+async function deleteCapture(rec) {
+  if (!confirm(`Delete the capture of ${rangeLabel(rec.plan.lo_hz, rec.plan.hi_hz)} (${sizeText(rec.bytes)}) and its results?`)) return;
+  try {
+    await post(`/api/captures/${encodeURIComponent(rec.id)}/delete`, {});
+    S.caps = S.caps.filter((c) => c.id !== rec.id);
+    renderCaptures();
+    loadCaptures();
+  } catch (e) {
+    showCtlError(e.message);
+  }
 }
 
 init().catch((e) => {

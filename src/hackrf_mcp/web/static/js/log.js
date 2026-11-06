@@ -135,6 +135,10 @@ function fromUrl() {
   if (u.get('subject')) $('subj').value = u.get('subject');
   if (u.get('text')) $('txt').value = u.get('text');
   if (u.get('freq')) $('freq').value = u.get('freq');
+  // A wider match than a channel's, for a link from a range (the Occupancy
+  // screen's cells): kept while the frequency is the one linked.
+  const freqs = u.get('freq') ? parseFreqs(u.get('freq')) : [];
+  if (Number(u.get('tol')) > 0 && freqs.length) S.tol = { hz: freqs[0], tol: Math.round(Number(u.get('tol'))) };
   if (u.get('profiles')) {
     S.on = new Set(u.get('profiles').split(',').filter((n) => S.profiles[n]));
     buildChips();
@@ -184,7 +188,7 @@ function params(q, extra = {}) {
   if (q.text) p.set('text', q.text);
   if (q.freq_hz) {
     p.set('freq_hz', String(q.freq_hz));
-    p.set('freq_tolerance_hz', '12500');
+    p.set('freq_tolerance_hz', String(S.tol && S.tol.hz === q.freq_hz ? S.tol.tol : 12500));
   }
   if (q.profiles.length) p.set('profiles', q.profiles.join(','));
   for (const [k, v] of Object.entries(extra)) p.set(k, String(v));

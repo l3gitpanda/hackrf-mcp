@@ -118,6 +118,7 @@ PAGES = {
     "/log": "log.html",
     "/map": "map.html",
     "/history": "history.html",
+    "/occupancy": "occupancy.html",
     "/bands": "bands.html",
     "/summaries": "summaries.html",
     "/alerts": "alerts.html",

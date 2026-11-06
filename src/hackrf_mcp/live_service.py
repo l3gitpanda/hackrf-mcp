@@ -55,7 +55,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hackrf_mcp import captures, cli, live_feed, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
+from hackrf_mcp import captures, cli, listen, live_feed, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
 from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
@@ -229,6 +229,23 @@ class LiveService:
         self.agent_link = None  # the split station's live_import.AgentLink, if any
         self.occupancy: occupancy.Scheduler | None = None
         self.captures: captures.Recorder | None = None
+        # Listening (listen.py): {"channels", "until", "since", "owns",
+        # "center_hz", "sample_rate_hz"} while a listen runs. "owns" is True
+        # when the listen lent itself the receiver (a watch of the listen
+        # profile, which ends with it); otherwise it rides whatever the
+        # receiver is tuned to, and ends when that moves elsewhere. Not
+        # saved. The tap turning the current source's samples into audio is
+        # self.audio; its frames go to self.audio_out, its clips to
+        # self.clips.
+        self.listen: dict | None = None
+        self.listen_last: dict | None = None
+        self.audio: listen.AudioTap | None = None
+        self._audio_source: live_profiles.Source | None = None
+        self.audio_out: listen.AudioServer | None = None
+        self.clips: listen.ClipStore | None = None
+        self.clips_written = 0
+        self.clips_skipped = 0
+        self.audio_threaded = True  # False: the tap works in the source's thread (tests)
 
         self.desired: dict | None = None  # {"spec": Spec} or {"schedule": [(Spec, minutes)], "anchor": t}
         self.hold: dict | None = None  # {"owner", "until", "token", "since", "stopped"}
@@ -325,7 +342,266 @@ class LiveService:
         source = self._make_source(tuning)
         if self.spectrum is not None:
             source.tap = self.spectrum.tap_for(tuning, source.sample_rate_hz)
+        self._attach_audio(source, tuning)
         return source
+
+    # --- listening (under self.lock; the tap takes no lock of its own) ----
+
+    def _attach_audio(self, source: live_profiles.Source | None, tuning: Tuning | None) -> None:
+        """Put a tap for the listen on `source`, if a listen runs and its
+        channels are inside this tuning."""
+        if self.listen is None or source is None or tuning is None:
+            return
+        channels = self.listen["channels"]
+        if not listen.fits(tuning.center_hz, source.sample_rate_hz, channels):
+            return
+        self._close_audio()
+        out = self.audio_out
+        try:
+            tap = listen.AudioTap(
+                tuning.center_hz,
+                source.sample_rate_hz,
+                channels,
+                send=out.send if out is not None else None,
+                has_listeners=out.has_clients if out is not None else (lambda: False),
+                on_clip=(lambda *a, chs=channels: self._on_clip(chs, *a)) if self.clips is not None else None,
+                clip_max_s=self.live.clip_max_s,
+                clock=self.clock,
+                threaded=self.audio_threaded,
+            )
+        except (listen.ListenError, ValueError) as exc:
+            self._event("error", live_profiles.LISTEN.name, f"could not listen: {exc}")
+            return
+        source.taps["audio"] = tap
+        self.audio = tap
+        self._audio_source = source
+
+    def _close_audio(self) -> None:
+        if self.audio is None:
+            return
+        if self._audio_source is not None:
+            self._audio_source.taps.pop("audio", None)
+        self.audio.close()
+        self.audio = None
+        self._audio_source = None
+
+    def _on_clip(self, channels, i, ts, ts_end, data, rate, peak_db, continued) -> None:
+        """One transmission recorded on an airband channel (from the tap's
+        own thread): the file into the clip store, and a row for the log."""
+        store = self.clips
+        if store is None or not store.disk_ok():
+            self.clips_skipped += 1
+            return
+        c = channels[i]
+        wav = listen.ulaw_wav(data, int(round(rate)))
+        store.prune(need_bytes=len(wav))
+        cid = store.new_id(ts)
+        store.write(cid, wav)
+        self.clips_written += 1
+        fields = {"clip": cid, "seconds": round(ts_end - ts, 1), "mode": c.mode, "bytes": len(wav)}
+        if continued:
+            fields["continued"] = True
+        self._emit(
+            Row(
+                ts=ts,
+                ts_end=ts_end,
+                profile=live_profiles.LISTEN.name,
+                kind="clip",
+                fields=fields,
+                freq_hz=c.freq_hz,
+                level_db=round(peak_db, 1),
+                subject=listen.mhz(c.freq_hz),
+                label=c.label,
+            )
+        )
+
+    def _end_listen(self, why: str) -> None:
+        if self.listen is None:
+            return
+        owns = self.listen["owns"]
+        self._close_audio()
+        self.listen = None
+        self.listen_last = {"ended": self.clock(), "why": why}
+        self._event("listen-end", live_profiles.LISTEN.name, why)
+        if owns and self.watch is not None and self.watch["spec"].profile == live_profiles.LISTEN.name:
+            self._end_watch(why)
+
+    def _listen_tuned(self, now: float) -> tuple[int, int, str] | None:
+        """Where the receiver is (or, during a watch, will be) tuned:
+        (center, rate, profile)."""
+        if self.watch is not None and now < self.watch["until"]:
+            w = self.watch["spec"]
+            return (w.center_hz, w.sample_rate_hz, w.profile)
+        if self.tuning is not None and self.tuning.sample_rate_hz:
+            return (self.tuning.center_hz, self.tuning.sample_rate_hz, self.tuning.profile.name)
+        return None
+
+    def _listen_plan(self, channels, now: float) -> dict:
+        tuned = self._listen_tuned(now)
+        rides = tuned is not None and listen.fits(tuned[0], tuned[1], channels)
+        if rides:
+            center, rate = tuned[0], tuned[1]
+        else:
+            center, rate = listen.window_center(channels), listen.WINDOW_RATE_HZ
+        if self.watch is not None and now < self.watch["until"]:
+            running = self.watch["spec"].profile
+        elif self.hold is not None and self.hold.get("stopped"):
+            running = self.hold["stopped"]
+        else:
+            running = self.running_spec.profile if self.running_spec else None
+        return {
+            "retune": not rides,
+            "center_hz": center,
+            "sample_rate_hz": rate,
+            # What runs now: a retune stops it until the listen ends.
+            "running": running,
+            "riding": tuned[2] if rides else None,
+            "until": self.watch["until"] if rides and tuned[2] in live_profiles.SPECIAL else None,
+            "channels": [c.to_json() for c in channels],
+            "default_minutes": WATCH_DEFAULT_MIN,
+            "max_minutes": WATCH_MAX_MIN,
+            "held_by": self.hold["owner"] if self.hold is not None and now < self.hold["until"] else None,
+            "next_slot": self.occupancy.next_at if self.occupancy is not None else None,
+        }
+
+    def _cmd_listen(self, req: dict, plan_only: bool = False) -> dict:
+        """Listen to up to listen.MAX_CHANNELS channels. Inside the band the
+        receiver is tuned to (a decoder's, or a watch's), it costs no air
+        time and lasts until that band moves; anywhere else it lends the
+        receiver to a listen.WINDOW_RATE_HZ window around them, like a watch,
+        for `minutes` (default WATCH_DEFAULT_MIN), and only with "retune"
+        set (the client asked first). Sent again with the same channels it
+        only moves their squelch (and, given minutes, the time limit)."""
+        if not self.live.listen:
+            return {"ok": False, "error": "listening is off on this station (HACKRF_LIVE_LISTEN)"}
+        channels = listen.parse_channels(req.get("channels"))
+        minutes = req.get("minutes")
+        if minutes is not None:
+            minutes = float(minutes)
+            if not 1 <= minutes <= WATCH_MAX_MIN:
+                raise listen.ListenError(f"a listen lasts 1-{WATCH_MAX_MIN} minutes, not {minutes:g}")
+        with self.lock:
+            now = self.clock()
+            plan = self._listen_plan(channels, now)
+            if plan_only:
+                return {"ok": True, **plan}
+            if plan["retune"] and not req.get("retune"):
+                return {
+                    "ok": False,
+                    "retune_needed": True,
+                    **plan,
+                    "error": "those channels are outside the band the receiver is on: listening there retunes it "
+                    + (f"and stops {plan['running']} " if plan["running"] else "")
+                    + "until the listen ends; send retune to go ahead",
+                }
+            prev = self.listen
+            if plan["retune"]:
+                spec = Spec(
+                    profile=live_profiles.LISTEN.name,
+                    center_hz=plan["center_hz"],
+                    sample_rate_hz=listen.WINDOW_RATE_HZ,
+                    lna_gain_db=None if req.get("lna_gain_db") is None else int(req["lna_gain_db"]),
+                    vga_gain_db=None if req.get("vga_gain_db") is None else int(req["vga_gain_db"]),
+                )
+                self.resolve(spec)
+                keep = prev is not None and prev["owns"] and minutes is None
+                until = prev["until"] if keep else now + 60 * (minutes or WATCH_DEFAULT_MIN)
+                since = self.watch["since"] if self.watch is not None else now
+                self.watch = {"spec": spec, "until": until, "since": since}
+                self.failures = 0
+                self.retry_at = 0.0
+                self.last_error = None
+                owns = True
+            elif plan["until"] is not None:
+                # Inside a watch: its time limit is the listen's. A listen's
+                # own window gets the new limit, if one is given.
+                owns = self.watch["spec"].profile == live_profiles.LISTEN.name
+                if minutes is not None and owns:
+                    self.watch["until"] = now + 60 * minutes
+                until = self.watch["until"]
+                if minutes is not None and not owns:
+                    until = min(until, now + 60 * minutes)
+            else:
+                owns = False
+                keep = prev is not None and not prev["owns"] and minutes is None
+                until = prev["until"] if keep else now + 60 * (minutes or WATCH_DEFAULT_MIN)
+            changed = prev is None or not listen.same_channels(prev["channels"], channels)
+            self.listen = {
+                "channels": channels,
+                "until": until,
+                "since": prev["since"] if prev is not None else now,
+                "owns": owns,
+                "center_hz": plan["center_hz"],
+                "sample_rate_hz": plan["sample_rate_hz"],
+            }
+            if changed or plan["retune"]:
+                self._close_audio()
+                if not plan["retune"] and self.pipeline is not None:
+                    self._attach_audio(self.pipeline.source, self.tuning)
+                where = (
+                    f"a {listen.WINDOW_RATE_HZ / 1e6:g} MHz window at {plan['center_hz'] / 1e6:.4f} MHz"
+                    if plan["retune"]
+                    else f"inside {plan['riding']}"
+                )
+                self._event(
+                    "listen",
+                    live_profiles.LISTEN.name,
+                    "; ".join(c.describe() for c in channels) + f", {where}, {max(0.0, until - now) / 60:.0f} min",
+                )
+            elif self.audio is not None:
+                self.audio.set_squelch([c.squelch_db for c in channels])
+        self.supervise()
+        return {"ok": True, **self.status()}
+
+    def _cmd_listen_stop(self) -> dict:
+        with self.lock:
+            self._end_listen("stopped on request")
+        self.supervise()
+        return {"ok": True, **self.status()}
+
+    def _cmd_clip_delete(self, req: dict) -> dict:
+        if self.clips is None:
+            return {"ok": False, "error": "clips are off on this station (HACKRF_LIVE_CLIPS)"}
+        cid = listen.ClipStore.check_id(str(req.get("id")))
+        freed = self.clips.delete(cid)
+        if freed:
+            self._event("clip-delete", live_profiles.LISTEN.name, cid)
+        return {"ok": True, "id": cid, "freed_bytes": freed}
+
+    def listen_status(self) -> dict:
+        """What listening is doing, for status (call under self.lock)."""
+        now = self.clock()
+        active = None
+        if self.listen is not None:
+            lis = self.listen
+            if self.audio is not None:
+                channels = self.audio.status()
+                health = self.audio.health()
+            else:
+                channels = [c.to_json() for c in lis["channels"]]
+                health = None
+            active = {
+                "channels": channels,
+                "since": lis["since"],
+                "until": lis["until"],
+                "left_s": max(0.0, lis["until"] - now),
+                "owns": lis["owns"],
+                "center_hz": lis["center_hz"],
+                "sample_rate_hz": lis["sample_rate_hz"],
+                # "playing" while the tap has samples; "waiting" while the
+                # receiver is lent elsewhere for a moment (a capture).
+                "state": "playing" if self.audio is not None else "waiting",
+                "health": health,
+            }
+        return {
+            "enabled": self.live.listen,
+            "clips_enabled": self.clips is not None,
+            "active": active,
+            "last": self.listen_last,
+            "clips_written": self.clips_written,
+            "clips_skipped": self.clips_skipped,
+            "listeners": self.audio_out.status()["clients"] if self.audio_out is not None else 0,
+        }
 
     def _context(self) -> Context:
         return Context(
@@ -402,6 +678,7 @@ class LiveService:
     def _stop_pipeline(self, why: str) -> None:
         if self.pipeline is None:
             return
+        self._close_audio()
         name = self.running_spec.profile if self.running_spec else None
         p = self.pipeline
         self.pipeline = None
@@ -433,8 +710,10 @@ class LiveService:
             if self.hold is not None and now >= self.hold["until"]:
                 self._event("resume", None, f"pause by {self.hold['owner']} expired")
                 self.hold = None
+            if self.listen is not None and now >= self.listen["until"]:
+                self._end_listen("time limit reached")
             if self.watch is not None and now >= self.watch["until"]:
-                self._event("watch-end", "watch", "time limit reached")
+                self._event("watch-end", self.watch["spec"].profile, "time limit reached")
                 self.watch = None
             target, _ = (None, None) if self.hold else self._target(now)
             p = self.pipeline
@@ -455,6 +734,13 @@ class LiveService:
                         self.failures = 0
             if self.pipeline is None and target is not None and now >= self.retry_at:
                 self._start(target, now)
+            # A listen riding a band ends when the receiver moves elsewhere
+            # (a capture borrowing it for a moment leaves no tuning, so the
+            # listen waits for it instead).
+            t = self.tuning
+            if self.listen is not None and self.pipeline is not None and t is not None:
+                if not listen.fits(t.center_hz, t.sample_rate_hz, self.listen["channels"]):
+                    self._end_listen(f"the receiver moved to {t.profile.name}")
 
     def _check_stall(self, now: float) -> str | None:
         src = self.pipeline.source if self.pipeline else None
@@ -538,7 +824,15 @@ class LiveService:
                 return self._cmd_resume(req)
             if cmd in ("capture-plan", "capture", "capture-list", "capture-decode", "capture-delete"):
                 return self._cmd_capture(cmd, req)
-        except (SpecError, captures.PlanError) as exc:
+            if cmd == "listen-plan":
+                return self._cmd_listen(req, plan_only=True)
+            if cmd == "listen":
+                return self._cmd_listen(req)
+            if cmd == "listen-stop":
+                return self._cmd_listen_stop()
+            if cmd == "clip-delete":
+                return self._cmd_clip_delete(req)
+        except (SpecError, captures.PlanError, listen.ListenError) as exc:
             return {"ok": False, "error": str(exc)}
         except (KeyError, TypeError, ValueError) as exc:
             return {"ok": False, "error": f"bad request: {exc}"}
@@ -558,11 +852,13 @@ class LiveService:
         spec = self._spec_from(req)
         if spec.profile == live_profiles.WATCH.name:
             raise SpecError("a watch is started with the watch command, for a limited time, not with start")
+        if spec.profile in live_profiles.SPECIAL:
+            raise SpecError(f"{spec.profile} is started with its own command, for a limited time, not with start")
         return spec
 
     def _end_watch(self, why: str) -> None:
         if self.watch is not None:
-            self._event("watch-end", "watch", why)
+            self._event("watch-end", self.watch["spec"].profile, why)
             self.watch = None
 
     def _cmd_watch(self, req: dict) -> dict:
@@ -634,6 +930,7 @@ class LiveService:
 
     def _cmd_stop(self) -> dict:
         with self.lock:
+            self._end_listen("stopped on request")
             self._end_watch("stopped on request")
             self.desired = None
             self._save()
@@ -693,6 +990,8 @@ class LiveService:
         logs no pause or resume of its own."""
         with self.lock:
             now = self.clock()
+            if self.listen is not None:
+                return {"state": "listen"}
             if self.watch is not None and now < self.watch["until"]:
                 return {"state": "watch"}
             if self.hold is not None and now < self.hold["until"]:
@@ -750,8 +1049,9 @@ class LiveService:
                     band = {"profile": self.tuning.profile.name, "lo_hz": self.tuning.center_hz - half, "hi_hz": self.tuning.center_hz + half}
         slot = self.occupancy.next_at if self.occupancy is not None else None
         return {
-            "running": None if running == live_profiles.WATCH.name else running,
+            "running": None if running in live_profiles.SPECIAL else running,
             "watch": watching,
+            "listen": self.listen is not None,
             "held_by": held,
             "next_slot": slot,
             "known": known,
@@ -802,6 +1102,7 @@ class LiveService:
             if self.watch is not None:
                 w = self.watch["spec"]
                 watch = {
+                    "profile": w.profile,
                     "center_hz": w.center_hz,
                     "sample_rate_hz": w.sample_rate_hz,
                     "since": self.watch["since"],
@@ -852,6 +1153,7 @@ class LiveService:
                 # hackrf-web shows it when it can't read the unit itself.
                 "process": procstats.own(),
                 "now": now,
+                "listen": self.listen_status(),
             }
         finally:
             if locked:
@@ -881,6 +1183,9 @@ class LiveService:
         out["spectrum"] = self.spectrum_status()
         out["occupancy"] = self.occupancy.status() if self.occupancy is not None else {"enabled": False}
         out["captures"] = self.captures.status() if self.captures is not None else {"enabled": False}
+        if self.clips is not None:
+            out["listen"]["clips"] = self.clips.status()
+        out["listen"]["presets"] = self.live.listen_preset_list()
         out["feed"] = self.feed.status() if self.feed is not None else None
         out["agent"] = self.agent_link.status() if self.agent_link is not None else None
         return out
@@ -967,6 +1272,11 @@ def serve(live: settings.LiveSettings) -> None:
     service = LiveService(live, pump, spectrum=recorder)
     feed = live_feed.FeedServer(live.feed_socket_path).start()
     service.attach_feed(feed)
+    audio_out = None
+    if live.listen:
+        audio_out = service.audio_out = listen.AudioServer(live.audio_socket_path).start()
+        if live.clips:
+            service.clips = listen.ClipStore(live.clips_dir, live.clip_keep_days, live.clip_keep_mb, live.min_free_mb)
     service._event(
         "service-start",
         None,
@@ -974,7 +1284,9 @@ def serve(live: settings.LiveSettings) -> None:
         + (f"on (duty {live.spectrum_duty:g})" if recorder else "off")
         + ", occupancy sweeps "
         + (f"every {live.occupancy_interval_min} min" if live.occupancy else "off")
-        + f", captures from the web UI {'on' if live.captures else 'off'}",
+        + f", captures from the web UI {'on' if live.captures else 'off'}"
+        + f", listening {'on' if live.listen else 'off'}"
+        + (f" (clips {'on' if live.clips else 'off'})" if live.listen else ""),
     )
     link = None
     if live.agent is not None:
@@ -1018,6 +1330,8 @@ def serve(live: settings.LiveSettings) -> None:
             recorder.stop()
         service._event("service-stop", None, None)
         feed.close()
+        if audio_out is not None:
+            audio_out.close()
         pump.stop()
         writer.close()
         if spectrum_writer is not None:

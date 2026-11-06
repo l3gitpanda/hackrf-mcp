@@ -200,6 +200,26 @@ class LiveSettings:
     capture_keep_days: float = 7.0
     capture_keep_mb: float = 4096.0
     capture_wait_s: float = 30.0
+    # Listening from the web UI (listen.py): audio from channels in the band
+    # the receiver is on, or in a window it is lent to for a limited time;
+    # the browser gets audio only. AM channels in the airband also record a
+    # clip of each transmission into clips/ beside the log, each at most
+    # clip_max_s long, kept clip_keep_days or until the folder passes
+    # clip_keep_mb, oldest first. Named channels for the UI's list come
+    # from listen_presets (HACKRF_LIVE_LISTEN_PRESETS, "FREQ_MHZ [MODE]
+    # [LABEL]" entries separated by ";") and the file listen_presets_file
+    # (HACKRF_LIVE_LISTEN_PRESETS_FILE, one entry a line; by default
+    # listen-presets.txt beside the log, if it exists), which is read again
+    # whenever status is asked for, so it can be edited while the service
+    # runs. Keep channels that say where the station is in those, on the
+    # station, and nowhere else.
+    listen: bool = True
+    clips: bool = True
+    clip_max_s: float = 60.0
+    clip_keep_days: float = 7.0
+    clip_keep_mb: float = 1024.0
+    listen_presets: str = ""
+    listen_presets_file: Path | None = None
 
     def __post_init__(self) -> None:
         if not 0 < self.spectrum_duty <= 1:
@@ -214,6 +234,8 @@ class LiveSettings:
             "capture_max_s",
             "capture_keep_days",
             "capture_keep_mb",
+            "clip_keep_days",
+            "clip_keep_mb",
         ):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be above 0, not {getattr(self, name):g}")
@@ -237,6 +259,8 @@ class LiveSettings:
             raise ValueError(f"HACKRF_LIVE_OCCUPANCY_ALERT_QUIET_MIN must be 0-1440, not {self.occupancy_alert_quiet_min:g}")
         if not 0 <= self.capture_wait_s <= 600:
             raise ValueError(f"HACKRF_LIVE_CAPTURE_WAIT_S must be 0-600, not {self.capture_wait_s:g}")
+        if not 1 <= self.clip_max_s <= 300:
+            raise ValueError(f"HACKRF_LIVE_CLIP_MAX_S must be 1-300, not {self.clip_max_s:g}")
 
     @property
     def db_path(self) -> Path:
@@ -257,6 +281,26 @@ class LiveSettings:
     @property
     def socket_path(self) -> Path:
         return self.live_dir / "control.sock"
+
+    @property
+    def audio_socket_path(self) -> Path:
+        return self.live_dir / "audio.sock"
+
+    @property
+    def clips_dir(self) -> Path:
+        return self.live_dir / "clips"
+
+    def listen_preset_list(self) -> list[dict]:
+        """The UI's named channels: NOAA's, then the station's own."""
+        from hackrf_mcp import listen
+
+        text = self.listen_presets
+        path = self.listen_presets_file or self.live_dir / "listen-presets.txt"
+        try:
+            text += "\n" + path.read_text()[:65536]
+        except OSError:
+            pass
+        return listen.builtin_presets() + listen.parse_presets(text)
 
     @property
     def state_path(self) -> Path:
@@ -312,11 +356,22 @@ class LiveSettings:
             ("capture_keep_days", "HACKRF_LIVE_CAPTURE_KEEP_DAYS"),
             ("capture_keep_mb", "HACKRF_LIVE_CAPTURE_KEEP_MB"),
             ("capture_wait_s", "HACKRF_LIVE_CAPTURE_WAIT_S"),
+            ("clip_max_s", "HACKRF_LIVE_CLIP_MAX_S"),
+            ("clip_keep_days", "HACKRF_LIVE_CLIP_KEEP_DAYS"),
+            ("clip_keep_mb", "HACKRF_LIVE_CLIP_KEEP_MB"),
         ):
             if v := env.get(key):
                 kwargs[name] = float(v)
         if v := env.get("HACKRF_LIVE_CAPTURES"):
             kwargs["captures"] = parse_bool(v)
+        if v := env.get("HACKRF_LIVE_LISTEN"):
+            kwargs["listen"] = parse_bool(v)
+        if v := env.get("HACKRF_LIVE_CLIPS"):
+            kwargs["clips"] = parse_bool(v)
+        if v := env.get("HACKRF_LIVE_LISTEN_PRESETS"):
+            kwargs["listen_presets"] = v
+        if v := env.get("HACKRF_LIVE_LISTEN_PRESETS_FILE"):
+            kwargs["listen_presets_file"] = Path(v).expanduser()
         if v := env.get("HACKRF_LIVE_OCCUPANCY"):
             kwargs["occupancy"] = parse_bool(v)
         for name, key in (

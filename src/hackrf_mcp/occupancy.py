@@ -916,6 +916,8 @@ class Scheduler(threading.Thread):
                 break
             if took["state"] == "watch":
                 return self._finish(slot_ts, "skipped", "a watch has the receiver")
+            if took["state"] == "listen":
+                return self._finish(slot_ts, "skipped", "someone is listening")
             waited_for = took.get("owner") or "a device tool"
             if self.clock() >= slot_ts + self.late_s or self.halt.is_set():
                 return self._finish(

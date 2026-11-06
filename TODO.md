@@ -275,7 +275,17 @@ against `homelab`, deployed only with the owner's approval:
 - **Listening in the browser:** live audio demodulated on the worker
   (airband AM 118-137 MHz, NOAA Weather Radio, FM) streamed to the page,
   and voice clips recorded with squelch into the Log. Audio only: the
-  browser still never gets I/Q samples.
+  browser still never gets I/Q samples. The owner's choices (2026-11-06):
+  airband, NOAA, broadcast FM and any typed frequency may be heard; clips
+  on airband channels only; a listen outside the band the receiver is on
+  lends it a 2 MHz window like a watch (15 minutes, at most 60, asked
+  first), during which sweeps are skipped and a capture may borrow it;
+  channels picked by a tap on the waterfall, a typed frequency, the
+  station's own preset list or several scanned in the window; an automatic
+  squelch with a slider; clips up to 60 s as mu-law WAV, kept 7 days or
+  1 GB; clips downloadable and deletable; several listeners at once. The
+  live service's side and the web routes are built (see the README); the
+  screens follow.
 
 Decided against for now: HTTPS for the LAN UI, feeding community networks
 (no ADS-B or AIS aggregators: the station's data and position stay home),

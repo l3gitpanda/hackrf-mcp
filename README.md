@@ -672,6 +672,27 @@ the samples themselves are never sent to the browser. History's waterfall
 has a **Select** too: History keeps power, not samples, so a range picked
 there opens the Live screen's form to record it now, and says so.
 
+**Listening.** The **Listen** row under the Live screen's controls takes a
+frequency in MHz (the mode follows the band: AM in the airband, broadcast
+FM in 88-108 MHz, NFM elsewhere, or pick one), a named channel (NOAA's and
+the station's own, see [Live decoding](#live-decoding)), and how long.
+**Listen** plays that channel alone; **+ Add** puts another beside it to
+scan several at once (four at most). With **Listen** on above the
+waterfall, a tap picks the channel there (on the usual raster: 25 kHz in
+the airband and marine VHF, 100 kHz in broadcast FM, 5 kHz elsewhere).
+Inside the band the receiver is on it starts at once; anywhere else the
+page first says what it would stop and for how long, and nothing is
+retuned until **Listen there** is pressed. Each channel shows its level
+against where its squelch opens, whether it is open or recording, and a
+squelch slider (at the bottom it stays open); **+15 min**, **Mute**, the
+volume and **Stop listening** are beside them. The audio plays in the page
+itself (Web Audio, no plug-in, no secure context needed); a page opened
+while a listen runs shows **Play audio**, since browsers start sound only
+when asked. Several browsers can listen at once. Clips show in the Live
+feed, the Log (profile `listen`) and History, each with **Play**,
+**Download** (a mu-law WAV) and **Delete**; a deleted or expired clip
+leaves its row.
+
 **Summaries.** The **Summaries** screen (`/summaries`) totals a period
 (the last hour, 6 or 24 hours, today, 7 days, or from-to in UTC) from the
 log as it is, with no storage of its own: when each profile was on the air

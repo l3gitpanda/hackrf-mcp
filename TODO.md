@@ -283,9 +283,11 @@ against `homelab`, deployed only with the owner's approval:
   channels picked by a tap on the waterfall, a typed frequency, the
   station's own preset list or several scanned in the window; an automatic
   squelch with a slider; clips up to 60 s as mu-law WAV, kept 7 days or
-  1 GB; clips downloadable and deletable; several listeners at once. The
-  live service's side and the web routes are built (see the README); the
-  screens follow.
+  1 GB; clips downloadable and deletable; several listeners at once. Built
+  (see the README): the live service's side, the web routes and the
+  screens (the Listen row and a Listen toggle on Live, clips in the feed,
+  the Log and History). The on-air check of a real listen waits for the
+  deploy.
 
 Decided against for now: HTTPS for the LAN UI, feeding community networks
 (no ADS-B or AIS aggregators: the station's data and position stay home),

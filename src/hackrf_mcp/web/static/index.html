@@ -114,6 +114,36 @@
           <div class="bl" id="bl" role="list"></div>
         </div>
       </div>
+      <div class="ctl-listen" id="listen-box" hidden>
+        <div class="row wr" id="l-form">
+          <span class="cap">Listen</span>
+          <label class="sr" for="l-freq">Frequency, MHz</label><input id="l-freq" class="inp mono wfreq" inputmode="decimal" placeholder="MHz" autocomplete="off">
+          <label class="sr" for="l-mode">Mode</label><select id="l-mode" class="inp"></select>
+          <label class="sr" for="l-preset">Named channels</label><select id="l-preset" class="inp"></select>
+          <button type="button" class="btn sm" id="l-add" title="Add it to the channels below, to scan several at once">+ Add</button>
+          <label class="sr" for="l-min">For how long</label><select id="l-min" class="inp"></select>
+          <button type="button" class="btn" id="l-go">Listen</button>
+          <span class="t2 sm" id="l-hint">Audio only. Outside the band the receiver is on, you are asked first: decoding stops while you listen.</span>
+        </div>
+        <div class="row wr" id="l-on" hidden>
+          <span class="cap">Listening</span>
+          <span class="t2" id="l-where"></span>
+          <span class="t2" id="l-left"></span>
+          <span class="sp"></span>
+          <button type="button" class="btn sm primary" id="l-hear" hidden>▶ Play audio</button>
+          <label class="sr" for="l-vol">Volume</label><input type="range" id="l-vol" class="vol" min="0" max="100" value="80">
+          <button type="button" class="btn sm" id="l-mute" aria-pressed="false">Mute</button>
+          <button type="button" class="btn sm" id="l-more">+15 min</button>
+          <button type="button" class="btn sm danger" id="l-stop">Stop listening</button>
+        </div>
+        <div class="row wr lconfirm" id="l-confirm" role="alertdialog" aria-labelledby="l-confirm-text" hidden>
+          <span id="l-confirm-text"></span>
+          <button type="button" class="btn sm primary" id="l-yes">Listen there</button>
+          <button type="button" class="btn sm" id="l-no">Cancel</button>
+        </div>
+        <ul class="lchans" id="l-chans" aria-label="Channels"></ul>
+        <div class="ctl-err" id="l-err" role="alert" hidden></div>
+      </div>
       <div class="ctl-rot">
         <div class="row wr">
           <span class="cap">Rotation</span>
@@ -136,6 +166,7 @@
           <span class="row wr" id="wf-chans"></span>
           <span class="tag warn" id="wf-drop" hidden></span>
           <span class="sp"></span>
+          <button type="button" class="btn sm" id="btn-listen" aria-pressed="false" title="Tap a signal on the waterfall to listen to it" hidden>Listen</button>
           <button type="button" class="btn sm" id="btn-select" aria-pressed="false" title="Pick a signal (tap) or a range (drag) on the waterfall to capture it">Select</button>
           <button type="button" class="btn sm" id="btn-bands" aria-pressed="true" title="The band plan along the top of the waterfall">Bands</button>
           <button type="button" class="btn sm" id="btn-peak" aria-pressed="true">Peak hold</button>
@@ -143,6 +174,7 @@
           <span class="row legend-db" title="Waterfall palette, levelled to the noise floor"><span class="mono muted" id="wf-lo">−</span><span class="lut"></span><span class="mono muted" id="wf-hi">− dBFS</span></span>
         </div>
         <div id="wf"></div>
+        <p class="capnote" id="lis-hint" hidden>Tap a signal to listen to it (outside the band on screen you are asked first). To scan several at once, add them in the Listen form.</p>
         <p class="capnote" id="sel-hint" hidden>Tap a signal, or drag across a range, to capture it. Nothing is recorded until you press Capture.</p>
         <div class="capf" id="cap-form" hidden>
           <div class="row wr">

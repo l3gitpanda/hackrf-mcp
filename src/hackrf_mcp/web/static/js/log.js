@@ -3,7 +3,9 @@
 // on the waterfall of its moment. Profiles, colours and the fields shown
 // come from /api/registry; nothing here names a protocol.
 
-import { api } from './api.js';
+import { api, post } from './api.js';
+import { isClip, withListen } from './listenutil.js';
+import { Player, clipActions } from './listenplayer.js';
 import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { AutoLevel, makeLut, resample } from './waterfall.js';
 import { BandStrip } from './bandstrip.js';
@@ -35,6 +37,8 @@ const S = {
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
+// Plays clips (the listen's recorded transmissions) from the detail panel.
+const PLAYER = new Player();
 
 // --- Times ----------------------------------------------------------------------------
 
@@ -47,6 +51,8 @@ function when(ts, long) {
 
 async function init() {
   S.registry = await api('/api/registry');
+  // The listen's clips are rows of a profile of their own.
+  S.registry.profiles = withListen(S.registry);
   for (const p of S.registry.profiles) S.profiles[p.name] = p;
   S.colors = assignColors(S.registry.profiles);
   for (const p of S.registry.profiles) S.on.add(p.name);
@@ -425,9 +431,12 @@ function openDetail(r) {
   clear(kv);
   for (const [k, v] of Object.entries(r.fields || {})) kv.append(h('dt', {}, k), h('dd', { class: 'mono' }, fmtValue(v)));
   $('d-raw').textContent = r.raw || '';
+  const clip = clear($('d-clip'));
+  clip.hidden = !isClip(r);
+  if (isClip(r)) clip.append(clipActions(h, post, PLAYER, r));
   $('d-subj').disabled = !r.subject;
   $('d-hist').setAttribute('href', `/history?at=${Math.round(r.ts)}`);
-  const mapped = r.subject && (S.profiles[r.profile].views || []).some((v) => v.name === 'map');
+  const mapped = r.subject && ((S.profiles[r.profile] || {}).views || []).some((v) => v.name === 'map');
   $('d-map').hidden = !mapped;
   $('d-map').setAttribute('href', `/map?${new URLSearchParams({ at: String(Math.round(r.ts)), profile: r.profile, subject: r.subject || '' })}`);
   drawThumb(r);

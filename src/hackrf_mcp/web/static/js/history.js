@@ -6,7 +6,9 @@
 // channel's level against the noise floor, and how many rows were logged
 // over time. Everything about profiles comes from /api/registry.
 
-import { api } from './api.js';
+import { api, post } from './api.js';
+import { isClip, withListen } from './listenutil.js';
+import { Player, clipActions } from './listenplayer.js';
 import { paintAlerts, paintAppBar, paintClock } from './appbar.js';
 import { assignColors, clear, h, mhz, utc } from './util.js';
 import { AutoLevel, makeLut, resample, ticks } from './waterfall.js';
@@ -40,6 +42,8 @@ const S = {
 };
 
 const color = (name) => S.colors[name] || '#8a96a6';
+// Plays clips (the listen's recorded transmissions) from the selection.
+const PLAYER = new Player();
 const STRIP = new BandStrip($('w-bands'));
 const hasMap = (profile) => ((S.profiles[profile] || {}).views || []).some((v) => v.name === 'map');
 
@@ -47,6 +51,7 @@ const hasMap = (profile) => ((S.profiles[profile] || {}).views || []).some((v) =
 
 async function init() {
   S.registry = await api('/api/registry');
+  S.registry.profiles = withListen(S.registry);
   for (const p of S.registry.profiles) S.profiles[p.name] = p;
   S.colors = assignColors(S.registry.profiles);
   const u = new URLSearchParams(location.search);
@@ -437,6 +442,9 @@ function renderSel() {
   for (const [k, v] of Object.entries(r.fields || {})) add(k, v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v));
   $('d-log').setAttribute('href', `/log?${new URLSearchParams({ subject: r.subject || '', profiles: r.profile, around: String(Math.round(r.ts)) })}`);
   $('d-map').hidden = !(hasMap(r.profile) && r.subject);
+  const clip = clear($('d-clip'));
+  clip.hidden = !isClip(r);
+  if (isClip(r)) clip.append(clipActions(h, post, PLAYER, r));
   $('d-map').setAttribute('href', `/map?${new URLSearchParams({ at: String(Math.round(r.ts)), profile: r.profile, subject: r.subject || '' })}`);
 }
 

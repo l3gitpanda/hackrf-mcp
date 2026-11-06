@@ -15,6 +15,11 @@ per connection, answered with one JSON line:
   {"cmd": "stop"}
   {"cmd": "pause", "owner": "hackrf_transfer", "lease_s": 90}
   {"cmd": "resume", "token": "..."}
+  {"cmd": "capture-plan", "from_hz": ..., "to_hz": ..., "decoders": [...], "seconds": 30, ...}
+  {"cmd": "capture", ...the same...}
+  {"cmd": "capture-list"}
+  {"cmd": "capture-decode", "id": "...", "decoders": [...]}
+  {"cmd": "capture-delete", "id": "..."}
 
 pause releases the HackRF (the reply comes after the decoder has exited) and
 holds it free until resume or until the lease runs out, whichever is first,
@@ -24,6 +29,11 @@ pauses the service around every device tool call (see live_client.py).
 With HACKRF_LIVE_OCCUPANCY on, the service also takes the HackRF itself
 every few minutes for an occupancy sweep (occupancy.py), with the same kind
 of hold, and hands it back to whatever should be running.
+
+The capture-* commands are the web UI's captures (captures.py): the service
+records a range into the capture directory's web/ with the same kind of
+hold, then decodes it. While one records, another client's pause is refused
+(with how long is left) rather than taking the HackRF from under it.
 
 `python -m hackrf_mcp.live_service --replay FILE ...` runs one profile over a
 capture file instead of the HackRF and prints what was logged.
@@ -45,7 +55,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hackrf_mcp import cli, live_feed, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
+from hackrf_mcp import captures, cli, live_feed, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
 from hackrf_mcp import protocols  # noqa: F401  (registers every live profile)
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import Context, FileSource, HackrfSource, Spec, SpecError, Tuning
@@ -218,6 +228,7 @@ class LiveService:
         self.started_at = clock()
         self.agent_link = None  # the split station's live_import.AgentLink, if any
         self.occupancy: occupancy.Scheduler | None = None
+        self.captures: captures.Recorder | None = None
 
         self.desired: dict | None = None  # {"spec": Spec} or {"schedule": [(Spec, minutes)], "anchor": t}
         self.hold: dict | None = None  # {"owner", "until", "token", "since", "stopped"}
@@ -525,7 +536,9 @@ class LiveService:
                 return self._cmd_pause(req)
             if cmd == "resume":
                 return self._cmd_resume(req)
-        except SpecError as exc:
+            if cmd in ("capture-plan", "capture", "capture-list", "capture-decode", "capture-delete"):
+                return self._cmd_capture(cmd, req)
+        except (SpecError, captures.PlanError) as exc:
             return {"ok": False, "error": str(exc)}
         except (KeyError, TypeError, ValueError) as exc:
             return {"ok": False, "error": f"bad request: {exc}"}
@@ -632,6 +645,17 @@ class LiveService:
         lease = min(max(float(req.get("lease_s", 120)), 1.0), MAX_LEASE_S)
         with self.lock:
             now = self.clock()
+            if self.hold is not None and self.hold["owner"] == captures.OWNER and owner != captures.OWNER and now < self.hold["until"]:
+                # The capture's agent run has the HackRF: replacing its hold
+                # would only restart decoding against a busy device. (Its
+                # time left comes from the hold, not the recorder: the
+                # recorder's lock is never taken under this one.)
+                left = max(0.0, self.hold["until"] - captures.LEASE_MARGIN_S - now)
+                return {
+                    "ok": False,
+                    "busy": True,
+                    "error": f"the HackRF is recording a capture from the web UI for about {left:.0f} s more; try again then",
+                }
             was = self.running_spec.profile if self.running_spec else None
             since = now
             renewal = self.hold is not None and self.hold["owner"] == owner
@@ -682,6 +706,72 @@ class LiveService:
         asked for meanwhile). False if the hold had already gone (its lease
         ran out, or a device tool's pause replaced it)."""
         return self._cmd_resume({"token": token}, log=False)["resumed"]
+
+    # --- captures from the web UI ----------------------------------------
+
+    def capture_take(self, lease_s: float) -> dict:
+        """Take the HackRF for a capture: {"state": "ok", "token",
+        "paused_profile"} once the decoder (or a watch, whose time keeps
+        running) has let go; {"state": "busy", "owner"} while a device tool
+        or an occupancy sweep holds it. Checked and taken under one lock. The
+        capture's own events say what happened, so the hold logs no pause or
+        resume of its own."""
+        with self.lock:
+            now = self.clock()
+            if self.hold is not None and now < self.hold["until"]:
+                return {"state": "busy", "owner": self.hold["owner"]}
+            r = self._cmd_pause({"owner": captures.OWNER, "lease_s": lease_s}, log=False)
+        return {"state": "ok", "token": r["token"], "paused_profile": r["paused_profile"]}
+
+    def capture_give(self, token: str) -> bool:
+        """Hand the HackRF back after a capture; False if the hold had gone."""
+        return self._cmd_resume({"token": token}, log=False)["resumed"]
+
+    def capture_context(self) -> dict:
+        """What a capture now would interrupt, for its plan: the profile
+        running (or a watch), who holds the receiver, the next occupancy
+        slot, and the running profile's channels and band, for the
+        decoder of the same name."""
+        with self.lock:
+            now = self.clock()
+            watching = self.watch is not None and now < self.watch["until"]
+            held = self.hold["owner"] if self.hold is not None and now < self.hold["until"] else None
+            if held is not None and self.hold.get("stopped"):
+                running = self.hold["stopped"]
+            else:
+                running = self.running_spec.profile if self.running_spec else None
+            known = {}
+            band = None
+            if self.tuning is not None:
+                if self.tuning.freqs_hz:
+                    known[self.tuning.profile.name] = tuple(self.tuning.freqs_hz)
+                if self.tuning.sample_rate_hz:
+                    half = self.tuning.sample_rate_hz / 2
+                    band = {"profile": self.tuning.profile.name, "lo_hz": self.tuning.center_hz - half, "hi_hz": self.tuning.center_hz + half}
+        slot = self.occupancy.next_at if self.occupancy is not None else None
+        return {
+            "running": None if running == live_profiles.WATCH.name else running,
+            "watch": watching,
+            "held_by": held,
+            "next_slot": slot,
+            "known": known,
+            "band": band,
+        }
+
+    def _cmd_capture(self, cmd: str, req: dict) -> dict:
+        if self.captures is None:
+            return {"ok": False, "error": "captures from the web UI are off on this station (HACKRF_LIVE_CAPTURES)"}
+        c = self.captures
+        if cmd == "capture-plan":
+            return {"ok": True, **c.plan_request(req)}
+        if cmd == "capture":
+            self._event("request", None, "capture " + json.dumps(req, default=str)[:300])
+            return {"ok": True, "capture": c.start(req)}
+        if cmd == "capture-list":
+            return {"ok": True, "captures": c.list(int(req.get("limit") or 200)), "status": c.status()}
+        if cmd == "capture-decode":
+            return {"ok": True, "capture": c.decode(str(req["id"]), list(req.get("decoders") or ()))}
+        return {"ok": True, "freed_bytes": c.delete(str(req["id"]))}
 
     # --- status ---------------------------------------------------------
 
@@ -790,6 +880,7 @@ class LiveService:
         out["log"] = log
         out["spectrum"] = self.spectrum_status()
         out["occupancy"] = self.occupancy.status() if self.occupancy is not None else {"enabled": False}
+        out["captures"] = self.captures.status() if self.captures is not None else {"enabled": False}
         out["feed"] = self.feed.status() if self.feed is not None else None
         out["agent"] = self.agent_link.status() if self.agent_link is not None else None
         return out
@@ -882,7 +973,8 @@ def serve(live: settings.LiveSettings) -> None:
         f"pid {os.getpid()}, pager content {'on' if live.pager_content else 'off'}, spectrum history "
         + (f"on (duty {live.spectrum_duty:g})" if recorder else "off")
         + ", occupancy sweeps "
-        + (f"every {live.occupancy_interval_min} min" if live.occupancy else "off"),
+        + (f"every {live.occupancy_interval_min} min" if live.occupancy else "off")
+        + f", captures from the web UI {'on' if live.captures else 'off'}",
     )
     link = None
     if live.agent is not None:
@@ -897,6 +989,7 @@ def serve(live: settings.LiveSettings) -> None:
         link.start()
     service.load()
     sched = start_occupancy(service, live) if live.occupancy else None
+    recorder = start_captures(service, live) if live.captures else None
     server = ControlServer(live.socket_path, service)
     threading.Thread(target=server.serve_forever, daemon=True, name="control").start()
 
@@ -921,6 +1014,8 @@ def serve(live: settings.LiveSettings) -> None:
             link.stop()
         if sched is not None and sched.stop():
             sched.writer.close()
+        if recorder is not None:
+            recorder.stop()
         service._event("service-stop", None, None)
         feed.close()
         pump.stop()
@@ -961,6 +1056,48 @@ def start_occupancy(service: LiveService, live: settings.LiveSettings, run_sweep
     service.occupancy = sched
     sched.start()
     return sched
+
+
+def start_captures(
+    service: LiveService,
+    live: settings.LiveSettings,
+    run_capture=None,
+    run_decode=None,
+    server: settings.Settings | None = None,
+    available=None,
+) -> captures.Recorder:
+    """The web UI's captures, in the capture directory's web/, within the
+    MCP server's own limits (the same environment gives both services the
+    same ones): its longest capture, its size cap and its free-space floor."""
+    s = server or settings.get()
+    root = s.data_dir.expanduser()
+    store = captures.Store(root / captures.SUBDIR)
+    recorder = captures.Recorder(
+        service,
+        store,
+        max_seconds=min(live.capture_max_s, s.max_rx_seconds),
+        max_bytes=int(s.max_capture_mb * MIB),
+        min_free_bytes=int(s.min_free_mb * MIB),
+        keep_bytes=int(live.capture_keep_mb * MIB),
+        keep_age_s=live.capture_keep_days * 86400,
+        wait_s=live.capture_wait_s,
+        run_capture=run_capture or captures.capture_runner(live),
+        run_decode=run_decode or captures.decode_runner(live, root / ".decode-tmp"),
+        default_gains=(
+            live.lna_gain_db if live.lna_gain_db is not None else live_profiles.WATCH.lna_gain_db,
+            live.vga_gain_db if live.vga_gain_db is not None else live_profiles.WATCH.vga_gain_db,
+        ),
+        available=available,
+    )
+    try:
+        gone = recorder.prune_now()
+    except OSError as exc:
+        service._event("capture-error", None, f"pruning {store.root}: {exc}")
+    else:
+        if gone:
+            service._event("capture-delete", None, f"{len(gone)} kept past {live.capture_keep_days:g} days or the size cap")
+    service.captures = recorder
+    return recorder
 
 
 def replay(live: settings.LiveSettings, args: argparse.Namespace) -> int:
@@ -1078,6 +1215,12 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         parser.error(f"invalid configuration: {exc}")
     settings.configure_live(live)
+    try:
+        # The MCP server's settings: the capture directory and its limits,
+        # for the web UI's captures.
+        settings.configure(settings.Settings.from_env())
+    except ValueError as exc:
+        print(f"hackrf-live: the MCP server's settings are invalid ({exc}); captures use the defaults", file=sys.stderr)
     if args.replay:
         if not (args.profile and args.rate and args.db):
             parser.error("--replay needs --profile, --rate and --db (and --center unless the profile has a fixed one)")

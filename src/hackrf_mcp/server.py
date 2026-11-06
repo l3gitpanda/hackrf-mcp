@@ -121,6 +121,8 @@ def _run_on_device(binary: str, args: list[str], timeout: float | None = None) -
             hold = live_client.pause(binary, (timeout or 60) + 30)
         except live_client.Unavailable:
             hold = None
+        except live_client.LiveBusy as exc:
+            return f"HackRF is busy: {exc}."
         except live_client.LiveError as exc:
             return _refused(
                 f"the live decoder service holds the HackRF and did not release it ({exc}); "
@@ -215,6 +217,8 @@ def _run_remote(owner: str, req: dict, sink, timeout: float, upload: Path | None
             hold = live_client.pause(owner, timeout + 30)
         except live_client.Unavailable:
             hold = None
+        except live_client.LiveBusy as exc:
+            return f"HackRF is busy: {exc}."
         except live_client.LiveError as exc:
             return _refused(
                 f"the live decoder service holds the HackRF and did not release it ({exc}); "
@@ -1623,6 +1627,25 @@ def _format_live_status(st: dict) -> str:
             + f". {oc.get('path')}, {oc.get('file_bytes', 0) / storage.MIB:.1f} MiB of {oc.get('max_mb'):g} MiB, "
             f"{oc.get('slots_kept', 0)} slots (kept {oc.get('max_age_days'):g} days) and {oc.get('days_kept', 0)} daily "
             f"roll-ups (kept {oc.get('daily_days'):g} days)."
+        )
+    cap = st.get("captures") or {}
+    if cap and not cap.get("enabled"):
+        lines.append("  Captures from the web UI: off (HACKRF_LIVE_CAPTURES).")
+    elif cap:
+        cur = cap.get("current") or {}
+        lines.append(
+            f"  Captures from the web UI: up to {cap.get('max_seconds', 0):g} s each, in {cap.get('dir')}, "
+            f"{cap.get('count', 0)} kept ({cap.get('used_mb', 0):,.0f} MiB of {cap.get('keep_mb', 0):,.0f} MiB, "
+            f"{cap.get('keep_days', 0):g} days); {cap.get('recorded', 0)} recorded and {cap.get('failed', 0)} failed "
+            "since the service started"
+            + (
+                f"; {cur['id']} is {cur['state']}"
+                + (f", {cur['left_s']:.0f} s left" if cur.get("left_s") is not None else "")
+                if cur
+                else ""
+            )
+            + (f"; decoding {cap['decoding']}" if cap.get("decoding") else "")
+            + "."
         )
     feed = st.get("feed")
     if feed:

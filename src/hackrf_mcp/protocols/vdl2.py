@@ -207,6 +207,10 @@ decoders.register(
         VDL2_CHANNELS,
         help="""  vdl2  - aircraft datalink, 136.8 MHz at 2,100,000 S/s (the rate must
           be a multiple of 105,000).""",
+        capture_rate_hz=2_100_000,
+        rate_ok=lambda r: r % VDL2_SYMBOL_RATE == 0,
+        usual_center_hz=136_800_000,
+        tune_offset_hz=40_000,
     )
 )
 

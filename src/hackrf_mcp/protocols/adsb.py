@@ -304,6 +304,9 @@ decoders.register(
         (1_090_000_000,),
         help="""  adsb  - aircraft, 1090 MHz at 2,400,000 S/s (2,000,000 decodes nothing).
           Optional receiver_lat/receiver_lon resolve more positions.""",
+        capture_rate_hz=2_400_000,
+        rate_ok=lambda r: r % 2_400_000 == 0,
+        usual_center_hz=1_090_000_000,
     )
 )
 

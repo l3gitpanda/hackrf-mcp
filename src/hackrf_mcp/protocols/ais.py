@@ -271,6 +271,7 @@ decoders.register(
         lambda job: decode_ais(job.cap, job.program, job.timeout, job.workdir),
         (161_975_000, 162_025_000),
         help="  ais   - ships, 162.0 MHz at 2,000,000 S/s (any rate).",
+        usual_center_hz=162_000_000,
     )
 )
 

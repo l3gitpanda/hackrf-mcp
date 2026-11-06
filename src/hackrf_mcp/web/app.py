@@ -87,7 +87,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from hackrf_mcp import decoders, live_client, live_log, live_profiles, live_spectrum, occupancy, procstats
+from hackrf_mcp import captures, decoders, live_client, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
 from hackrf_mcp.live_service import WATCH_DEFAULT_MIN, WATCH_MAX_MIN
 from hackrf_mcp.settings import LiveSettings, WebSettings
 from hackrf_mcp.web import aircraftdb, alerts, basemap, panels
@@ -874,6 +874,79 @@ def create_app(
     async def api_watch_stop(request: Request) -> Response:
         return await _control({"cmd": "watch-stop"})
 
+    # --- captures: recorded and decoded by the live service (captures.py);
+    # the browser gets the plan, the results and a picture, never the I/Q.
+
+    async def _capture_body(request: Request) -> dict:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("send a JSON object")
+        req: dict = {"from_hz": float(body["from_hz"])}
+        if body.get("to_hz") is not None:
+            req["to_hz"] = float(body["to_hz"])
+        if body.get("decoders") is not None:
+            if not isinstance(body["decoders"], list):
+                raise ValueError("decoders is a list of names")
+            req["decoders"] = [str(n) for n in body["decoders"]][:20]
+        if body.get("seconds") is not None:
+            req["seconds"] = float(body["seconds"])
+        for k in ("lna_gain_db", "vga_gain_db"):
+            if body.get(k) is not None:
+                req[k] = int(body[k])
+        if body.get("amp"):
+            req["amp"] = True
+        if body.get("origin") is not None:
+            req["origin"] = str(body["origin"])[:20]
+        return req
+
+    async def api_capture_plan(request: Request) -> Response:
+        try:
+            req = await _capture_body(request)
+        except (ValueError, KeyError, TypeError) as exc:
+            return error(400, f"bad request: {exc}")
+        return await _control({"cmd": "capture-plan", **req})
+
+    async def api_capture_start(request: Request) -> Response:
+        try:
+            req = await _capture_body(request)
+        except (ValueError, KeyError, TypeError) as exc:
+            return error(400, f"bad request: {exc}")
+        return await _control({"cmd": "capture", **req})
+
+    async def api_captures(request: Request) -> Response:
+        return await _control({"cmd": "capture-list"})
+
+    def _capture_id(request: Request) -> str | None:
+        cid = request.path_params["cid"]
+        return cid if captures.ID_RE.fullmatch(cid) else None
+
+    async def api_capture_decode(request: Request) -> Response:
+        cid = _capture_id(request)
+        if cid is None:
+            return error(400, "not a capture id")
+        try:
+            body = await request.json()
+            names = [str(n) for n in body["decoders"]][:20]
+        except (ValueError, KeyError, TypeError) as exc:
+            return error(400, f"bad request: {exc}")
+        return await _control({"cmd": "capture-decode", "id": cid, "decoders": names})
+
+    async def api_capture_delete(request: Request) -> Response:
+        cid = _capture_id(request)
+        if cid is None:
+            return error(400, "not a capture id")
+        return await _control({"cmd": "capture-delete", "id": cid})
+
+    async def api_capture_picture(request: Request) -> Response:
+        # Only the picture the live service drew; the samples stay put.
+        cid = _capture_id(request)
+        if cid is None:
+            return error(400, "not a capture id")
+        path = captures.Store(settings.get().data_dir.expanduser() / captures.SUBDIR).picture_path(cid)
+        if not path.is_file():
+            return error(404, "no picture for that capture")
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
     # --- alerts
 
     def api_alerts(request: Request) -> Response:
@@ -1130,6 +1203,12 @@ def create_app(
         Route("/api/live/stop", api_stop, methods=["POST"]),
         Route("/api/live/watch", api_watch, methods=["POST"]),
         Route("/api/live/watch/stop", api_watch_stop, methods=["POST"]),
+        Route("/api/captures", api_captures),
+        Route("/api/captures", api_capture_start, methods=["POST"]),
+        Route("/api/captures/plan", api_capture_plan, methods=["POST"]),
+        Route("/api/captures/{cid}/decode", api_capture_decode, methods=["POST"]),
+        Route("/api/captures/{cid}/delete", api_capture_delete, methods=["POST"]),
+        Route("/api/captures/{cid}/picture", api_capture_picture),
         Route("/api/alerts", api_alerts),
         Route("/api/alerts/rules", api_rule_create, methods=["POST"]),
         Route("/api/alerts/rules/{rule_id:int}", api_rule, methods=["PUT", "DELETE"]),

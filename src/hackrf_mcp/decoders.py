@@ -60,6 +60,10 @@ class Job:
 BUILT_IN = "built-in"
 
 
+def any_rate(sample_rate_hz: int) -> bool:
+    return True
+
+
 @dataclass(frozen=True)
 class Decoder:
     name: str
@@ -73,6 +77,17 @@ class Decoder:
     # This decoder's lines in hackrf_decode's description (several decoders
     # may share one entry; the others leave it empty).
     help: str = ""
+    # The recipe in numbers, for planning a capture from the web UI
+    # (captures.plan), which must never plan one run() then refuses: the
+    # rate to record at, and which other rates run() takes; a centre run()
+    # requires exactly; the centre the recipe gives, used when it covers
+    # what was picked; and how far below a picked signal to tune otherwise,
+    # to keep it off the HackRF's DC spike.
+    capture_rate_hz: int = 2_000_000
+    rate_ok: Callable[[int], bool] = any_rate
+    pinned_center_hz: int | None = None
+    usual_center_hz: int | None = None
+    tune_offset_hz: int = 0
 
 
 DECODERS: dict[str, Decoder] = {}

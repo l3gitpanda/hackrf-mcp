@@ -22,6 +22,11 @@ class LiveError(RuntimeError):
     """The service answered with an error."""
 
 
+class LiveBusy(LiveError):
+    """The service is using the HackRF itself (recording a capture for the
+    web UI) and won't let go; the message says for how long."""
+
+
 def request(req: dict, timeout: float = 20.0, path=None) -> dict:
     """One request to a live service's control socket: this process's
     (settings.get_live()) unless `path` names another."""
@@ -51,6 +56,8 @@ def request(req: dict, timeout: float = 20.0, path=None) -> dict:
     except ValueError as exc:
         raise LiveError(f"the live decoder service sent an unreadable reply: {data[:200]!r}") from exc
     if not resp.get("ok"):
+        if resp.get("busy"):
+            raise LiveBusy(resp.get("error") or "the live decoder service is using the HackRF")
         raise LiveError(resp.get("error") or "the live decoder service refused the request")
     return resp
 

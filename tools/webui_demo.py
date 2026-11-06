@@ -33,7 +33,7 @@ import numpy as np
 from hackrf_mcp import cli, decoders, live_feed, live_profiles, occupancy, settings
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import FileSource, Pipeline
-from hackrf_mcp.live_service import ControlServer, LiveService, LogPump, start_occupancy
+from hackrf_mcp.live_service import ControlServer, LiveService, LogPump, start_captures, start_occupancy
 from hackrf_mcp.live_spectrum import SpectrumRecorder, SpectrumWriter
 
 HOME = (33.86, -118.28)
@@ -322,6 +322,29 @@ def start_catcher() -> int:
     return srv.server_address[1]
 
 
+def demo_decode_runner(live, workroot: Path):
+    """The real decoding process for the built-in decoders and the picture;
+    a made-up result for the rest, whose programs aren't installed here."""
+    from hackrf_mcp import captures
+
+    real = captures.decode_runner(live, workroot)
+
+    def run(path, p, todo, picture):
+        built_in = [(n, f) for n, f in todo if not decoders.DECODERS[n].programs]
+        out = real(path, p, built_in, picture)
+        made = {d["decoder"]: d for d in out["decodes"]}
+        for n, f in todo:
+            made.setdefault(n, {
+                "decoder": n, "state": "done", "headline": f"{n}: 3 messages (made up by the demo).",
+                "notes": ["The demo has no decoder programs: these lines are made up."],
+                "table": [], "messages": [f"demo message {i} on {(f or [p.center_hz])[0] / 1e6:.4f} MHz" for i in (1, 2, 3)],
+                "seconds": 0.1,
+            })  # fmt: skip
+        return {**out, "decodes": [made[n] for n, _ in todo]}
+
+    return run
+
+
 def demo_occupancy(path: Path, days: float, now: float) -> int:
     """Made-up occupancy slots every 15 minutes for `days` before now, from
     the air tools/fake_hackrf_sweep.py makes (so the demo's own sweeps look
@@ -400,6 +423,9 @@ def main() -> None:
     tools.mkdir()
     (tools / "hackrf_sweep").write_text(f"#!{sys.executable}\n" + (Path(__file__).parent / "fake_hackrf_sweep.py").read_text())
     (tools / "hackrf_sweep").chmod(0o755)
+    # hackrf_transfer for the web UI's captures, when there is no agent.
+    (tools / "hackrf_transfer").write_text(f"#!{sys.executable}\n" + (Path(__file__).parent / "fake_hackrf_transfer.py").read_text())
+    (tools / "hackrf_transfer").chmod(0o755)
     # The demo's receiver sits at HOME, for range rings and the receiver range.
     live = settings.LiveSettings(live_dir=tmp / "live", min_free_mb=0, receiver=HOME)
     agent_server = None
@@ -476,6 +502,13 @@ def main() -> None:
         replace(live, occupancy=True, occupancy_interval_min=args.occupancy_min, occupancy_late_min=1, occupancy_passes=5,
                 occupancy_alert_quiet_min=0),
     )
+    # The web UI's captures, into tmp/captures/web, with made-up results
+    # from every decoder that needs a program (none is installed here).
+    settings.configure(settings.Settings(data_dir=tmp / "captures", min_free_mb=0))
+    start_captures(
+        svc, live, run_decode=demo_decode_runner(live, tmp / "captures" / ".decode-tmp"),
+        available=lambda: {n: "demo" for n in decoders.names()},
+    )  # fmt: skip
 
     if args.basemap:
         state = settings.WebSettings().state_path(live)

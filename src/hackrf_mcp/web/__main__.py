@@ -45,6 +45,12 @@ def main(argv: list[str] | None = None) -> None:
     if not digests:
         parser.error("hackrf-web needs a token: set HACKRF_WEB_TOKEN_FILE or HACKRF_WEB_TOKEN_SHA256")
     settings.configure_live(live)
+    try:
+        # The capture directory, where the live service draws each capture's picture.
+        settings.configure(settings.Settings.from_env())
+    except ValueError as exc:
+        print(f"hackrf-web: the MCP server's settings are invalid ({exc}); capture pictures are looked for "
+              "in the default capture directory", file=sys.stderr, flush=True)
     key = load_secret(web.state_path(live))
 
     import uvicorn

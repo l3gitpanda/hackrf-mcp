@@ -1,9 +1,10 @@
-"""A stand-in for `hackrf_transfer -r -` for the demo and tests: noise and a
-few carriers at the requested rate, written to stdout in real time, with
-hackrf_transfer's once-a-second power line on stderr. Exits on SIGINT, as
-the real one does.
+"""A stand-in for `hackrf_transfer -r` for the demo and tests: noise and a
+few carriers at the requested rate, written in real time to stdout (-r -)
+or a file, with hackrf_transfer's once-a-second power line on stderr. Stops
+after -n samples if given, else on SIGINT, as the real one does.
 
     fake_hackrf_transfer.py -r - -f 98000000 -s 10000000 -l 32 -g 40 -a 0
+    fake_hackrf_transfer.py -r capture.cs8 -n 4000000 -f 152000000 -s 2000000
 """
 
 import signal
@@ -30,12 +31,18 @@ def main(argv: list[str]) -> int:
     out[0::2] = np.clip(np.rint(x.real * 127), -127, 127)
     out[1::2] = np.clip(np.rint(x.imag * 127), -127, 127)
     block = out.tobytes()
+    left = 2 * int(float(args["-n"])) if "-n" in args else None
+    target = args.get("-r", "-")
+    sink = sys.stdout.buffer if target == "-" else open(target, "wb")
     start = time.monotonic()
     sent = 0
     last = start
-    while True:
-        sys.stdout.buffer.write(block)
-        sys.stdout.buffer.flush()
+    while left is None or left > 0:
+        chunk = block if left is None else block[:left]
+        sink.write(chunk)
+        sink.flush()
+        if left is not None:
+            left -= len(chunk)
         sent += 1
         now = time.monotonic()
         if now - last >= 1:
@@ -43,8 +50,11 @@ def main(argv: list[str]) -> int:
             sys.stderr.write(f"{2 * rate / 2**20:.1f} MiB / 1.000 sec = {2 * rate / 2**20:.1f} MiB/second, average power -30.0 dBfs, 0 bytes free in buffer, 0 underruns\n")
             sys.stderr.flush()
         ahead = start + sent * 0.25 - now
-        if ahead > 0:
+        if ahead > 0 and (left is None or left > 0):
             time.sleep(ahead)
+    if sink is not sys.stdout.buffer:
+        sink.close()
+    return 0
 
 
 if __name__ == "__main__":

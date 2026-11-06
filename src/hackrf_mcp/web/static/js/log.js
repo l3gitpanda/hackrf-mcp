@@ -296,7 +296,8 @@ function renderTimeline(hist, coverage, q) {
     const width = ((Math.min(seg.to, q.until) - Math.max(seg.from, q.since)) / span) * 100;
     if (width <= 0) continue;
     if (seg.state === 'running') {
-      const s = h('span', { '--pc': color(seg.profile), title: `${seg.profile}: ${when(seg.from, long)}–${when(seg.to, long)}` });
+      const by = seg.fallback ? ' (fallback on the agent\'s machine)' : '';
+      const s = h('span', { '--pc': color(seg.profile), title: `${seg.profile}${by}: ${when(seg.from, long)}–${when(seg.to, long)}` });
       s.style.left = `${left}%`;
       s.style.width = `${width}%`;
       lane.append(s);

@@ -457,6 +457,16 @@ def histogram(
 
 # How a stop event's detail begins, and the gap it opens.
 _GAP_OF_STOP = (("paused", "paused"), ("failed", "error"), ("service stopping", "down"), ("switching", "switching"))
+# What the split station's worker appends to the events it imports from the
+# agent's machine, whose own live service decodes while no worker is around
+# (live_import.py): "<detail> (fallback on the agent's machine)".
+FALLBACK_NOTE = "fallback on the agent's machine"
+_COVERAGE_EVENTS = ("start", "stop", "service-start", "service-stop", "error")
+
+
+def is_fallback(detail: str | None) -> bool:
+    """Whether an event came from the agent's machine (its fallback)."""
+    return detail is not None and (detail == FALLBACK_NOTE or detail.endswith(f" ({FALLBACK_NOTE})"))
 
 
 def coverage(conn: sqlite3.Connection, since: float, until: float) -> list[dict]:
@@ -465,43 +475,78 @@ def coverage(conn: sqlite3.Connection, since: float, until: float) -> list[dict]
     "running" (with its profile), or a gap: "paused" (lent to a device
     tool), "error" (a profile failed and is being retried), "idle"
     (stopped on request) or "down" (the service wasn't running). Switches
-    (a stop straight followed by the next start) leave no gap."""
-    start_ev = conn.execute(
-        "SELECT ts, event, profile, detail FROM events WHERE ts < ? AND event IN "
-        "('start', 'stop', 'service-start', 'service-stop') ORDER BY ts DESC, id DESC LIMIT 1",
-        (since,),
-    ).fetchone()
-    state, profile = "down", None
-    if start_ev is not None:
-        state, profile = _after(start_ev[1], start_ev[2], start_ev[3], "down")
+    (a stop straight followed by the next start) leave no gap.
+
+    On a split station the agent's machine decodes by itself while no
+    worker is around, and the worker imports its events (marked
+    FALLBACK_NOTE). Those are followed on a lane of their own: the station
+    is running when either lane is (the worker's first), and a segment the
+    fallback covered says so with "fallback": True. Otherwise the fallback's
+    own pauses (it is paused whenever the worker has the HackRF), stamped
+    a moment after the worker's start, would read as the worker pausing."""
+    fb_where = "(detail = ? OR detail LIKE ?)"
+    fb_args = (FALLBACK_NOTE, f"% ({FALLBACK_NOTE})")
+    events = "event IN (" + ",".join("?" * len(_COVERAGE_EVENTS)) + ")"
+    lanes = {}
+    for lane, cond in (("worker", f"NOT {fb_where} OR detail IS NULL"), ("fallback", fb_where)):
+        ev = conn.execute(
+            f"SELECT ts, event, profile, detail FROM events WHERE ts < ? AND {events} AND ({cond}) "
+            "ORDER BY ts DESC, id DESC LIMIT 1",
+            (since, *_COVERAGE_EVENTS, *fb_args),
+        ).fetchone()
+        lanes[lane] = _after(ev[1], ev[2], ev[3], "down") if ev is not None else ("down", None)
+    rows = conn.execute(
+        f"SELECT ts, event, profile, detail FROM events WHERE ts >= ? AND ts <= ? AND {events} ORDER BY ts, id",
+        (since, until, *_COVERAGE_EVENTS),
+    ).fetchall()
+
+    def combined() -> tuple[str, str | None, bool]:
+        w_state, w_profile = lanes["worker"]
+        f_state, f_profile = lanes["fallback"]
+        if w_state == "running":
+            return "running", w_profile, False
+        if f_state == "running":
+            return "running", f_profile, True
+        if f_state == "switching":
+            return "switching", None, True
+        return w_state, w_profile, False
+
     out: list[dict] = []
     t = since
-    rows = conn.execute(
-        "SELECT ts, event, profile, detail FROM events WHERE ts >= ? AND ts <= ? AND event IN "
-        "('start', 'stop', 'service-start', 'service-stop', 'error') ORDER BY ts, id",
-        (since, until),
-    ).fetchall()
+    state = combined()
     for ts, event, ev_profile, detail in rows:
-        new_state, new_profile = _after(event, ev_profile, detail, state)
-        if event == "error" and state == "running":
+        lane = "fallback" if is_fallback(detail) else "worker"
+        cur_state = lanes[lane][0]
+        if event == "error" and cur_state == "running":
             continue  # an error while running is followed by its stop event
-        if (new_state, new_profile) == (state, profile):
+        lanes[lane] = _after(event, ev_profile, detail, cur_state)
+        new = combined()
+        if new == state:
             continue
         if ts > t:
-            out.append({"state": state, "profile": profile, "from": t, "to": ts})
-        t, state, profile = ts, new_state, new_profile
+            out.append(_segment(state, t, ts))
+        t, state = ts, new
     if until > t:
-        out.append({"state": state, "profile": profile, "from": t, "to": until})
+        out.append(_segment(state, t, until))
     # A switch's stop and start are milliseconds apart: no gap to show.
     merged: list[dict] = []
     for seg in out:
         if seg["state"] == "switching":
             continue
-        if merged and merged[-1]["state"] == seg["state"] and merged[-1]["profile"] == seg["profile"]:
-            merged[-1]["to"] = seg["to"]
+        last = merged[-1] if merged else None
+        if last and (last["state"], last["profile"], last.get("fallback")) == (seg["state"], seg["profile"], seg.get("fallback")):
+            last["to"] = seg["to"]
         else:
             merged.append(seg)
     return merged
+
+
+def _segment(state: tuple[str, str | None, bool], a: float, b: float) -> dict:
+    s, profile, fallback = state
+    seg = {"state": s, "profile": profile if s == "running" else None, "from": a, "to": b}
+    if fallback and s == "running":
+        seg["fallback"] = True
+    return seg
 
 
 def _after(event: str, profile: str | None, detail: str | None, state: str) -> tuple[str, str | None]:

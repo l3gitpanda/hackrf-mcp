@@ -218,7 +218,8 @@ function coverageTip(e) {
   const t = S.since + ((e.clientX - r.left) / r.width) * (S.until - S.since);
   const c = S.data && S.data.coverage.find((x) => t >= x.from && t < x.to);
   if (!c) return hideTip();
-  const what = c.state === 'running' ? c.profile : GAP_LABEL[c.state] || c.state;
+  // On a split station, "fallback" marks what the agent's machine decoded while no worker was around.
+  const what = c.state === 'running' ? `${c.profile}${c.fallback ? ' (fallback on the agent\'s machine)' : ''}` : GAP_LABEL[c.state] || c.state;
   showTip(e, [
     h('div', { class: 'tt' }, `${fmtUtc(Math.max(c.from, S.since))} – ${utc(Math.min(c.to, S.until), false)} UTC`),
     h('div', { class: 'tr' }, c.state === 'running' ? h('span', { class: 'tk', '--pc': color(c.profile) }) : null, h('span', { class: 'tv' }, durText(Math.min(c.to, S.until) - Math.max(c.from, S.since))), what),

@@ -187,6 +187,51 @@ def test_coverage_rebuilds_what_the_receiver_was_doing(tmp_path):
     assert live_log.coverage(conn, 150.0, 180.0) == [{"state": "running", "profile": "ais", "from": 150.0, "to": 180.0}]
 
 
+def test_coverage_follows_the_fallback_on_a_lane_of_its_own(tmp_path):
+    """The worker's outage of 2026-11-06 00:33-00:41Z as the station logged
+    it: while the worker was down the agent's machine decoded AIS, then
+    ADS-B, and its imported stop ("paused for hackrf-agent") came 9 ms after
+    the worker's own start. That read as 227 s paused; it was decoding."""
+    fb = f" ({live_log.FALLBACK_NOTE})"
+    w = _writer(tmp_path)
+    ev = [
+        (1000.0, "start", "adsb", "tuned"),
+        (1209.579, "stop", "adsb", "service stopping"),
+        (1210.022, "service-stop", None, None),
+        (1332.393, "start", "ais", "ais: tuned 162.0000 MHz" + fb),
+        (1400.078, "stop", "ais", "switching" + fb),
+        (1400.085, "start", "adsb", "adsb: tuned 1090.0000 MHz" + fb),
+        (1408.606, "service-start", None, "pid 7"),
+        (1408.901, "start", "adsb", "tuned"),
+        (1408.910, "stop", "adsb", "paused for hackrf-agent (a worker has the HackRF)" + fb),
+        (1635.950, "stop", "adsb", "service stopping"),
+        (1636.150, "service-stop", None, None),
+        (1639.111, "service-start", None, "pid 7"),
+        (1639.140, "start", "adsb", "tuned"),
+    ]
+    for ts, e, p, d in ev:
+        w.event(e, p, d, ts=ts)
+    conn = live_log.open_reader(w.path)
+    cov = live_log.coverage(conn, 1100.0, 1700.0)
+    assert [(c["state"], c["profile"], c["from"], c["to"], c.get("fallback", False)) for c in cov] == [
+        ("running", "adsb", 1100.0, 1209.579, False),
+        ("down", None, 1209.579, 1332.393, False),
+        ("running", "ais", 1332.393, 1400.078, True),
+        ("running", "adsb", 1400.085, 1408.901, True),
+        ("running", "adsb", 1408.901, 1635.950, False),
+        ("down", None, 1635.950, 1639.111, False),
+        ("idle", None, 1639.111, 1639.140, False),
+        ("running", "adsb", 1639.140, 1700.0, False),
+    ]
+    # A range starting while only the fallback decoded knows it from before.
+    assert live_log.coverage(conn, 1350.0, 1360.0) == [
+        {"state": "running", "profile": "ais", "from": 1350.0, "to": 1360.0, "fallback": True}
+    ]
+    # And one starting after the hand-back is the worker's, not paused.
+    assert live_log.coverage(conn, 1500.0, 1510.0) == [{"state": "running", "profile": "adsb", "from": 1500.0, "to": 1510.0}]
+    assert live_log.is_fallback("x" + fb) and live_log.is_fallback(live_log.FALLBACK_NOTE) and not live_log.is_fallback("tuned")
+
+
 def test_summarise_survives_fields_of_mixed_types(tmp_path):
     w = _writer(tmp_path)
     w.write([

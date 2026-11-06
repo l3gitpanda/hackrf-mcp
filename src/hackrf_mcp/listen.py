@@ -55,11 +55,19 @@ AUTO_MARGIN_DB = 8.0
 SQUELCH_RANGE_DB = (-20.0, 30.0)
 HYSTERESIS_DB = 2.0
 # Closed only after this long below the threshold, so a reply that follows
-# at once joins the same clip.
+# at once joins the same clip. The hang is silent: the channel stays open
+# (and a clip goes on) but nothing below the threshold is heard.
 HANG_S = 1.5
 # Audio kept from before the squelch opened, and after the signal ended.
-PRE_ROLL_S = 0.25
+PRE_ROLL_S = 0.1
 TAIL_S = 0.3
+# AM's audio is the envelope over the carrier's level; that level is never
+# taken below this many times the channel's noise amplitude, so noise alone
+# (the squelch held open) stays quiet instead of being raised to full scale.
+NOISE_REF = 3.0
+# A high-pass on AM and NFM audio, under the voice band: it takes out the
+# carrier's DC and what is left of a key-up's step.
+DC_BLOCK_HZ = 100.0
 # Shorter transmissions (a squelch blip) are not kept as clips.
 MIN_CLIP_S = 0.5
 METER_S = 0.25
@@ -384,12 +392,18 @@ class Demod:
         self.decimator = iq.Decimator(self.d, min(0.95, p.audio_cut_hz / (self.audio_rate_hz / 2))) if self.d > 1 else None
         self.prev: complex | None = None
         if mode == "am":
-            # The carrier's level, smoothed over about a quarter second: the
-            # audio is the envelope relative to it, so its level follows the
-            # modulation, not the signal strength.
-            a = 1 - math.exp(-1 / (0.25 * channel_rate_hz))
+            # The carrier's level, smoothed over 50 ms (well below the voice
+            # band): the audio is the envelope relative to it, so its level
+            # follows the modulation, not the signal strength. snap() sets it
+            # at once when a transmission starts.
+            a = 1 - math.exp(-1 / (0.05 * channel_rate_hz))
             self._carrier = ([a], [1, -(1 - a)])
             self._carrier_zi: np.ndarray | None = None
+        self._dc = None
+        if mode in ("am", "nfm"):
+            r = math.exp(-2 * math.pi * DC_BLOCK_HZ / channel_rate_hz)
+            self._dc = ([1.0, -1.0], [1.0, -r])
+            self._dc_zi = np.zeros(1)
         if p.deviation_hz:
             self.fm_scale = channel_rate_hz / (2 * math.pi * p.deviation_hz)
         if p.deemphasis_s:
@@ -397,7 +411,17 @@ class Demod:
             self._deemph = ([a], [1, -(1 - a)])
             self._deemph_zi = np.zeros(1)
 
-    def __call__(self, y: np.ndarray) -> np.ndarray:
+    def snap(self, y: np.ndarray) -> None:
+        """A transmission starts in this block: take the carrier's level
+        from it at once, rather than rising to it over 50 ms (a thump)."""
+        if self.mode == "am" and y.size:
+            # The block's end: a transmission that starts inside the block
+            # has its carrier there.
+            m = float(np.mean(np.abs(y[-max(1, y.size // 4) :])))
+            b, a = self._carrier
+            self._carrier_zi = scipy_signal.lfiltic(b, a, [m], [m])
+
+    def __call__(self, y: np.ndarray, floor_power: float = 0.0) -> np.ndarray:
         if y.size == 0:
             return np.zeros(0, np.float32)
         if self.mode == "am":
@@ -406,13 +430,17 @@ class Demod:
             if self._carrier_zi is None:
                 self._carrier_zi = scipy_signal.lfiltic(b, a, [env[0]], [env[0]])
             carrier, self._carrier_zi = scipy_signal.lfilter(b, a, env, zi=self._carrier_zi)
-            audio = env / np.maximum(carrier, 1e-6) - 1.0
+            ref = np.maximum(carrier, max(NOISE_REF * math.sqrt(max(floor_power, 0.0)), 1e-6))
+            audio = (env - carrier) / ref
         else:
             d, self.prev = iq.fm_discriminate(y, self.prev)
             audio = d.astype(np.float64) * self.fm_scale
             if self.p.deemphasis_s:
                 b, a = self._deemph
                 audio, self._deemph_zi = scipy_signal.lfilter(b, a, audio, zi=self._deemph_zi)
+        if self._dc is not None:
+            b, a = self._dc
+            audio, self._dc_zi = scipy_signal.lfilter(b, a, audio, zi=self._dc_zi)
         audio = np.clip(audio, -2.0, 2.0).astype(np.float32)
         if self.decimator is not None:
             audio = self.decimator(audio.astype(np.complex64)).real
@@ -432,16 +460,20 @@ class Squelch:
 
     def update(self, power_db: float, floor_db: float, dt: float) -> bool:
         self.threshold_db = floor_db + AUTO_MARGIN_DB + self.offset_db
+        # A signal stays "on" until it drops HYSTERESIS_DB under the
+        # threshold, so a weak one near it isn't chopped up.
+        if self.active:
+            self.active = power_db >= self.threshold_db - HYSTERESIS_DB
+        else:
+            self.active = power_db >= self.threshold_db
         if self.offset_db <= SQUELCH_RANGE_DB[0]:
-            self.open, self.active = True, power_db >= self.threshold_db
+            self.open = True
             return self.open
-        self.active = power_db >= self.threshold_db
         if self.active:
             self.open = True
             self.below_s = 0.0
         elif self.open:
-            if power_db < self.threshold_db - HYSTERESIS_DB:
-                self.below_s += dt
+            self.below_s += dt
             if self.below_s >= HANG_S:
                 self.open = False
                 self.below_s = 0.0
@@ -730,6 +762,7 @@ class AudioTap:
         )
         self.demods = [Demod(c.mode, r) for c, r in zip(channels, self.channelizer.rates_hz)]
         self.squelches = [Squelch(c.squelch_db) for c in channels]
+        self._snaps = [0] * len(channels)
         self.recorders: list[ClipRecorder | None] = []
         for i, (c, d) in enumerate(zip(channels, self.demods)):
             if on_clip is not None and c.clips:
@@ -830,8 +863,18 @@ class AudioTap:
                 level, floor = db(p), db(f)
                 self.levels_db[i], self.floors_db[i] = level, floor
                 sq = self.squelches[i]
+                was_active = sq.active
                 open_ = sq.update(level, floor, self.block_s)
-                audio = self.demods[i](y)
+                # The carrier's level, from the first two blocks of a
+                # transmission (the first may hold only its start).
+                if sq.active and not was_active:
+                    self._snaps[i] = 2
+                if self._snaps[i] and sq.active:
+                    self.demods[i].snap(y)
+                    self._snaps[i] -= 1
+                audio = self.demods[i](y, f)
+                if open_ and not sq.active and not self.channels[i].always_open:
+                    audio = np.zeros_like(audio)  # the hang: open, but quiet
                 r = self.recorders[i]
                 if r is not None:
                     r.feed(audio, t, open_, sq.active, level)

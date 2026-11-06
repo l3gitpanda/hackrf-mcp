@@ -450,9 +450,13 @@ The squelch opens `AUTO_MARGIN_DB` (8 dB) above the channel's noise floor,
 measured across the whole window (the median bin), so a channel that never
 goes quiet, like NOAA Weather Radio, still opens; each channel's
 `squelch_db` moves it, and at the bottom of its range the squelch stays
-open. It closes 1.5 s after the signal drops. AM channels in the airband
-(118-137 MHz) record each transmission as a clip (from a quarter second
-before the squelch opened to 0.3 s after the signal ended, at most
+open. It closes 1.5 s after the signal drops, and that hang is silent: it
+only keeps a reply in the same clip. AM audio is the envelope over the
+carrier's level, taken at once when a call starts and never below three
+times the noise, so a call starts at its own level and noise alone (the
+squelch held open) stays quiet. AM channels in the airband
+(118-137 MHz) record each transmission as a clip (from 0.1 s before the
+squelch opened to 0.3 s after the signal ended, at most
 `HACKRF_LIVE_CLIP_MAX_S`, shorter than half a second not kept) into
 `clips/` beside the log as a mu-law WAV, with one log row (profile
 `listen`, kind `clip`, the channel as subject, its length and peak level).

@@ -70,9 +70,14 @@ def fft_message(segment: dict, row: SpectrumRow) -> dict:
     }
 
 
+def dropped_line(n: int) -> bytes:
+    return (json.dumps({"type": "dropped", "n": n}) + "\n").encode()
+
+
 class _Client:
-    def __init__(self, conn: socket.socket, maxsize: int):
+    def __init__(self, conn: socket.socket, maxsize: int, dropped=dropped_line):
         self.conn = conn
+        self.dropped_message = dropped
         self.q: queue.Queue[bytes] = queue.Queue(maxsize=maxsize)
         self.dropped = 0
         self._lock = threading.Lock()
@@ -97,7 +102,7 @@ class _Client:
                 with self._lock:
                     n, self.dropped = self.dropped, 0
                 if n:
-                    self.conn.sendall((json.dumps({"type": "dropped", "n": n}) + "\n").encode())
+                    self.conn.sendall(self.dropped_message(n))
                 if line is not None:
                     self.conn.sendall(line)
         except OSError:
@@ -116,9 +121,13 @@ class FeedServer:
     threads, so it only encodes once and queues; each client has a thread
     that writes to it."""
 
-    def __init__(self, path: Path, maxsize: int = QUEUE_MESSAGES):
+    def __init__(self, path: Path, maxsize: int = QUEUE_MESSAGES, dropped=dropped_line, name: str = "feed"):
         self.path = Path(path)
         self.maxsize = maxsize
+        # What a client that fell behind is sent, given how many it missed
+        # (a binary server's own frame; listen.AudioServer).
+        self.dropped = dropped
+        self.name = name
         self.clients: list[_Client] = []
         self.lock = threading.Lock()
         self.published = 0
@@ -131,7 +140,7 @@ class FeedServer:
             except OSError:
                 self.path.unlink()
             else:
-                raise RuntimeError(f"another hackrf-live feed is already listening on {self.path}")
+                raise RuntimeError(f"another hackrf-live {self.name} is already listening on {self.path}")
             finally:
                 probe.close()
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -139,7 +148,7 @@ class FeedServer:
         os.chmod(self.path, 0o660)
         self.sock.listen(8)
         self.sock.settimeout(1.0)
-        self.thread = threading.Thread(target=self._accept, daemon=True, name="feed-accept")
+        self.thread = threading.Thread(target=self._accept, daemon=True, name=f"{name}-accept")
 
     def start(self) -> FeedServer:
         self.thread.start()
@@ -154,17 +163,23 @@ class FeedServer:
             except OSError:
                 break
             conn.settimeout(10.0)  # a client that stops reading is dropped
-            client = _Client(conn, self.maxsize)
+            client = _Client(conn, self.maxsize, self.dropped)
             with self.lock:
                 self.clients.append(client)
-            threading.Thread(target=client.run, daemon=True, name="feed-client").start()
+            threading.Thread(target=client.run, daemon=True, name=f"{self.name}-client").start()
 
-    def publish(self, message: dict) -> None:
+    def _live_clients(self) -> list[_Client]:
         with self.lock:
             self.clients = [c for c in self.clients if not c.closed.is_set()]
-            if not self.clients:
-                return
-            clients = list(self.clients)
+            return list(self.clients)
+
+    def has_clients(self) -> bool:
+        return bool(self._live_clients())
+
+    def publish(self, message: dict) -> None:
+        clients = self._live_clients()
+        if not clients:
+            return
         try:
             line = (json.dumps(message, separators=(",", ":"), default=str) + "\n").encode()
         except (TypeError, ValueError) as exc:
@@ -173,6 +188,15 @@ class FeedServer:
         self.published += 1
         for c in clients:
             c.offer(line)
+
+    def publish_bytes(self, data: bytes) -> None:
+        """Copy already-encoded bytes to every client as they are."""
+        clients = self._live_clients()
+        if not clients:
+            return
+        self.published += 1
+        for c in clients:
+            c.offer(data)
 
     def status(self) -> dict:
         with self.lock:

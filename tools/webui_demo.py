@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-from hackrf_mcp import cli, decoders, live_feed, live_profiles, occupancy, settings
+from hackrf_mcp import cli, decoders, listen, live_feed, live_profiles, occupancy, settings
 from hackrf_mcp.live_log import LiveLogWriter, Position, Row
 from hackrf_mcp.live_profiles import FileSource, Pipeline
 from hackrf_mcp.live_service import ControlServer, LiveService, LogPump, start_captures, start_occupancy
@@ -125,6 +125,16 @@ def synth(path: Path, tuning, seconds: float = 4.0) -> None:
     t = np.arange(n, dtype=np.float32) / rate
     for off in (-0.31 * rate, 0.27 * rate):
         x += (0.05 * np.exp(2j * np.pi * off * t)).astype(np.complex64)
+    if tuning.profile.name == "listen":
+        # Something to hear where a listen of one channel puts it (25 kHz
+        # below the centre): an AM call, on air 2 s of the 4 s loop, and a
+        # steady NFM tone 300 kHz above the centre, as the fake hackrf_transfer has.
+        import fake_hackrf_transfer as fake  # beside this file
+
+        tt = np.arange(n, dtype=np.float64) / rate
+        x += (0.03 * np.exp(1j * (2 * np.pi * fake.NFM_OFFSET_HZ * tt + 2.0 * np.sin(2 * np.pi * fake.NFM_TONE_HZ * tt)))).astype(np.complex64)
+        am = 0.05 * (1 + 0.8 * np.sin(2 * np.pi * fake.AM_TONE_HZ * tt)) * np.exp(2j * np.pi * fake.AM_OFFSET_HZ * tt)
+        x += (am * ((tt % 4.0 >= 1.0) & (tt % 4.0 < 3.0))).astype(np.complex64)
     for f in tuning.freqs_hz or (tuning.center_hz,):
         off = f - tuning.center_hz
         for _ in range(int(seconds * 3)):
@@ -478,6 +488,9 @@ def main() -> None:
         program_finder=found, spectrum=rec,
     )  # fmt: skip
     svc.attach_feed(live_feed.FeedServer(live.feed_socket_path).start())
+    # Listening: the audio socket, and clips into tmp/live/clips.
+    svc.audio_out = listen.AudioServer(live.audio_socket_path).start()
+    svc.clips = listen.ClipStore(live.clips_dir, live.clip_keep_days, live.clip_keep_mb, 0)
     # Remember each aircraft's last fix, for the reports demo_datalink makes.
     last_fix: dict = {}
     emit_position = svc._emit_position

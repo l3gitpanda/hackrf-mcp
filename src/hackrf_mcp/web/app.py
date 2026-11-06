@@ -38,6 +38,14 @@ and the static UI.
   POST /api/live/watch           lend the receiver to a watch of one range
                                  (waterfall only) for a while; retunes one
   POST /api/live/watch/stop      end a watch: back to the rotation
+  POST /api/listen/plan          whether listening to some channels retunes
+                                 the receiver, and what that stops
+  POST /api/listen               listen to up to four channels (inside the
+                                 band the receiver is on, or, with retune,
+                                 in a window it is lent to for a while)
+  POST /api/listen/stop          stop listening (and end its window)
+  GET  /api/clips/<id>           a recorded clip (mu-law WAV; ?download=1)
+  POST /api/clips/<id>/delete    delete a clip
   GET  /api/alerts               alert rules (with hits in the last 24 h), the
                                  fields each profile's rules may test (with
                                  the values of those that have a fixed set),
@@ -54,6 +62,8 @@ and the static UI.
   GET  /api/panels               a slot's panels run over a range
   WS   /ws/live                  rows, events, positions and FFT rows as
                                  they happen, and status every few seconds
+  WS   /ws/audio                 the listen's audio and levels, one binary
+                                 frame (listen.FRAME) a message
 
 Times are Unix seconds, ISO 8601, or "30m"/"2h"/"1d" ago. Every route but
 the sign-in page needs a token (Authorization: Bearer) or the session cookie
@@ -87,10 +97,11 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from hackrf_mcp import captures, decoders, live_client, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
+from hackrf_mcp import captures, decoders, listen, live_client, live_log, live_profiles, live_spectrum, occupancy, procstats, settings
 from hackrf_mcp.live_service import WATCH_DEFAULT_MIN, WATCH_MAX_MIN
 from hackrf_mcp.settings import LiveSettings, WebSettings
 from hackrf_mcp.web import aircraftdb, alerts, basemap, panels
+from hackrf_mcp.web.audiohub import AudioHub
 from hackrf_mcp.web.hub import FeedHub
 from hackrf_mcp.web.sessions import COOKIE, Sessions
 
@@ -226,6 +237,25 @@ def registry_json(live: LiveSettings) -> dict:
             "default_minutes": WATCH_DEFAULT_MIN,
             "max_minutes": WATCH_MAX_MIN,
         },
+        # Listening (the live service checks again); the named channels
+        # come with the status, read from the station's own file.
+        "listen": {
+            "enabled": live.listen,
+            "clips": live.listen and live.clips,
+            "modes": list(listen.MODES),
+            "max_channels": listen.MAX_CHANNELS,
+            "window_hz": listen.WINDOW_RATE_HZ,
+            "airband_hz": list(listen.AIRBAND_HZ),
+            "squelch_range_db": list(listen.SQUELCH_RANGE_DB),
+            "auto_margin_db": listen.AUTO_MARGIN_DB,
+            "default_minutes": WATCH_DEFAULT_MIN,
+            "max_minutes": WATCH_MAX_MIN,
+            "clip_max_s": live.clip_max_s,
+            "clip_keep_days": live.clip_keep_days,
+            "clip_keep_mb": live.clip_keep_mb,
+            "color": live_profiles.LISTEN.color,
+            "bandwidth_hz": {m: p.bandwidth_hz for m, p in listen.MODE.items()},
+        },
     }
 
 
@@ -355,6 +385,7 @@ def create_app(
     sessions = Sessions(session_key, web.session_days, digests)
     redact = make_redactor(live)
     hub = FeedHub(live.feed_socket_path, redact)
+    audio = AudioHub(live.audio_socket_path)
     store = alerts.AlertStore(web.state_path(live) / "alerts.db")
     webhook_url = web.alert_webhook_url()
     webhook = alerts.Webhook(webhook_url, web.alert_webhook_format, store, web.public_url) if webhook_url else None
@@ -466,6 +497,7 @@ def create_app(
             "service": cgroup_stats("hackrf-live.service", cgroup_root) or st.get("process"),
             "web": cgroup_stats("hackrf-web.service", cgroup_root) or own_stats(),
             "feed": hub.status(),
+            "audio": audio.status(),
             "alerts": engine.summary(),
             "aircraft_db": planes.status(),
             "now": time.time(),
@@ -947,6 +979,67 @@ def create_app(
             return error(404, "no picture for that capture")
         return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
+    # --- listening: the live service turns samples into audio
+    # (listen.py); the browser gets the audio, a clip's file, never the I/Q.
+
+    async def _listen_body(request: Request) -> dict:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("send a JSON object")
+        chans = body.get("channels")
+        if not isinstance(chans, list):
+            raise ValueError("channels is a list of {freq_hz, mode, squelch_db, label}")
+        req: dict = {
+            "channels": [
+                {k: c[k] for k in ("freq_hz", "mode", "squelch_db", "label") if c.get(k) is not None}
+                for c in chans[: listen.MAX_CHANNELS + 1]
+                if isinstance(c, dict)
+            ]
+        }
+        if body.get("minutes") is not None:
+            req["minutes"] = float(body["minutes"])
+        if body.get("retune"):
+            req["retune"] = True
+        for k in ("lna_gain_db", "vga_gain_db"):
+            if body.get(k) is not None:
+                req[k] = int(body[k])
+        return req
+
+    async def api_listen_plan(request: Request) -> Response:
+        try:
+            req = await _listen_body(request)
+        except (ValueError, KeyError, TypeError) as exc:
+            return error(400, f"bad request: {exc}")
+        return await _control({"cmd": "listen-plan", **req})
+
+    async def api_listen(request: Request) -> Response:
+        try:
+            req = await _listen_body(request)
+        except (ValueError, KeyError, TypeError) as exc:
+            return error(400, f"bad request: {exc}")
+        return await _control({"cmd": "listen", **req})
+
+    async def api_listen_stop(request: Request) -> Response:
+        return await _control({"cmd": "listen-stop"})
+
+    def api_clip(request: Request) -> Response:
+        cid = request.path_params["cid"]
+        if not listen.ID_RE.fullmatch(cid):
+            return error(400, "not a clip id")
+        path = live.clips_dir / f"{cid}.wav"
+        if not path.is_file():
+            return error(404, "that clip is no longer kept")
+        headers = {"Cache-Control": "private, max-age=86400"}
+        if request.query_params.get("download"):
+            headers["Content-Disposition"] = f'attachment; filename="clip-{cid}.wav"'
+        return FileResponse(path, media_type="audio/wav", headers=headers)
+
+    async def api_clip_delete(request: Request) -> Response:
+        cid = request.path_params["cid"]
+        if not listen.ID_RE.fullmatch(cid):
+            return error(400, "not a clip id")
+        return await _control({"cmd": "clip-delete", "id": cid})
+
     # --- alerts
 
     def api_alerts(request: Request) -> Response:
@@ -1164,6 +1257,41 @@ def create_app(
         finally:
             hub.unsubscribe(client)
 
+    # --- the audio websocket: binary frames (listen.FRAME), as they come
+
+    async def ws_audio(ws: WebSocket) -> None:
+        await ws.accept()
+        client = audio.subscribe()
+
+        async def pump() -> None:
+            while True:
+                data = await client.q.get()
+                if client.dropped:
+                    n, client.dropped = client.dropped, 0
+                    await ws.send_bytes(listen.frame(listen.DROPPED, 0, 0, 0, n, time.time(), 0.0, 0.0, 0.0))
+                await ws.send_bytes(data)
+
+        async def drain() -> None:
+            while True:
+                msg = await ws.receive()
+                if msg["type"] == "websocket.disconnect":
+                    return
+
+        async def half(tg: anyio.abc.TaskGroup, fn) -> None:
+            try:
+                await fn()
+            except (WebSocketDisconnect, RuntimeError, OSError, anyio.ClosedResourceError):
+                pass
+            finally:
+                tg.cancel_scope.cancel()
+
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(half, tg, pump)
+                tg.start_soon(half, tg, drain)
+        finally:
+            audio.unsubscribe(client)
+
     async def lifespan(app):
         if feed:
             hub.start()
@@ -1173,6 +1301,7 @@ def create_app(
         planes.stop()
         engine.stop()
         await hub.stop()
+        await audio.stop()
 
     routes = [
         *[Route(path, page) for path in PAGES],
@@ -1209,6 +1338,11 @@ def create_app(
         Route("/api/captures/{cid}/decode", api_capture_decode, methods=["POST"]),
         Route("/api/captures/{cid}/delete", api_capture_delete, methods=["POST"]),
         Route("/api/captures/{cid}/picture", api_capture_picture),
+        Route("/api/listen/plan", api_listen_plan, methods=["POST"]),
+        Route("/api/listen", api_listen, methods=["POST"]),
+        Route("/api/listen/stop", api_listen_stop, methods=["POST"]),
+        Route("/api/clips/{cid}", api_clip),
+        Route("/api/clips/{cid}/delete", api_clip_delete, methods=["POST"]),
         Route("/api/alerts", api_alerts),
         Route("/api/alerts/rules", api_rule_create, methods=["POST"]),
         Route("/api/alerts/rules/{rule_id:int}", api_rule, methods=["PUT", "DELETE"]),
@@ -1219,11 +1353,13 @@ def create_app(
         Route("/api/plugins", api_plugins),
         Route("/api/panels", api_panels),
         WebSocketRoute("/ws/live", ws_live),
+        WebSocketRoute("/ws/audio", ws_audio),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=asynccontextmanager(lifespan))
     gate = Gate(app, digests, sessions, web.extra_origins)
     gate.hub = hub  # for the tests
+    gate.audio = audio
     gate.alerts = engine
     gate.aircraft = planes
     return gate

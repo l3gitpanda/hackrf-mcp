@@ -423,6 +423,60 @@ the MCP server's own settings as well (`HACKRF_MCP_MAX_RX_SECONDS`,
 | `HACKRF_LIVE_CAPTURE_KEEP_DAYS` | `7` | captures older than this are deleted |
 | `HACKRF_LIVE_CAPTURE_KEEP_MB` | `4096` | the oldest captures beyond this are deleted |
 
+**Listening from the web UI.** The live service also turns samples into
+audio for the web UI ([`listen.py`](src/hackrf_mcp/listen.py)): up to four
+channels at once, AM, NFM or broadcast FM, cut out of the same blocks the
+decoder and the spectrum history get (a second tap on the source, never a
+second open of the device), demodulated, squelched and sent to the page as
+8-bit mu-law, about 8 KB/s a channel (16 KB/s for broadcast FM). The
+browser gets audio and levels only, never I/Q samples. hackrf-web asks over
+the control socket (`listen-plan`, `listen`, `listen-stop`, `clip-delete`)
+and relays the audio socket (`audio.sock` beside the control socket: each
+frame a little-endian u32 length, then `listen.FRAME` and the samples) to
+its `/ws/audio` websocket, each browser with a bounded queue of its own.
+
+Channels inside the band the receiver is already on (a running profile's,
+or a watch's) cost no air time; the listen then ends when that band moves
+elsewhere. Anywhere else a listen lends the receiver to a 2 MHz window
+around the channels, the way a watch does, for 15 minutes unless asked
+otherwise (at most 60), and only when the request says `retune` (the UI
+asks first, saying what stops); it hands the receiver back when it is
+stopped or its time is up. While a listen runs, occupancy sweeps are
+skipped and a capture may borrow the receiver (the audio goes quiet, the
+listen's time keeps running). Each listen logs `listen` and `listen-end`;
+its window shows in coverage as the profile `listen`.
+
+The squelch opens `AUTO_MARGIN_DB` (8 dB) above the channel's noise floor,
+measured across the whole window (the median bin), so a channel that never
+goes quiet, like NOAA Weather Radio, still opens; each channel's
+`squelch_db` moves it, and at the bottom of its range the squelch stays
+open. It closes 1.5 s after the signal drops. AM channels in the airband
+(118-137 MHz) record each transmission as a clip (from a quarter second
+before the squelch opened to 0.3 s after the signal ended, at most
+`HACKRF_LIVE_CLIP_MAX_S`, shorter than half a second not kept) into
+`clips/` beside the log as a mu-law WAV, with one log row (profile
+`listen`, kind `clip`, the channel as subject, its length and peak level).
+The web UI plays, downloads and deletes them; clips that have aged out
+leave their row.
+
+Named channels for the UI's list: NOAA's seven are built in, and the
+station's own come from `HACKRF_LIVE_LISTEN_PRESETS` (`FREQ_MHZ [MODE]
+[LABEL]` entries separated by `;`) and a file (`listen-presets.txt` beside
+the log, or `HACKRF_LIVE_LISTEN_PRESETS_FILE`; one entry a line, `#`
+comments), read again whenever status is asked for. Channels that say where
+the station is (a local tower's or approach's) belong there, on the station,
+and nowhere else.
+
+| Variable | Default | |
+|---|---|---|
+| `HACKRF_LIVE_LISTEN` | `true` | let the web UI listen (a listen elsewhere stops decoding for its length) |
+| `HACKRF_LIVE_CLIPS` | `true` | record airband clips while listening |
+| `HACKRF_LIVE_CLIP_MAX_S` | `60` | the longest clip (1-300); a longer transmission carries on in the next |
+| `HACKRF_LIVE_CLIP_KEEP_DAYS` | `7` | clips older than this are deleted |
+| `HACKRF_LIVE_CLIP_KEEP_MB` | `1024` | the oldest clips beyond this are deleted |
+| `HACKRF_LIVE_LISTEN_PRESETS` | | named channels, `;`-separated |
+| `HACKRF_LIVE_LISTEN_PRESETS_FILE` | `listen-presets.txt` beside the log | named channels, one a line |
+
 The unit limits the service to `MemoryMax=512M` and 1.5 cores
 (`CPUQuota=150%`), and gives way under contention (`CPUWeight=50`,
 `Nice=10`). The profile last started is saved and resumed after a restart

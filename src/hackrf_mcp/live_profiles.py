@@ -264,7 +264,7 @@ def choose_center(freqs: tuple[int, ...], sample_rate_hz: int, margin_hz: int = 
 
 def resolve(spec: Spec, settings: LiveSettings, program_finder: Callable[[Profile], str | None] = find_program) -> Tuning:
     load()
-    profile = WATCH if spec.profile == WATCH.name else PROFILES.get(spec.profile)
+    profile = SPECIAL.get(spec.profile) or PROFILES.get(spec.profile)
     if profile is None:
         raise SpecError(f"unknown profile {spec.profile!r}; choose one of {', '.join(PROFILES)}")
     program = program_finder(profile)
@@ -425,6 +425,14 @@ class Source:
         self.tap: Callable[[bytes], None] | None = None
         self.tap_errors = 0
         self.tap_error: str | None = None
+        # More consumers of the same blocks, by name (the live service's
+        # listening, listen.AudioTap), added and removed while the source
+        # runs. Like the tap, they must return quickly and their errors are
+        # counted, never raised: one of them failing never stops decoding
+        # or the others. Never a second open of the device.
+        self.taps: dict[str, Callable[[bytes], None]] = {}
+        self.taps_errors: collections.Counter = collections.Counter()
+        self.taps_error: dict[str, str] = {}
 
     def _deliver(self, consumer: Callable[[bytes], None], buf: bytes) -> None:
         if self.tap is not None:
@@ -433,6 +441,13 @@ class Source:
             except Exception as exc:
                 self.tap_errors += 1
                 self.tap_error = repr(exc)
+        if self.taps:
+            for name, fn in tuple(self.taps.items()):
+                try:
+                    fn(buf)
+                except Exception as exc:
+                    self.taps_errors[name] += 1
+                    self.taps_error[name] = repr(exc)
         consumer(buf)
 
     def start(self, consumer: Callable[[bytes], None]) -> None:
@@ -466,6 +481,9 @@ class Source:
         if self.tap_errors:
             h["spectrum_tap_errors"] = self.tap_errors
             h["spectrum_tap_error"] = self.tap_error
+        for name, n in tuple(self.taps_errors.items()):
+            h[f"{name}_tap_errors"] = n
+            h[f"{name}_tap_error"] = self.taps_error.get(name)
         return h
 
 
@@ -1001,3 +1019,19 @@ WATCH = Profile(
     color="#9aa7b7",
 )
 
+# Listening (listen.py): like a watch, the receiver lent to one range for a
+# limited time, started by the live service's listen command; its samples
+# feed the waterfall and the audio channels, and nothing is decoded. The
+# narrowest watch is wide enough for any channel and costs the least CPU.
+LISTEN = Profile(
+    name="listen",
+    summary="Listening: audio from channels in one range, nothing decoded",
+    programs=(),
+    pipeline=WatchPipeline,
+    sample_rate_hz=WATCH_RATES_HZ[0],
+    spectrum_only=True,
+    color="#d2a64a",
+)
+
+# The profiles a client can't start by name: the live service's own.
+SPECIAL = {WATCH.name: WATCH, LISTEN.name: LISTEN}

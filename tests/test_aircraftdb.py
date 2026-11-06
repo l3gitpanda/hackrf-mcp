@@ -272,3 +272,19 @@ def test_registrations_to_addresses(built, tmp_path):
     A.build(other.path, tmp_path / "faa.zip", tmp_path / "pa2.csv", now=1000.0)
     assert other.by_registration(["N12345", "G-GOVT", "GGOVT"]) == {"N12345": "A0B1C2"}
     assert A.AircraftDB(tmp_path / "none.db").by_registration(["N12345"]) == {}
+
+
+def test_airline_flight_numbers_from_acars_and_vdl2_are_commercial():
+    """ACARS and VDL2 give IATA flight numbers (WN1733), not ICAO callsigns
+    (SWA1733): an airliner registered to a corporation was read as private.
+    A registration that has the same shape (N1234) is not a flight."""
+    corp = {"faa": 1, "registrant_type": "3", "registration": "N8710M"}
+    for cs, code in (("WN1733", "WN"), ("AA2308", "AA"), ("B61234", "B6"), ("9E5123", "9E"), ("UA0123", "UA"), ("DL12A", "DL")):
+        cls, why = A.classify("A1B2C3", cs, corp)
+        assert (cls, why) == ("commercial", f"airline flight number ({code})"), cs
+    assert A.classify("A1B2C3", "SWA1733", corp)[0] == "commercial"
+    for cs in ("N1234", "N12345", "N123AB", "N8710M", ".N8710M", "N1A", "WN", "W1", "123456", "WN12345"):
+        assert A.classify("A1B2C3", cs, corp)[0] == "private", cs
+    # A foreign registration with the same shape, known from the database.
+    assert A.classify("71BE01", "HL7712", {"pa_class": "Civ", "registration": "HL7712"})[0] == "private"
+    assert A.classify("71BE01", "HL7712", None)[0] == "commercial"

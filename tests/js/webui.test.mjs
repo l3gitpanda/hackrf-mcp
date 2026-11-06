@@ -2,7 +2,7 @@
 // `node --test` when node is installed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
+import { PALETTE, assignColors, decodeRow, fmtUtc, mhz, mhzShort, parseFreqs, parseUtc, quantile, rotation, stepName, utc } from '../../src/hackrf_mcp/web/static/js/util.js';
 import { AutoLevel, binAt, freqAt, freqText, makeLut, resample, ticks } from '../../src/hackrf_mcp/web/static/js/waterfall.js';
 import { bandsAt, layoutBands, officialAt, rangeText, serviceText } from '../../src/hackrf_mcp/web/static/js/bandstrip.js';
 import { bandList, bandsInView, clampCenter, leftText, parseMhz, scrolled, watchTuning } from '../../src/hackrf_mcp/web/static/js/watchutil.js';
@@ -883,4 +883,12 @@ test('meters, the squelch slider and clip rows', () => {
   assert.equal(withListen(reg)[1].color, '#d2a64a');
   assert.deepEqual(withListen({ ...reg, listen: { enabled: false } }).map((p) => p.name), ['p']);
   assert.deepEqual(withListen({ profiles: [{ name: 'p' }] }).map((p) => p.name), ['p']);
+});
+
+test('rotation steps of one profile on different bands read apart', () => {
+  assert.equal(stepName({ profile: 'p' }), 'p');
+  assert.equal(stepName({ profile: 'p', freqs_hz: [] }), 'p');
+  assert.equal(stepName({ profile: 'p', freqs_hz: [433920000] }), 'p 433.92');
+  assert.equal(stepName({ profile: 'p', freqs_hz: [315000000] }), 'p 315');
+  assert.equal(stepName({ profile: 'p', freqs_hz: [931750000, 929612500] }), 'p 931.75…');
 });

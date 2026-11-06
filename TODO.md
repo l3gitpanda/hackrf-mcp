@@ -268,10 +268,10 @@ against `homelab`, deployed only with the owner's approval:
   capture directory's Meshtastic captures hold no LoRa at all, so the
   Meshtastic layer (header, AES-CTR, protobuf) is proven on synthetic
   packets only; the owner will key a node during a capture.
-- **ISM sensors as a live profile:** rtl_433 continuously on 433.92 or
-  915 MHz. It hears the neighbours' weather stations, tyre sensors and
-  meters, so what it logs and shows by default is the owner's decision
-  before anything is built.
+- **ISM sensors as a live profile:** built (see the README): the `ism`
+  profile, and `ism` for captures too. The owner's choices (2026-11-06):
+  everything rtl_433 decodes is logged and shown, on 315, 433.92 and
+  915 MHz, in a rotation of ADS-B 45 minutes and each ISM band 5.
 - **Listening in the browser:** live audio demodulated on the worker
   (airband AM 118-137 MHz, NOAA Weather Radio, FM) streamed to the page,
   and voice clips recorded with squelch into the Log. Audio only: the

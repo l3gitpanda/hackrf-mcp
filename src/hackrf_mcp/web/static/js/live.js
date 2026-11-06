@@ -8,7 +8,7 @@ import { bandList, bandsInView, leftText, parseMhz, scrolled, watchTuning } from
 import { loadPlan } from './bandstrip.js';
 import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './appbar.js';
 import { Waterfall } from './waterfall.js';
-import { ago, assignColors, clear, fmtUtc, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
+import { ago, assignColors, clear, fmtUtc, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, stepName, utc } from './util.js';
 import { captureBody, captureQuery, pickRange, rangeLabel, rateText, sizeText, stateText, stateTone, ticked } from './captureutil.js';
 import { FLAG_OPEN, FLAG_RECORDING, LISTEN, METER, AUDIO, channelBody, channelName, defaultMode, isClip, meterPct, planText, sameChannels, snapHz, squelchText, withChannel, withoutChannel } from './listenutil.js';
 import { AudioSocket, Player, clipActions } from './listenplayer.js';
@@ -124,9 +124,17 @@ function buildControls() {
 function updatePick() {
   const p = S.profiles[$('pick').value];
   const freqs = $('pick-freqs');
-  freqs.hidden = !(p && (p.needs_freqs || (!p.fixed_freqs && p.default_freqs_hz.length === 0)));
-  freqs.placeholder = p && p.needs_freqs ? 'channels, MHz (required)' : 'channels, MHz';
+  freqs.hidden = !(p && (p.needs_freqs || p.offer_freqs || (!p.fixed_freqs && p.default_freqs_hz.length === 0)));
+  freqs.placeholder = freqsHint(p);
   updateStartLabel();
+}
+
+// The channels box's hint: required, optional, or the default it falls back to.
+function freqsHint(p) {
+  if (!p) return 'channels, MHz';
+  if (p.needs_freqs) return 'channels, MHz (required)';
+  if (p.offer_freqs && p.default_freqs_hz.length) return `MHz (default ${p.default_freqs_hz.map(mhzShort).join(', ')})`;
+  return 'channels, MHz';
 }
 
 function updateStartLabel() {
@@ -361,21 +369,21 @@ function renderRotation() {
     return;
   }
   if (d.profile) {
-    $('rot-text').textContent = `Single profile: ${d.profile.profile}, no rotation${watching() ? '; on hold while watching' : ''}.`;
-    const seg = h('span', { class: 'rs cur', '--pc': profileColor(d.profile.profile) }, d.profile.profile);
+    $('rot-text').textContent = `Single profile: ${stepName(d.profile)}, no rotation${watching() ? '; on hold while watching' : ''}.`;
+    const seg = h('span', { class: 'rs cur', '--pc': profileColor(d.profile.profile) }, stepName(d.profile));
     seg.style.width = '100%';
     rot.append(seg);
     return;
   }
   const r = rotation(d.schedule, d.anchor, now());
   if (!r) return;
-  const parts = d.schedule.map((e) => `${e.profile} ${e.minutes} min`);
+  const parts = d.schedule.map((e) => `${stepName(e)} ${e.minutes} min`);
   // While a watch has the receiver the rotation keeps time but runs nothing.
   const when = watching() ? 'on hold while watching' : `next switch ${utc(r.current.to, false)} (in ${inSeconds(r.current.to, now())})`;
   $('rot-text').textContent = `${parts.join(' → ')}, repeating · ${when}`;
   for (const s of r.steps) {
     const cls = s.index === r.current.index ? 'rs cur' : s.to <= now() ? 'rs past' : 'rs';
-    const seg = h('span', { class: cls, '--pc': profileColor(s.profile), title: `${s.profile}: ${utc(s.from, false)}–${utc(s.to, false)}` }, `${s.profile} ${s.minutes}m`);
+    const seg = h('span', { class: cls, '--pc': profileColor(s.profile), title: `${stepName(s)}: ${utc(s.from, false)}–${utc(s.to, false)}` }, `${stepName(s)} ${s.minutes}m`);
     seg.style.width = `${s.share * 100}%`;
     rot.append(seg);
     const t = h('span', {}, utc(s.from, false));
@@ -662,8 +670,8 @@ function renderDraft() {
         h('button', { type: 'button', class: 'btn sm icon ghost', 'aria-label': 'Remove step', disabled: S.draft.length === 1, onClick: () => { S.draft.splice(i, 1); renderDraft(); } }, '×'),
       ),
     );
-    if (p && (p.needs_freqs || (!p.fixed_freqs && !p.default_freqs_hz.length))) {
-      const fr = h('input', { class: 'inp mono freqs', value: s.freqs, placeholder: p.needs_freqs ? 'channels, MHz (required)' : 'channels, MHz', 'aria-label': `Step ${i + 1} channels` });
+    if (p && (p.needs_freqs || p.offer_freqs || (!p.fixed_freqs && !p.default_freqs_hz.length))) {
+      const fr = h('input', { class: 'inp mono freqs', value: s.freqs, placeholder: freqsHint(p), 'aria-label': `Step ${i + 1} channels` });
       fr.addEventListener('change', () => { s.freqs = fr.value; });
       row.append(h('span'), fr);
     }

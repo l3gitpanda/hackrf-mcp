@@ -97,6 +97,15 @@ export function quantile(values, q) {
   return a[Math.min(a.length - 1, Math.max(0, Math.floor(q * (a.length - 1))))];
 }
 
+// A rotation step's (or a started profile's) name: the profile, and its
+// first channel when it was given one (three steps of one profile on
+// different bands must read apart).
+export function stepName(e) {
+  const freqs = (e && e.freqs_hz) || [];
+  if (!freqs.length) return e.profile;
+  return `${e.profile} ${mhzShort(freqs[0])}${freqs.length > 1 ? '…' : ''}`;
+}
+
 // Rotation geometry: where `now` is in the cycle, and each step's span.
 export function rotation(schedule, anchor, now) {
   const total = schedule.reduce((s, e) => s + e.minutes * 60, 0);

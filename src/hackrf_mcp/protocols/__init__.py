@@ -21,7 +21,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 
-BUILTIN = ("adsb", "uat", "ais", "acars", "vdl2", "multimon", "rds", "meshtastic")
+BUILTIN = ("adsb", "uat", "ais", "acars", "vdl2", "multimon", "rds", "meshtastic", "ism")
 
 
 def _load() -> None:

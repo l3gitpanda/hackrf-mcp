@@ -82,6 +82,9 @@ class Profile:
     center_hz: int | None = None  # fixed tuning; None = chosen from the channels
     default_freqs_hz: tuple[int, ...] = ()
     needs_freqs: bool = False  # the caller must give the channels
+    # The web UI offers a channels box although there are defaults (ism:
+    # one band a run, 433.92 MHz unless another is given).
+    offer_freqs: bool = False
     fixed_freqs: bool = False  # the caller may not change the channels
     # LNA 32 / VGA 40 decoded every profile tried on the QNAP's antenna
     # (24/30 left FLEX on 931.75 MHz too weak to decode). HACKRF_LIVE_*_GAIN

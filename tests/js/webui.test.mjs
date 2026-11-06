@@ -11,6 +11,10 @@ import { channelLevels, dayBounds, dayOf, gapsIn, pathOf, stepAt, stepsOf, timeT
 import { compass, destination, fmtKm, levelChart, outline } from '../../src/hackrf_mcp/web/static/js/rangeutil.js';
 import { RANGES, bytesOf, cellAt, cellLevel, freqTicks, groupUnusual, levels, logHref, paint, rowMap, scheduleText, spanOf, watchHref, zoomRange } from '../../src/hackrf_mcp/web/static/js/occutil.js';
 import { captureBody, captureHref, captureQuery, pickRange, rangeLabel, rangePct, rateText, sizeText, stateText, stateTone, ticked } from '../../src/hackrf_mcp/web/static/js/captureutil.js';
+import {
+  AUDIO, DROPPED, FLAG_OPEN, HEADER_BYTES, LISTEN, METER, Resampler, ULAW, channelBody, channelName, defaultMode, isClip, meterPct, nextStart, parseFrame, parseWav,
+  planText, sameChannels, snapHz, squelchText, ulawDecode, withChannel, withListen, withoutChannel,
+} from '../../src/hackrf_mcp/web/static/js/listenutil.js';
 
 test('profiles get their own colour, else the next free palette colour, in registry order', () => {
   const c = assignColors([{ name: 'adsb' }, { name: 'ais', color: PALETTE[0] }, { name: 'acars' }]);
@@ -739,4 +743,144 @@ test('an aircraft is named by registration, make and model, and owner', () => {
   assert.equal(m.short, 'C-17A · USAF');
   assert.match(m.full, /listed as Military · Transport/);
   assert.equal(aircraftName(null), null);
+});
+
+
+// --- listening ---------------------------------------------------------------------
+
+function frameBytes(type, channel, flags, rate, seq, ts, level, thr, floor, payload = []) {
+  const buf = new ArrayBuffer(HEADER_BYTES + payload.length);
+  const v = new DataView(buf);
+  [0x48, 0x4b, 0x41, 0x31].forEach((b, i) => v.setUint8(i, b));
+  v.setUint8(4, type);
+  v.setUint8(5, channel);
+  v.setUint16(6, flags, true);
+  v.setUint32(8, rate, true);
+  v.setUint32(12, seq, true);
+  v.setFloat64(16, ts, true);
+  v.setFloat32(24, level, true);
+  v.setFloat32(28, thr, true);
+  v.setFloat32(32, floor, true);
+  new Uint8Array(buf, HEADER_BYTES).set(payload);
+  return buf;
+}
+
+test('audio frames are read as listen.FRAME packs them', () => {
+  const f = parseFrame(frameBytes(AUDIO, 2, FLAG_OPEN, 8000, 7, 1.5, -30, -40, -48, [0xff, 0x80]));
+  assert.deepEqual([f.type, f.channel, f.flags, f.rate, f.seq, f.ts], [AUDIO, 2, FLAG_OPEN, 8000, 7, 1.5]);
+  assert.equal(f.level_db, -30);
+  assert.equal(f.threshold_db, -40);
+  assert.deepEqual([...f.payload], [0xff, 0x80]);
+  assert.equal(parseFrame(frameBytes(METER, 0, 0, 8000, 1, 0, 0, 0, 0)).payload.length, 0);
+  const bad = frameBytes(DROPPED, 0, 0, 0, 3, 0, 0, 0, 0);
+  new DataView(bad).setUint8(0, 0);
+  assert.equal(parseFrame(bad), null);
+  assert.equal(parseFrame(new ArrayBuffer(10)), null);
+});
+
+test('mu-law decodes as G.711 (the same table as listen.py)', () => {
+  assert.equal(ULAW[0xff], 0);
+  assert.ok(Math.abs(ULAW[0x80] - 32124 / 32768) < 1e-7);
+  assert.ok(Math.abs(ULAW[0x00] + 32124 / 32768) < 1e-7);
+  assert.deepEqual([...ulawDecode(new Uint8Array([0xff, 0x7f]))], [0, -0]);
+});
+
+function wav(format, bits, rate, data) {
+  const fmt = 16;
+  const buf = new ArrayBuffer(12 + 8 + fmt + 8 + data.length + (data.length % 2));
+  const v = new DataView(buf);
+  const put = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  put(0, 'RIFF');
+  v.setUint32(4, buf.byteLength - 8, true);
+  put(8, 'WAVE');
+  put(12, 'fmt ');
+  v.setUint32(16, fmt, true);
+  v.setUint16(20, format, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * (bits / 8), true);
+  v.setUint16(32, bits / 8, true);
+  v.setUint16(34, bits, true);
+  put(36, 'data');
+  v.setUint32(40, data.length, true);
+  new Uint8Array(buf, 44).set(data);
+  return buf;
+}
+
+test('a clip file is read whatever its encoding', () => {
+  const u = parseWav(wav(7, 8, 8000, [0xff, 0x80, 0x00]));
+  assert.equal(u.rate, 8000);
+  assert.equal(u.samples.length, 3);
+  assert.equal(u.samples[0], 0);
+  const p = parseWav(wav(1, 16, 16000, [0x00, 0x40, 0x00, 0xc0]));
+  assert.deepEqual([p.rate, ...p.samples], [16000, 0.5, -0.5]);
+  assert.equal(parseWav(wav(3, 32, 8000, [0, 0, 0, 0])), null);
+  assert.equal(parseWav(new ArrayBuffer(4)), null);
+});
+
+test('resampling joins pieces without a seam', () => {
+  const x = Float32Array.from({ length: 80 }, (_, i) => Math.sin((2 * Math.PI * i) / 16));
+  const whole = new Resampler(8000, 48000).push(x);
+  const r = new Resampler(8000, 48000);
+  const parts = [...r.push(x.subarray(0, 33)), ...r.push(x.subarray(33, 50)), ...r.push(x.subarray(50))];
+  assert.equal(parts.length, whole.length);
+  assert.ok(parts.every((v, i) => Math.abs(v - whole[i]) < 1e-6));
+  assert.ok(Math.abs(whole.length - 80 * 6) <= 1);
+  assert.ok(Math.abs(new Resampler(8000, 44100).push(new Float32Array(8000)).length - 44100) <= 1);
+});
+
+test('pieces play back to back, restart after running dry, and drop when far ahead', () => {
+  assert.deepEqual(nextStart(null, 10), { at: 10.25, reset: false });
+  assert.deepEqual(nextStart(10.5, 10), { at: 10.5, reset: false });
+  assert.deepEqual(nextStart(9.9, 10), { at: 10.25, reset: true });
+  assert.deepEqual(nextStart(12, 10), { at: null, reset: false });
+});
+
+test('channels: modes by band, the raster a tap snaps to, names and the list', () => {
+  assert.equal(defaultMode(121_500_000), 'am');
+  assert.equal(defaultMode(98_100_000), 'wfm');
+  assert.equal(defaultMode(162_550_000), 'nfm');
+  assert.equal(snapHz(121_511_000), 121_500_000);
+  assert.equal(snapHz(98_140_000), 98_100_000);
+  assert.equal(snapHz(162_540_000), 162_550_000);
+  assert.equal(snapHz(146_521_300), 146_520_000);
+  assert.equal(channelName({ freq_hz: 121_500_000 }), '121.500');
+  assert.equal(channelName({ freq_hz: 123_458_333, label: 'Chat' }), 'Chat · 123.4583');
+  const a = { freq_hz: 1e8, mode: 'wfm' };
+  const b = { freq_hz: 1.2e8, mode: 'am' };
+  assert.deepEqual(withChannel([a], b), [a, b]);
+  assert.deepEqual(withChannel([a, b], { ...a, squelch_db: 5 }), [b, { ...a, squelch_db: 5 }]);
+  assert.deepEqual(withChannel([a, b], b, 4, true), [b]);
+  assert.deepEqual(withChannel([a, b, { freq_hz: 3e8 }, { freq_hz: 4e8 }], { freq_hz: 5e8 }, 4).map((c) => c.freq_hz), [1.2e8, 3e8, 4e8, 5e8]);
+  assert.deepEqual(withoutChannel([a, b], 1e8), [b]);
+  assert.ok(sameChannels([a, b], [{ ...a, squelch_db: 3 }, b]));
+  assert.ok(!sameChannels([a, b], [b, a]));
+  assert.deepEqual(channelBody({ freq_hz: 1.215e8 + 0.4, mode: 'am', squelch_db: 0, label: null }), { freq_hz: 121_500_000, mode: 'am' });
+  assert.deepEqual(channelBody({ freq_hz: 1, mode: 'nfm', squelch_db: -3, label: 'x' }), { freq_hz: 1, mode: 'nfm', squelch_db: -3, label: 'x' });
+});
+
+test('the words before a retune say what stops, and for how long', () => {
+  const plan = { retune: true, running: 'decoder', sample_rate_hz: 2e6, center_hz: 121_525_000 };
+  assert.equal(planText(plan, 15), 'This retunes the receiver to a 2 MHz window at 121.5250 MHz: decoder stops for 15 min, then comes back by itself.');
+  assert.match(planText({ ...plan, running: LISTEN }, 15), /^Outside this listen's window: it moves to a 2 MHz window/);
+  assert.match(planText({ ...plan, running: null }, 5), /nothing is running now for 5 min/);
+  assert.match(planText({ retune: false, riding: 'watch' }, 5), /no retune, nothing stops/);
+});
+
+test('meters, the squelch slider and clip rows', () => {
+  assert.equal(meterPct(-100), 0);
+  assert.equal(meterPct(-55), 50);
+  assert.equal(meterPct(0), 100);
+  assert.equal(meterPct(null), 0);
+  assert.equal(squelchText(-20, [-20, 30]), 'open');
+  assert.equal(squelchText(6, [-20, 30]), '+6 dB');
+  assert.equal(squelchText(-4, [-20, 30]), '-4 dB');
+  assert.ok(isClip({ profile: LISTEN, kind: 'clip', fields: { clip: 'x' } }));
+  assert.ok(!isClip({ profile: LISTEN, kind: 'clip', fields: {} }));
+  assert.ok(!isClip({ profile: 'other', kind: 'clip', fields: { clip: 'x' } }));
+  const reg = { profiles: [{ name: 'p' }], listen: { enabled: true, color: '#d2a64a' } };
+  assert.deepEqual(withListen(reg).map((p) => p.name), ['p', LISTEN]);
+  assert.equal(withListen(reg)[1].color, '#d2a64a');
+  assert.deepEqual(withListen({ ...reg, listen: { enabled: false } }).map((p) => p.name), ['p']);
+  assert.deepEqual(withListen({ profiles: [{ name: 'p' }] }).map((p) => p.name), ['p']);
 });

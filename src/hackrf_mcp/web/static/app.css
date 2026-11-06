@@ -219,6 +219,25 @@ body{margin:0;background:#0a0e13}
 .ctl-watch .wfreq{width:7.5em}
 .ctl-watch .sm{font-size:12px}
 .ctl-watch #watch-range{font-weight:600}
+.ctl-listen{padding:8px 14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
+.ctl-listen .wfreq{width:7.5em}
+.ctl-listen .sm{font-size:12px}
+.ctl-listen select.inp{width:auto;max-width:16em}
+.ctl-listen .vol{width:6em}
+.lconfirm{padding:6px 8px;border-radius:4px;background:color-mix(in oklab,var(--warn) 12%,transparent);color:var(--text)}
+.lchans{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.lch{display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;padding:4px 8px;border-left:3px solid var(--pc);background:color-mix(in oklab,var(--pc) 6%,transparent);border-radius:3px}
+.lch .lname{font-family:var(--mono);font-weight:600;min-width:9em}
+.lch .lmode{font-family:var(--mono);color:var(--muted);width:3em}
+.lch .lmeter{position:relative;width:140px;height:8px;border-radius:2px;background:var(--raised);overflow:hidden;flex:none}
+.lch .lbar{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--muted);transition:width .2s linear}
+.lch.open .lbar{background:var(--ok)}
+.lch .lthr{position:absolute;top:-1px;bottom:-1px;width:2px;margin-left:-1px;background:var(--text)}
+.lch .lsq{width:9em}
+.lch .lsqt{font-family:var(--mono);font-size:11.5px;color:var(--text2);width:4.5em}
+.lch .x{padding:0 6px}
+.listening .plot{cursor:copy}
+.clipacts .t2{max-width:22em}
 /* The band list under "Watch a range": scroll through, click to watch. */
 .bandlist{margin-top:8px}
 .bandlist #bl-q{width:16em}

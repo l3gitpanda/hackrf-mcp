@@ -210,6 +210,33 @@ def test_the_squelch_records_one_clip_per_transmission():
     assert all(m["threshold_db"] == pytest.approx(m["floor_db"] + listen.AUTO_MARGIN_DB, abs=0.01) for m in meters)
 
 
+def test_a_call_starts_at_its_own_level_and_the_hang_is_silent():
+    """AM normalised to its carrier: no thump while the carrier's level is
+    still being found, no noise raised to full scale in the hang, and noise
+    alone (the squelch held open) well under speech."""
+    center = 121_525_000
+    sent = []
+    clock = Clock(0.0)
+    tap = listen.AudioTap(center, RATE, (Channel(121_500_000, "am"),), send=sent.append, clock=clock, threaded=False)
+    feed(tap, air(6.0, am=(-25_000, 1000, [(1.0, 3.0)])), clock)
+    segs = [(f["ts"], listen.ulaw_decode(f["payload"])) for f in frames_of(sent) if f["type"] == listen.AUDIO]
+
+    def rms(a, b):
+        xs = [x[max(0, int((a - ts) * 8000)) : max(0, int((b - ts) * 8000))] for ts, x in segs]
+        v = np.concatenate([x for x in xs if x.size] or [np.zeros(1)])
+        return float(np.sqrt(np.mean(v**2)))
+
+    speech = rms(1.5, 2.5)
+    assert 0.3 < speech < 0.6
+    assert rms(0.95, 1.15) < 1.3 * speech  # the key-up
+    assert rms(3.2, 4.4) == 0.0  # the hang
+    sent.clear()
+    quiet = listen.AudioTap(center, RATE, (Channel(121_500_000, "am", squelch_db=listen.SQUELCH_RANGE_DB[0]),), send=sent.append, threaded=False)
+    feed(quiet, air(2.0, seed=4))
+    noise = audio_of(frames_of(sent), 0)
+    assert noise.size > 8000 and float(np.sqrt(np.mean(noise[4000:] ** 2))) < 0.5 * speech
+
+
 def test_a_long_transmission_is_cut_and_carries_on():
     center = 121_525_000
     chs = listen.parse_channels([{"freq_hz": 121_500_000}])
@@ -399,7 +426,7 @@ def test_a_listen_elsewhere_asks_first_then_lends_itself_the_receiver(lsvc):
         src.push(data[i : i + (1 << 18)])
     (row,) = [r for r in lsvc.logged if r.kind == "clip"]
     assert row.profile == "listen" and row.subject == "121.500 MHz" and row.freq_hz == 121_500_000
-    assert row.fields["seconds"] == pytest.approx(1.55, abs=0.15) and row.fields["mode"] == "am"
+    assert row.fields["seconds"] == pytest.approx(1.0 + listen.PRE_ROLL_S + listen.TAIL_S, abs=0.15) and row.fields["mode"] == "am"
     path = lsvc.clips.path(row.fields["clip"])
     assert path.read_bytes()[:4] == b"RIFF" and row.ts_end - row.ts == pytest.approx(row.fields["seconds"], abs=0.06)
     # Stopping hands the receiver back.

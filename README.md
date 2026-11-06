@@ -450,9 +450,13 @@ The squelch opens `AUTO_MARGIN_DB` (8 dB) above the channel's noise floor,
 measured across the whole window (the median bin), so a channel that never
 goes quiet, like NOAA Weather Radio, still opens; each channel's
 `squelch_db` moves it, and at the bottom of its range the squelch stays
-open. It closes 1.5 s after the signal drops. AM channels in the airband
-(118-137 MHz) record each transmission as a clip (from a quarter second
-before the squelch opened to 0.3 s after the signal ended, at most
+open. It closes 1.5 s after the signal drops, and that hang is silent: it
+only keeps a reply in the same clip. AM audio is the envelope over the
+carrier's level, taken at once when a call starts and never below three
+times the noise, so a call starts at its own level and noise alone (the
+squelch held open) stays quiet. AM channels in the airband
+(118-137 MHz) record each transmission as a clip (from 0.1 s before the
+squelch opened to 0.3 s after the signal ended, at most
 `HACKRF_LIVE_CLIP_MAX_S`, shorter than half a second not kept) into
 `clips/` beside the log as a mu-law WAV, with one log row (profile
 `listen`, kind `clip`, the channel as subject, its length and peak level).
@@ -671,6 +675,27 @@ decoder** (only those the capture's rate and centre suit) and **Delete**;
 the samples themselves are never sent to the browser. History's waterfall
 has a **Select** too: History keeps power, not samples, so a range picked
 there opens the Live screen's form to record it now, and says so.
+
+**Listening.** The **Listen** row under the Live screen's controls takes a
+frequency in MHz (the mode follows the band: AM in the airband, broadcast
+FM in 88-108 MHz, NFM elsewhere, or pick one), a named channel (NOAA's and
+the station's own, see [Live decoding](#live-decoding)), and how long.
+**Listen** plays that channel alone; **+ Add** puts another beside it to
+scan several at once (four at most). With **Listen** on above the
+waterfall, a tap picks the channel there (on the usual raster: 25 kHz in
+the airband and marine VHF, 100 kHz in broadcast FM, 5 kHz elsewhere).
+Inside the band the receiver is on it starts at once; anywhere else the
+page first says what it would stop and for how long, and nothing is
+retuned until **Listen there** is pressed. Each channel shows its level
+against where its squelch opens, whether it is open or recording, and a
+squelch slider (at the bottom it stays open); **+15 min**, **Mute**, the
+volume and **Stop listening** are beside them. The audio plays in the page
+itself (Web Audio, no plug-in, no secure context needed); a page opened
+while a listen runs shows **Play audio**, since browsers start sound only
+when asked. Several browsers can listen at once. Clips show in the Live
+feed, the Log (profile `listen`) and History, each with **Play**,
+**Download** (a mu-law WAV) and **Delete**; a deleted or expired clip
+leaves its row.
 
 **Summaries.** The **Summaries** screen (`/summaries`) totals a period
 (the last hour, 6 or 24 hours, today, 7 days, or from-to in UTC) from the

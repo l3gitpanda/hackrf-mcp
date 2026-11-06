@@ -10,6 +10,8 @@ import { alertKeys, paintAlerts, paintAppBar, paintClock, sameKeys } from './app
 import { Waterfall } from './waterfall.js';
 import { ago, assignColors, clear, fmtUtc, h, inSeconds, mhz, mhzShort, mib, parseFreqs, rotation, utc } from './util.js';
 import { captureBody, captureQuery, pickRange, rangeLabel, rateText, sizeText, stateText, stateTone, ticked } from './captureutil.js';
+import { FLAG_OPEN, FLAG_RECORDING, LISTEN, METER, AUDIO, channelBody, channelName, defaultMode, isClip, meterPct, planText, sameChannels, snapHz, squelchText, withChannel, withoutChannel } from './listenutil.js';
+import { AudioSocket, Player, clipActions } from './listenplayer.js';
 
 const $ = (id) => document.getElementById(id);
 const FEED_MAX = 300;
@@ -44,7 +46,17 @@ const S = {
   capKey: null,
   capOpen: new Set(),
   capPics: new Set(),
+  // Listening: Listen on the waterfall, the channels picked before a listen
+  // starts, the request waiting for a yes, the audio socket while a listen
+  // runs, and each channel's row in the list.
+  listening: false,
+  lis: { draft: [], pending: null, label: null, presetsKey: '', sock: null, rowsKey: '', rows: [], sqTimer: null },
 };
+
+// Plays the listen's audio and the clips; its AudioContext starts on a click.
+const PLAYER = new Player();
+// For checking the page from a test browser: what the player has done.
+window.hlListenStats = () => ({ ...PLAYER.stats, context: PLAYER.ctx ? PLAYER.ctx.state : null, socket: S.lis.sock ? S.lis.sock.ws.readyState : null });
 
 function profileColor(name) {
   return S.colors[name] || '#8a96a6';
@@ -63,11 +75,13 @@ function live() {
 
 const WATCH_PROFILE = 'watch';
 const watching = () => (live().watch ? live().watch : null);
+const listenNow = () => (live().listen && live().listen.active) || null;
 
 async function init() {
   S.registry = await api('/api/registry');
   for (const p of S.registry.profiles) S.profiles[p.name] = p;
   S.colors = assignColors(S.registry.profiles);
+  if (S.registry.listen) S.colors[LISTEN] = S.registry.listen.color;
   S.wf = new Waterfall($('wf'), (lo, hi) => {
     $('wf-lo').textContent = `${Math.round(lo)}`;
     $('wf-hi').textContent = `${Math.round(hi)} dBFS`;
@@ -75,6 +89,7 @@ async function init() {
   buildControls();
   buildWatch();
   buildCapture();
+  buildListen();
   buildBandList().catch(() => {});
   buildChips();
   wire();
@@ -221,7 +236,7 @@ function onFft(m) {
     profile: m.profile,
     center_hz: m.center_hz,
     sample_rate_hz: m.sample_rate_hz,
-    freqs_hz: same ? det.freqs_hz : [],
+    freqs_hz: same ? bandFreqs(det) : [],
     color: profileColor(m.profile),
   };
   if (!S.wf.band || S.wf.band.center_hz !== m.center_hz || S.wf.band.sample_rate_hz !== m.sample_rate_hz || S.wf.band.profile !== m.profile) {
@@ -263,6 +278,7 @@ function renderStatus(st) {
   renderOverlay();
   renderHealth();
   renderWatch();
+  renderListen();
   renderCaptureStatus();
   $('feed-rate').textContent = `${l.decoded_1m ?? '—'} msg/min`;
 }
@@ -282,7 +298,9 @@ function renderControl() {
   $('cur-desc').textContent =
     name === WATCH_PROFILE
       ? 'Watching a range: the waterfall only, nothing decoded'
-      : p
+      : name === LISTEN
+        ? 'Listening: audio from channels in one range, nothing decoded'
+        : p
         ? p.summary.split(';')[0]
         : l.state === 'paused'
           ? 'Paused'
@@ -302,10 +320,20 @@ function fillBandChannels() {
   const det = live().tuning_detail;
   const b = S.wf && S.wf.band;
   if (!det || !b || det.center_hz !== b.center_hz || det.sample_rate_hz !== b.sample_rate_hz) return;
-  if ((b.freqs_hz || []).join() === det.freqs_hz.join()) return;
-  const band = { ...b, freqs_hz: det.freqs_hz };
+  const freqs = bandFreqs(det);
+  if ((b.freqs_hz || []).join() === freqs.join()) return;
+  const band = { ...b, freqs_hz: freqs };
   S.wf.setBand(band);
   renderBandHeader(band);
+}
+
+// The channels marked on the waterfall: the tuning's own, and the listen's
+// when it is inside this band.
+function bandFreqs(det) {
+  const a = listenNow();
+  const own = det.freqs_hz || [];
+  if (!a || a.center_hz !== det.center_hz) return own;
+  return [...own, ...a.channels.map((c) => c.freq_hz).filter((f) => !own.includes(f))];
 }
 
 function renderBandHeader(band) {
@@ -806,6 +834,7 @@ function itemEl(it, fresh) {
         { class: 'fdet' },
         kv,
         it.raw ? h('pre', { class: 'raw' }, it.raw) : null,
+        isClip(it) ? clipActions(h, post, PLAYER, it) : null,
         h('div', { class: 'acts' }, h('a', { class: 'btn sm', href: `/log?${q}` }, it.subject ? 'Open in log' : 'Open the log here')),
       ),
     );
@@ -908,7 +937,8 @@ function buildWatch() {
   const plot = S.wf.wfPlot;
   let x0 = null;
   plot.addEventListener('pointerdown', (e) => {
-    x0 = watching() && !S.selecting ? e.clientX : null;
+    const cur = watching();
+    x0 = cur && cur.profile !== LISTEN && !S.selecting && !S.listening ? e.clientX : null;
   });
   plot.addEventListener('pointerup', (e) => {
     const cur = watching();
@@ -1008,9 +1038,10 @@ async function sendWatch(body, note = null) {
 
 function renderWatch() {
   const cur = watching();
+  // A listen's window is shown (and ended) by the listen's own controls.
   $('watch-form').hidden = !!cur;
-  $('watch-on').hidden = !cur;
-  if (!cur) return;
+  $('watch-on').hidden = !cur || cur.profile === LISTEN;
+  if (!cur || cur.profile === LISTEN) return;
   const lo = cur.center_hz - cur.sample_rate_hz / 2;
   const hi = cur.center_hz + cur.sample_rate_hz / 2;
   $('watch-range').textContent = `${mhz(lo, 3)}–${mhz(hi, 3)} MHz`;
@@ -1019,6 +1050,336 @@ function renderWatch() {
   const w = S.registry.watch;
   $('watch-down').disabled = lo <= w.min_hz;
   $('watch-up').disabled = hi >= w.max_hz;
+}
+
+// --- Listening -----------------------------------------------------------------------------
+// The live service cuts up to four channels out of the receiver's band and
+// sends their audio (listen.py); this page plays it. Channels come from the
+// form, the named channels (NOAA's and the station's own), or a tap on the
+// waterfall with Listen on. Inside the band the receiver is on, nothing
+// stops; anywhere else the plan says what would, and nothing is retuned
+// until "Listen there" is pressed. AM channels in the airband record clips.
+
+function buildListen() {
+  const r = S.registry.listen;
+  if (!r || !r.enabled) return;
+  $('listen-box').hidden = false;
+  $('btn-listen').hidden = false;
+  const mode = $('l-mode');
+  mode.append(h('option', { value: '' }, 'mode by band'));
+  for (const m of r.modes) mode.append(h('option', { value: m }, m.toUpperCase()));
+  const mins = $('l-min');
+  for (const m of [5, 15, 30, 60].filter((x) => x <= r.max_minutes)) {
+    mins.append(h('option', { value: String(m), selected: m === r.default_minutes ? true : null }, `for ${m} min`));
+  }
+  fillPresets([]);
+  $('l-preset').addEventListener('change', () => {
+    const v = $('l-preset').value;
+    if (!v) return;
+    const p = JSON.parse(v);
+    $('l-freq').value = mhz(p.freq_hz, 4);
+    $('l-mode').value = p.mode;
+    S.lis.label = p.label;
+  });
+  $('l-freq').addEventListener('input', () => {
+    S.lis.label = null;
+    $('l-preset').value = '';
+  });
+  $('l-freq').addEventListener('keydown', (e) => e.key === 'Enter' && listenFromForm(false));
+  $('l-add').addEventListener('click', () => listenFromForm(true));
+  $('l-go').addEventListener('click', () => listenFromForm(false));
+  $('l-yes').addEventListener('click', () => answerListen(true));
+  $('l-no').addEventListener('click', () => answerListen(false));
+  $('l-stop').addEventListener('click', stopListening);
+  $('l-more').addEventListener('click', () => {
+    const a = listenNow();
+    if (a) sendListen({ channels: a.channels.map(channelBody), minutes: Math.min(r.max_minutes, Math.ceil(a.left_s / 60) + 15) });
+  });
+  $('l-hear').addEventListener('click', () => {
+    PLAYER.ensure();
+    setTimeout(renderListen, 300);
+  });
+  $('l-vol').addEventListener('input', (e) => PLAYER.setVolume(Number(e.target.value) / 100));
+  $('l-mute').addEventListener('click', (e) => {
+    const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
+    PLAYER.setMuted(on);
+    e.currentTarget.setAttribute('aria-pressed', String(on));
+  });
+  $('btn-listen').addEventListener('click', () => setListening(!S.listening));
+  for (const plot of [S.wf.wfPlot, S.wf.specPlot]) wireListenTap(plot);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && S.listening) setListening(false);
+  });
+}
+
+function setListening(on) {
+  if (on && S.selecting) setSelecting(false);
+  S.listening = on;
+  $('btn-listen').setAttribute('aria-pressed', String(on));
+  $('wf').classList.toggle('listening', on);
+  $('lis-hint').hidden = !on;
+}
+
+// A tap (not a drag) with Listen on: the nearest channel there, alone.
+function wireListenTap(plot) {
+  let down = null;
+  plot.addEventListener('pointerdown', (e) => {
+    const b = S.wf.band;
+    down = S.listening && b && b.sample_rate_hz ? { x: e.clientX, band: { center_hz: b.center_hz, sample_rate_hz: b.sample_rate_hz } } : null;
+  });
+  plot.addEventListener('pointerup', (e) => {
+    const d = down;
+    down = null;
+    if (!d || Math.abs(e.clientX - d.x) > 8) return;
+    const r = plot.getBoundingClientRect();
+    const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const f = snapHz(d.band.center_hz - d.band.sample_rate_hz / 2 + fx * d.band.sample_rate_hz);
+    $('l-freq').value = mhz(f, 4);
+    $('l-mode').value = '';
+    $('l-preset').value = '';
+    S.lis.label = null;
+    askListen([{ freq_hz: f, mode: defaultMode(f), squelch_db: 0, label: null }]);
+  });
+  plot.addEventListener('pointercancel', () => {
+    down = null;
+  });
+}
+
+function fillPresets(presets) {
+  const key = JSON.stringify(presets);
+  if (key === S.lis.presetsKey && $('l-preset').options.length) return;
+  S.lis.presetsKey = key;
+  const sel = clear($('l-preset'));
+  sel.append(h('option', { value: '' }, presets.length ? 'named channels…' : 'no named channels'));
+  for (const p of presets) sel.append(h('option', { value: JSON.stringify(p) }, `${channelName(p)} ${p.mode.toUpperCase()}`));
+}
+
+const draftOf = (c) => ({ freq_hz: c.freq_hz, mode: c.mode, squelch_db: c.squelch_db || 0, label: c.label || null });
+
+function showListenError(msg) {
+  $('l-err').hidden = !msg;
+  $('l-err').textContent = msg || '';
+}
+
+// Listen: the typed channel alone (or, with nothing typed, the channels in
+// the list). Add: the typed channel joins the list, and the listen if one runs.
+function listenFromForm(add) {
+  const max = S.registry.listen.max_channels;
+  const text = $('l-freq').value.trim();
+  const a = listenNow();
+  const base = a ? a.channels.map(draftOf) : S.lis.draft;
+  if (!text) {
+    if (!add && base.length && !a) askListen(base);
+    else showListenError('Type a frequency in MHz (e.g. 162.55), pick a named channel, or tap the waterfall with Listen on.');
+    return;
+  }
+  const f = parseMhz(text);
+  if (!isFinite(f) || f <= 0) {
+    showListenError('Type the frequency in MHz, e.g. 162.55.');
+    return;
+  }
+  const ch = { freq_hz: f, mode: $('l-mode').value || defaultMode(f), squelch_db: 0, label: S.lis.label || null };
+  if (add && !a) {
+    S.lis.draft = withChannel(S.lis.draft, ch, max);
+    showListenError(null);
+    renderListen();
+    return;
+  }
+  askListen(withChannel(base, ch, max, !add));
+}
+
+// Ask the live service what listening to `chans` would take; go ahead at
+// once if nothing stops, else ask here first.
+async function askListen(chans, extra = {}) {
+  showListenError(null);
+  $('l-confirm').hidden = true;
+  PLAYER.ensure(); // a click brought us here: the browser lets audio start now
+  const a = listenNow();
+  const body = { channels: chans.map(channelBody), ...extra };
+  let plan;
+  try {
+    plan = await post('/api/listen/plan', body);
+  } catch (e) {
+    showListenError(e.message);
+    return;
+  }
+  // A new window gets the time chosen; a listen moving its own keeps its time.
+  if (!body.minutes && (!a || (plan.retune && plan.running !== LISTEN))) body.minutes = Number($('l-min').value);
+  if (!plan.retune) {
+    await sendListen(body);
+    return;
+  }
+  S.lis.pending = body;
+  $('l-confirm-text').textContent = planText(plan, body.minutes || Number($('l-min').value));
+  $('l-confirm').hidden = false;
+  $('l-yes').focus();
+}
+
+async function answerListen(yes) {
+  const body = S.lis.pending;
+  S.lis.pending = null;
+  $('l-confirm').hidden = true;
+  if (yes && body) {
+    PLAYER.ensure();
+    await sendListen({ ...body, retune: true });
+  }
+}
+
+async function sendListen(body) {
+  try {
+    const st = await post('/api/listen', body);
+    S.lis.draft = [];
+    renderStatus({ ...S.status, live: st, now: st.now || now() });
+  } catch (e) {
+    showListenError(e.message);
+  }
+}
+
+async function stopListening() {
+  showListenError(null);
+  try {
+    const st = await post('/api/listen/stop', {});
+    renderStatus({ ...S.status, live: st, now: st.now || now() });
+  } catch (e) {
+    showListenError(e.message);
+  }
+}
+
+function renderListen() {
+  const r = S.registry.listen;
+  if (!r || !r.enabled) return;
+  const l = live().listen || {};
+  fillPresets(l.presets || []);
+  const a = l.active || null;
+  $('l-on').hidden = !a;
+  $('l-go').textContent = a ? 'Listen to this instead' : 'Listen';
+  if (a) {
+    const n = a.channels.length;
+    const what = `${n} channel${n === 1 ? '' : 's'}`;
+    $('l-where').textContent = a.owns
+      ? `${what} in a ${a.sample_rate_hz / 1e6} MHz window at ${mhz(a.center_hz, 4)} MHz (decoding resumes when it ends)`
+      : `${what} inside the band the receiver is on (${live().profile || 'nothing running'})`;
+    $('l-left').textContent = a.state === 'waiting' ? 'quiet for a moment: the receiver is lent out' : leftText(a.left_s);
+    $('l-hear').hidden = PLAYER.running;
+  }
+  connectAudio(!!a);
+  renderChannels(a ? a.channels : S.lis.draft, a);
+  fillBandChannels();
+}
+
+function connectAudio(on) {
+  if (on && !S.lis.sock) {
+    S.lis.sock = new AudioSocket(onAudioFrame);
+  } else if (!on && S.lis.sock) {
+    S.lis.sock.close();
+    S.lis.sock = null;
+    PLAYER.reset();
+  }
+}
+
+function onAudioFrame(buf) {
+  const f = PLAYER.frame(buf);
+  if (f && (f.type === METER || f.type === AUDIO)) paintMeter(f.channel, f.level_db, f.threshold_db, f.flags);
+}
+
+// The channel list: the listen's channels while it runs (level, squelch,
+// recording), else the ones picked for the next listen.
+function renderChannels(list, active) {
+  const box = $('l-chans');
+  const key = `${active ? 'on' : 'draft'}|${list.map((c) => `${c.freq_hz}/${c.mode}`).join(',')}`;
+  if (key !== S.lis.rowsKey) {
+    S.lis.rowsKey = key;
+    clear(box);
+    S.lis.rows = list.map((c, i) => channelRow(c, i, !!active));
+    for (const row of S.lis.rows) box.append(row.li);
+  }
+  list.forEach((c, i) => {
+    const row = S.lis.rows[i];
+    if (!row) return;
+    if (document.activeElement !== row.slider) {
+      row.slider.value = String(c.squelch_db || 0);
+      row.sqt.textContent = squelchText(c.squelch_db || 0, S.registry.listen.squelch_range_db);
+    }
+    if (active) paintMeter(i, c.level_db, c.threshold_db, (c.open ? FLAG_OPEN : 0) | (c.recording ? FLAG_RECORDING : 0));
+  });
+}
+
+function channelRow(c, i, active) {
+  const range = S.registry.listen.squelch_range_db;
+  const color = c.clips ? S.registry.listen.color : '#8a96a6';
+  const bar = h('span', { class: 'lbar' });
+  const thr = h('span', { class: 'lthr' });
+  const state = h('span', { class: 'tag' }, active ? '…' : 'not started');
+  const slider = h('input', {
+    type: 'range',
+    class: 'lsq',
+    min: range[0],
+    max: range[1],
+    step: 1,
+    value: c.squelch_db || 0,
+    'aria-label': `Squelch for ${channelName(c)}, dB from the automatic level`,
+  });
+  const sqt = h('span', { class: 'lsqt' }, squelchText(c.squelch_db || 0, range));
+  const x = h('button', { type: 'button', class: 'btn sm ghost x', 'aria-label': `Remove ${channelName(c)}` }, '×');
+  const li = h(
+    'li',
+    { class: 'lch', '--pc': color },
+    h('span', { class: 'lname' }, channelName(c)),
+    h('span', { class: 'lmode' }, c.mode.toUpperCase()),
+    h('span', { class: 'lmeter', title: 'Level, and where the squelch opens' }, bar, thr),
+    state,
+    h('span', { class: 't2 sm' }, 'squelch'),
+    slider,
+    sqt,
+    c.clips ? h('span', { class: 'tag', title: 'Each transmission is kept as a clip in the Log' }, 'clips') : null,
+    x,
+  );
+  slider.addEventListener('input', () => {
+    const v = Number(slider.value);
+    sqt.textContent = squelchText(v, range);
+    clearTimeout(S.lis.sqTimer);
+    S.lis.sqTimer = setTimeout(() => setSquelch(i, v), 250);
+  });
+  x.addEventListener('click', () => removeChannel(c.freq_hz));
+  return { li, bar, thr, state, slider, sqt };
+}
+
+function setSquelch(i, v) {
+  const a = listenNow();
+  if (!a) {
+    if (S.lis.draft[i]) S.lis.draft[i] = { ...S.lis.draft[i], squelch_db: v };
+    return;
+  }
+  const chans = a.channels.map(draftOf);
+  if (!chans[i]) return;
+  chans[i].squelch_db = v;
+  // The same channels: only their squelch moves.
+  if (sameChannels(chans, a.channels)) sendListen({ channels: chans.map(channelBody) });
+}
+
+function removeChannel(freq) {
+  const a = listenNow();
+  if (!a) {
+    S.lis.draft = withoutChannel(S.lis.draft, freq);
+    renderListen();
+    return;
+  }
+  const rest = withoutChannel(a.channels.map(draftOf), freq);
+  if (!rest.length) stopListening();
+  else askListen(rest);
+}
+
+function paintMeter(i, level, threshold, flags) {
+  const row = S.lis.rows[i];
+  if (!row) return;
+  row.bar.style.width = `${meterPct(level)}%`;
+  row.thr.style.left = `${meterPct(threshold)}%`;
+  const open = !!(flags & FLAG_OPEN);
+  row.li.classList.toggle('open', open);
+  const rec = !!(flags & FLAG_RECORDING);
+  row.state.className = `tag${rec ? ' bad' : open ? ' ok' : ''}`;
+  row.state.textContent = rec ? 'recording' : open ? 'open' : 'quiet';
+  row.li.title = level != null && isFinite(level) ? `level ${level.toFixed(1)} dBFS, opens at ${threshold.toFixed(1)}` : '';
 }
 
 // --- Captures ------------------------------------------------------------------------------
@@ -1055,6 +1416,7 @@ function buildCapture() {
 }
 
 function setSelecting(on) {
+  if (on && S.listening) setListening(false);
   S.selecting = on;
   $('btn-select').setAttribute('aria-pressed', String(on));
   $('wf').classList.toggle('selecting', on);

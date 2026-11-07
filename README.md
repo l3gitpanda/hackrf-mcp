@@ -922,6 +922,19 @@ own CPU and memory limits; `deploy/worker/worker.env.example` holds the
 settings. `.forgejo/workflows/image.yaml` builds it on a Forgejo mirror of
 this fork, runs the self-check, and pushes it to the registry.
 
+**The agent's queue.** `hackrf_transfer` gives up ("Couldn't transfer any
+bytes for one second", exit code 1) when its output isn't read for a
+second. So the agent reads it in a thread of its own into a queue, and sends
+the worker from there. A worker that stalls never stalls the HackRF: a
+virtual machine or container being snapshotted, a busy host, a network
+blip. The samples arrive late instead of being lost. The queue holds
+`HACKRF_AGENT_BUFFER_S` of samples (5 s by default), at most
+`HACKRF_AGENT_BUFFER_MB` (64; at 10 MS/s that is 3.2 s). Past that the
+oldest are dropped, and the worker is told how many bytes (its source's
+health shows `agent_dropped_bytes`). The agent's status, and the worker's
+`/api/status` under `agent.stream`, show the queue's size, its peak and
+what was dropped.
+
 **Device tools on a split station.** With `HACKRF_LIVE_AGENT` set, the MCP
 server's `hackrf_info`, `hackrf_sweep` and receive `hackrf_transfer` run
 through the agent: the live service is paused as usual, the agent runs the

@@ -149,7 +149,8 @@ class AgentLink(threading.Thread):
         token = self.token_file.read_text().strip()
         st = agent.status(self.address, token, timeout=10, heartbeat=True)
         with self.lock:
-            self.state.update(last_contact=time.time(), error=None, fallback=st.get("fallback"))
+            # The agent's view of the stream, its queue included (agent.BUFFER_S).
+            self.state.update(last_contact=time.time(), error=None, fallback=st.get("fallback"), stream=st.get("stream"))
             mark = None if self.mark is None else dict(self.mark)
         if st.get("fallback") is None:
             return  # the agent's machine keeps no log of its own

@@ -2,6 +2,7 @@
 socket, the live service's listen command, and the web routes."""
 
 import hashlib
+import os
 import struct
 import sys
 import time
@@ -317,6 +318,8 @@ def test_clips_are_kept_by_age_and_size(tmp_path):
     for i in range(3):
         cid = store.new_id(T0 + i)
         store.write(cid, b"x" * 400)
+        # Age is the file's own time: give it the test clock's, not today's.
+        os.utime(store.path(cid), (T0 + i, T0 + i))
         ids.append(cid)
     assert store.status()["count"] == 3 and store.status()["bytes"] == 1200
     assert store.prune() == [ids[0]]  # 1 KB at most

@@ -514,6 +514,7 @@ class RemoteSource(Source):
         self.thread: threading.Thread | None = None
         self.power: float | None = None
         self.end_reason: str | None = None
+        self.agent_dropped_bytes = 0
         self._stopping = False
 
     def start(self, consumer: Callable[[bytes], None]) -> None:
@@ -557,6 +558,10 @@ class RemoteSource(Source):
                         self.error = f"the hackrf-agent ended the stream: {self.end_reason}"
                     elif t == "error":
                         self.error = f"the hackrf-agent refused: {msg.get('error')}"
+                    elif t == "dropped":
+                        # The agent's queue overflowed while this end
+                        # wasn't reading (see agent.BUFFER_S).
+                        self.agent_dropped_bytes += int(msg.get("bytes") or 0)
         except Exception as exc:
             if not self._stopping:
                 self.error = f"stream from the hackrf-agent stopped: {exc!r}"
@@ -584,6 +589,8 @@ class RemoteSource(Source):
         h = super().health()
         h["input_power_dbfs"] = self.level_dbfs()
         h["agent"] = f"{self.address[0]}:{self.address[1]}"
+        if self.agent_dropped_bytes:
+            h["agent_dropped_bytes"] = self.agent_dropped_bytes
         return h
 
 

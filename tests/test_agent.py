@@ -413,3 +413,117 @@ def test_a_device_tool_pauses_a_live_service_streaming_from_the_agent(server, tm
         ctl.server_close()
         with svc.lock:
             svc._stop_pipeline("test over")
+
+
+# A hackrf_transfer that behaves like the real one when its output isn't
+# read: about 2 MB/s, and it gives up ("Couldn't transfer any bytes for one
+# second", exit 1) if a write blocks for more than a second.
+STEADY = """\
+import os, signal, sys, time
+signal.signal(signal.SIGINT, lambda *a: os._exit(0))
+block = bytes(range(256)) * 256
+while True:
+    t0 = time.monotonic()
+    sys.stdout.buffer.write(block); sys.stdout.buffer.flush()
+    if time.monotonic() - t0 > 1.0:
+        sys.stderr.write("Couldn't transfer any bytes for one second.\\nhackrf_close() done\\nhackrf_exit() done\\n")
+        sys.stderr.flush()
+        sys.exit(1)
+    time.sleep(0.03)
+"""
+
+
+def _steady_server(tmp_path, **kw):
+    fake = tmp_path / "steady_transfer"
+    fake.write_text(f"#!{sys.executable}\n" + STEADY)
+    fake.chmod(0o755)
+    s = agent.AgentSettings(host="127.0.0.1", port=0, token_sha256=(hashlib.sha256(TOKEN.encode()).hexdigest(),), binary=str(fake), **kw)
+    s.digests = s.load_digests()
+    srv = agent.AgentServer(s)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _stalled_client(srv, stall_s):
+    """A client that asks for a stream, reads a little, then stops reading
+    for `stall_s` (as a frozen worker would), then reads on for a second.
+    Returns the frames it got after the stall."""
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    sock.connect(addr(srv))
+    sock.sendall(json.dumps({"cmd": "stream", "token": TOKEN, "center_hz": 98_000_000, "sample_rate_hz": 2_000_000}).encode() + b"\n")
+    sock.settimeout(10)
+    for _ in range(5):
+        agent.read_frame(sock)
+    time.sleep(stall_s)
+    after = []
+    end = time.monotonic() + 1.5
+    while time.monotonic() < end:
+        got = agent.read_frame(sock)
+        if got is None:
+            break
+        after.append(got)
+    return sock, after
+
+
+def _notices(frames):
+    return [json.loads(body) for kind, body in frames if kind == agent.NOTICE]
+
+
+def test_a_stalled_client_never_stalls_hackrf_transfer(tmp_path):
+    # Docker-main's replication freezes the worker about a second every 15
+    # minutes; hackrf_transfer used to give up then. The agent's queue now
+    # takes what the client doesn't, and nothing is lost.
+    srv = _steady_server(tmp_path)
+    try:
+        sock, after = _stalled_client(srv, 4.0)
+        notes = _notices(after)
+        assert not [n for n in notes if n.get("type") in ("end", "dropped")], notes
+        assert sum(len(body) for kind, body in after if kind == agent.SAMPLES) > 0
+        st = agent.status(addr(srv), TOKEN)
+        assert st["streaming"], "hackrf_transfer gave up"
+        s = st["stream"]
+        assert s["dropped_bytes"] == 0 and s["buffer_peak_bytes"] > 2 * 65536
+        assert s["buffer_bytes"] == int(agent.BUFFER_S * 2 * 2_000_000)
+        sock.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_a_stall_longer_than_the_queue_drops_the_oldest_and_says_so(tmp_path):
+    srv = _steady_server(tmp_path, buffer_mb=1)
+    try:
+        sock, after = _stalled_client(srv, 4.0)
+        dropped = [n for n in _notices(after) if n.get("type") == "dropped"]
+        assert dropped and sum(n["bytes"] for n in dropped) > 0
+        st = agent.status(addr(srv), TOKEN)
+        assert st["streaming"], "hackrf_transfer gave up"
+        assert st["stream"]["buffer_bytes"] == 1 << 20 and st["stream"]["dropped_bytes"] >= dropped[0]["bytes"]
+        # What does arrive is still whole samples, in order.
+        body = b"".join(b for kind, b in after if kind == agent.SAMPLES)
+        assert len(body) % 2 == 0 and body[:2] in {bytes([i, i + 1]) for i in range(0, 256, 2)}
+        sock.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_the_remote_source_counts_what_the_agent_dropped():
+    src = RemoteSource(("127.0.0.1", 9), TOKEN, 98_000_000, 2_000_000, 32, 40, False)
+    a, b = socket.socketpair()
+    src.sock = b
+    a.sendall(agent.notice({"type": "dropped", "bytes": 1234}) + agent.notice({"type": "dropped", "bytes": 10}))
+    a.close()
+    src._pump(lambda buf: None)
+    assert src.agent_dropped_bytes == 1244 and src.health()["agent_dropped_bytes"] == 1244
+
+
+def test_agent_buffer_settings_are_checked(tmp_path):
+    tok = {"HACKRF_AGENT_TOKEN_SHA256": hashlib.sha256(TOKEN.encode()).hexdigest()}
+    s = agent.AgentSettings.from_env({**tok, "HACKRF_AGENT_BUFFER_S": "3", "HACKRF_AGENT_BUFFER_MB": "16"})
+    assert (s.buffer_s, s.buffer_mb) == (3.0, 16)
+    assert (agent.AgentSettings.from_env(tok).buffer_s, agent.AgentSettings.from_env(tok).buffer_mb) == (5.0, 64)
+    for env in ({"HACKRF_AGENT_BUFFER_S": "0.1"}, {"HACKRF_AGENT_BUFFER_MB": "0"}):
+        with pytest.raises(ValueError, match="BUFFER"):
+            agent.AgentSettings.from_env({**tok, **env})

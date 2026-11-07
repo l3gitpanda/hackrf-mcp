@@ -72,6 +72,7 @@ radio hears, so keep the agent on the LAN, allowed to the worker alone.
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import hmac
 import ipaddress
@@ -108,6 +109,16 @@ READ_BYTES = 1 << 18
 # thinks is open) must not hold the agent: a send that can't finish in this
 # long ends its stream.
 SEND_TIMEOUT_S = 15
+# hackrf_transfer gives up ("Couldn't transfer any bytes for one second")
+# when its output isn't read for a second, so a stream's samples go into a
+# queue that a thread of its own fills, and the client is sent from that: a
+# client that stalls (docker-main's replication freezes the worker for about
+# a second every 15 minutes) never stalls the HackRF. The queue holds
+# HACKRF_AGENT_BUFFER_S of samples, at most HACKRF_AGENT_BUFFER_MB; past
+# that the oldest are dropped, counted, and the client is told.
+BUFFER_S = 5.0
+BUFFER_MB = 64
+MIB = 1 << 20
 MIN_HZ, MAX_HZ = 1_000_000, 6_000_000_000
 MIN_RATE, MAX_RATE = 2_000_000, 20_000_000
 _POWER_RE = re.compile(r"average power\s+(-?[\d.]+)\s*dBfs")
@@ -176,6 +187,9 @@ class AgentSettings:
     max_tx_seconds: float = 60.0
     max_tx_mb: int = 512
     tx_log: Path | None = None
+    # A stream's queue (see BUFFER_S).
+    buffer_s: float = BUFFER_S
+    buffer_mb: int = BUFFER_MB
     digests: list[bytes] = field(default_factory=list)
 
     @classmethod
@@ -199,11 +213,17 @@ class AgentSettings:
             bands_file=Path(env["HACKRF_AGENT_BANDS_FILE"]) if env.get("HACKRF_AGENT_BANDS_FILE") else None,
             max_tx_seconds=float(env.get("HACKRF_AGENT_MAX_TX_SECONDS", "60")),
             max_tx_mb=int(env.get("HACKRF_AGENT_MAX_TX_MB", "512")),
+            buffer_s=float(env.get("HACKRF_AGENT_BUFFER_S", str(BUFFER_S))),
+            buffer_mb=int(env.get("HACKRF_AGENT_BUFFER_MB", str(BUFFER_MB))),
             tx_log=Path(env["HACKRF_AGENT_TX_LOG"])
             if env.get("HACKRF_AGENT_TX_LOG")
             else (Path(env["STATE_DIRECTORY"].split(":")[0]) / "tx-audit.jsonl" if env.get("STATE_DIRECTORY") else None),
         )
         s.check_tx_settings()
+        if not 0.5 <= s.buffer_s <= 60:
+            raise ValueError(f"HACKRF_AGENT_BUFFER_S must be 0.5-60, not {s.buffer_s:g}")
+        if not 1 <= s.buffer_mb <= 1024:
+            raise ValueError(f"HACKRF_AGENT_BUFFER_MB must be 1-1024, not {s.buffer_mb}")
         s.digests = s.load_digests()
         return s
 
@@ -680,7 +700,9 @@ class Fallback:
 
 
 class Stream:
-    """hackrf_transfer for one client, its samples sent in frames."""
+    """hackrf_transfer for one client, its samples sent in frames. One
+    thread reads hackrf_transfer into a bounded queue, another sends from it,
+    so the device never waits on the client (see BUFFER_S)."""
 
     def __init__(self, agent: Agent, sock: socket.socket, peer: str, tuning: dict):
         self.agent = agent
@@ -703,7 +725,17 @@ class Stream:
             args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
         )
         self.stderr_tail: list[str] = []
+        s = agent.settings
+        self.capacity = max(2 * READ_BYTES, int(min(s.buffer_s * 2 * tuning["sample_rate_hz"], s.buffer_mb * MIB)))
+        self._chunks: collections.deque[bytes] = collections.deque()
+        self._cond = threading.Condition()
+        self._eof = False
+        self.buffered = 0
+        self.buffer_peak = 0
+        self.dropped_bytes = 0
+        self._reported = 0
         threading.Thread(target=self._stderr, daemon=True, name="agent-stderr").start()
+        threading.Thread(target=self._read, daemon=True, name="agent-read").start()
 
     def send(self, data: bytes, wait_s: float | None = None) -> bool:
         """Send `data` whole; False if the client is gone or stuck. With
@@ -727,22 +759,66 @@ class Stream:
                 self.power = float(m.group(1))
                 if time.monotonic() - last >= 0.9:
                     last = time.monotonic()
-                    self.send(notice({"type": "power", "dbfs": self.power}))
+                    # Skipped while a send is stuck: this thread must keep
+                    # draining hackrf_transfer's stderr.
+                    self.send(notice({"type": "power", "dbfs": self.power}), wait_s=0.2)
 
-    def pump(self) -> None:
-        """Send samples until the client goes, the agent ends the stream, or
-        hackrf_transfer exits; then stop it and close the connection."""
+    def _read(self) -> None:
+        """Read hackrf_transfer's samples as fast as they come, whatever the
+        client does, into the queue; past its capacity the oldest go. Odd
+        bytes are carried over, so I and Q never swap."""
         out = self.proc.stdout
+        carry = b""
         try:
-            while not self.ended.is_set():
+            while True:
                 buf = out.read1(READ_BYTES) if hasattr(out, "read1") else out.read(READ_BYTES)
                 if not buf:
+                    break
+                if carry:
+                    buf, carry = carry + buf, b""
+                if len(buf) % 2:
+                    buf, carry = buf[:-1], buf[-1:]
+                if not buf:
+                    continue
+                with self._cond:
+                    self._chunks.append(buf)
+                    self.buffered += len(buf)
+                    while self.buffered > self.capacity and len(self._chunks) > 1:
+                        old = self._chunks.popleft()
+                        self.buffered -= len(old)
+                        self.dropped_bytes += len(old)
+                    self.buffer_peak = max(self.buffer_peak, self.buffered)
+                    self._cond.notify()
+        except (OSError, ValueError):
+            pass  # the pipe closed under us: the stream is ending
+        finally:
+            with self._cond:
+                self._eof = True
+                self._cond.notify()
+
+    def pump(self) -> None:
+        """Send samples from the queue until the client goes, the agent ends
+        the stream, or hackrf_transfer exits (and what it wrote has been
+        sent); then stop it and close the connection."""
+        try:
+            while not self.ended.is_set():
+                with self._cond:
+                    while not self._chunks and not self._eof and not self.ended.is_set():
+                        self._cond.wait(0.5)
+                    buf = None
+                    if self._chunks:
+                        buf = self._chunks.popleft()
+                        self.buffered -= len(buf)
+                    dropped, self._reported = self.dropped_bytes - self._reported, self.dropped_bytes
+                if dropped:
+                    self.send(notice({"type": "dropped", "bytes": dropped}))
+                if buf is None:
+                    if self.ended.is_set():
+                        break
                     code = self.proc.wait(timeout=5)
                     tail = " ".join(self.stderr_tail[-3:])
                     self.finish(f"hackrf_transfer exited with code {code}" + (f": {tail}" if tail else ""))
                     break
-                if len(buf) % 2:
-                    buf = buf[:-1]
                 self.bytes += len(buf)
                 if not self.send(frame(SAMPLES, buf)):
                     self.finish(None)  # the client went away
@@ -780,7 +856,18 @@ class Stream:
                 self.proc.wait(timeout=5)
 
     def status(self) -> dict:
-        return {**self.tuning, "since": self.since, "bytes": self.bytes, "client": self.peer, "power_dbfs": self.power}
+        return {
+            **self.tuning,
+            "since": self.since,
+            "bytes": self.bytes,
+            "client": self.peer,
+            "power_dbfs": self.power,
+            # The queue between hackrf_transfer and the client (see BUFFER_S).
+            "buffer_bytes": self.capacity,
+            "buffered_bytes": self.buffered,
+            "buffer_peak_bytes": self.buffer_peak,
+            "dropped_bytes": self.dropped_bytes,
+        }
 
 
 class Agent:
